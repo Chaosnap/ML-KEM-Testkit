@@ -145,9 +145,11 @@ module keccak_f1600 (
 
     // Output state as flat vector.
     generate
-        for (genvar gx = 0; gx < 5; gx++)
-            for (genvar gy = 0; gy < 5; gy++)
+        for (genvar gx = 0; gx < 5; gx++) begin : gen_out_x
+            for (genvar gy = 0; gy < 5; gy++) begin : gen_out_y
                 assign dout[(gx + 5*gy)*64 +: 64] = state[gx][gy];
+            end
+        end
     endgenerate
 
     // =========================================================================
