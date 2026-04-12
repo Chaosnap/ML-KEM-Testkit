@@ -102,32 +102,31 @@ module ntt_butterfly #(
     function automatic logic [DATA_WIDTH-1:0] mod_reduce(
         input logic [PROD_WIDTH-1:0] x
     );
-        // Simple reduction: x mod MODULUS.
-        // For synthesis, this maps to a divider or Barrett depending on tools.
-        // We use iterative subtraction for correctness; synthesis optimizes.
         logic [PROD_WIDTH-1:0] tmp;
         logic [PROD_WIDTH-1:0] q;
+        logic [PROD_WIDTH-1:0] res;
         tmp = x;
         q   = PROD_WIDTH'(MODULUS);
-        // Two conditional subtractions suffice for values < 2*q after multiply.
         if (tmp >= 2 * q)
-            // For large products, use modulo directly (synthesizer handles it).
-            return (tmp % q)[DATA_WIDTH-1:0];
+            res = tmp % q;
         else if (tmp >= q)
-            return (tmp - q)[DATA_WIDTH-1:0];
+            res = tmp - q;
         else
-            return tmp[DATA_WIDTH-1:0];
+            res = tmp;
+        return res[DATA_WIDTH-1:0];
     endfunction
 
     function automatic logic [DATA_WIDTH-1:0] mod_add(
         input logic [DATA_WIDTH:0] x
     );
         logic [DATA_WIDTH:0] q;
+        logic [DATA_WIDTH:0] res;
         q = (DATA_WIDTH+1)'(MODULUS);
         if (x >= q)
-            return (x - q)[DATA_WIDTH-1:0];
+            res = x - q;
         else
-            return x[DATA_WIDTH-1:0];
+            res = x;
+        return res[DATA_WIDTH-1:0];
     endfunction
 
     // Stage 2 combinational: compute reduced values before registering.
