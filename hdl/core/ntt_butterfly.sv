@@ -112,9 +112,9 @@ module ntt_butterfly #(
         // Two conditional subtractions suffice for values < 2*q after multiply.
         if (tmp >= 2 * q)
             // For large products, use modulo directly (synthesizer handles it).
-            return PROD_WIDTH'(tmp % q);
+            return (tmp % q)[DATA_WIDTH-1:0];
         else if (tmp >= q)
-            return PROD_WIDTH'(tmp - q);
+            return (tmp - q)[DATA_WIDTH-1:0];
         else
             return tmp[DATA_WIDTH-1:0];
     endfunction
@@ -125,7 +125,7 @@ module ntt_butterfly #(
         logic [DATA_WIDTH:0] q;
         q = (DATA_WIDTH+1)'(MODULUS);
         if (x >= q)
-            return (DATA_WIDTH+1)'(x - q);
+            return (x - q)[DATA_WIDTH-1:0];
         else
             return x[DATA_WIDTH-1:0];
     endfunction
