@@ -106,13 +106,15 @@ module ntt_butterfly #(
         // For synthesis, this maps to a divider or Barrett depending on tools.
         // We use iterative subtraction for correctness; synthesis optimizes.
         logic [PROD_WIDTH-1:0] tmp;
+        logic [PROD_WIDTH-1:0] q;
         tmp = x;
+        q   = PROD_WIDTH'(MODULUS);
         // Two conditional subtractions suffice for values < 2*q after multiply.
-        if (tmp >= 2 * MODULUS)
+        if (tmp >= 2 * q)
             // For large products, use modulo directly (synthesizer handles it).
-            return tmp % MODULUS;
-        else if (tmp >= MODULUS)
-            return tmp - MODULUS;
+            return PROD_WIDTH'(tmp % q);
+        else if (tmp >= q)
+            return PROD_WIDTH'(tmp - q);
         else
             return tmp[DATA_WIDTH-1:0];
     endfunction
@@ -120,8 +122,10 @@ module ntt_butterfly #(
     function automatic logic [DATA_WIDTH-1:0] mod_add(
         input logic [DATA_WIDTH:0] x
     );
-        if (x >= MODULUS)
-            return x - MODULUS;
+        logic [DATA_WIDTH:0] q;
+        q = (DATA_WIDTH+1)'(MODULUS);
+        if (x >= q)
+            return (DATA_WIDTH+1)'(x - q);
         else
             return x[DATA_WIDTH-1:0];
     endfunction
