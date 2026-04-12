@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go-test:
+    name: Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -v -race -count=1
+
+      - name: Benchmark smoke test
+        run: go run ./cmd/pqc-testkit bench --algorithm ml-kem --iterations 10
+
+  hdl-lint:
+    name: HDL Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+
+      - name: Lint Keccak core
+        run: verilator --lint-only -Wall hdl/core/keccak_f1600.sv
+
+      - name: Lint NTT butterfly
+        run: verilator --lint-only -Wall hdl/core/ntt_butterfly.sv
+
+      - name: Lint NTT engine
+        run: verilator --lint-only -Wall hdl/core/ntt_engine.sv

@@ -1,0 +1,46 @@
+# Binaries
+/pqc-testkit
+/build/
+
+# Go
+*.exe
+*.test
+*.out
+*.prof
+
+# Vivado
+*.jou
+*.log
+*.str
+*.xpr
+*.runs/
+*.cache/
+*.srcs/
+*.sim/
+*.ip_user_files/
+*.hw/
+.Xil/
+
+# Quartus
+*.qpf
+*.qsf
+*.sof
+*.pof
+db/
+incremental_db/
+output_files/
+
+# KAT vectors (downloaded, not committed)
+vectors/**/*.rsp
+vectors/**/.downloaded
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
