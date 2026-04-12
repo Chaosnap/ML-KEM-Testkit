@@ -112,7 +112,7 @@ module ntt_engine #(
 
     ntt_state_t ntt_fsm;
 
-    localparam logic [LOG_N-1:0] LAST_STAGE = LOG_N - 1;
+    localparam logic [LOG_N-1:0] LAST_STAGE = LOG_N'(LOG_N - 1);
 
     logic [LOG_N-1:0] stage;       // Current NTT stage (0 to LOG_N-1).
     logic [LOG_N-1:0] group;       // Current butterfly group.
