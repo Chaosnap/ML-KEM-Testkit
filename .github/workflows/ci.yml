@@ -47,4 +47,4 @@ jobs:
         run: verilator --lint-only -Wall hdl/core/ntt_butterfly.sv
 
       - name: Lint NTT engine
-        run: verilator --lint-only -Wall hdl/core/ntt_engine.sv
+        run: verilator --lint-only -Wall hdl/core/ntt_engine.sv hdl/core/mod_reduce.sv

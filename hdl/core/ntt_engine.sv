@@ -250,8 +250,9 @@ module ntt_engine #(
                 .x (wb_product[23:0]),
                 .r (wb_reduced[11:0])
             );
-            if (DATA_WIDTH > 12)
+            if (DATA_WIDTH > 12) begin : gen_zero_pad
                 assign wb_reduced[DATA_WIDTH-1:12] = '0;
+            end
         end else if (MODULUS == 8380417) begin : gen_reduce_8380417
             barrett_reduce_8380417 u_reduce (
                 .x (wb_product[45:0]),

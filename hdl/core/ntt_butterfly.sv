@@ -89,6 +89,10 @@ module ntt_butterfly #(
     // Pipeline stage 2: Modular reduction
     // =========================================================================
 
+    // Stage 2 intermediate signals.
+    logic [DATA_WIDTH-1:0]  wb_mod;
+    logic [PROD_WIDTH-1:0]  gs_product;
+
     // Barrett reduction: given x < q^2, compute x mod q.
     // For q = 8380417: precomputed constant m = floor(2^46 / q) = 8396807
     // For q = 3329:    precomputed constant m = floor(2^24 / q) = 5039
@@ -122,6 +126,26 @@ module ntt_butterfly #(
             return x[DATA_WIDTH-1:0];
     endfunction
 
+    // Stage 2 combinational: compute reduced values before registering.
+    logic [DATA_WIDTH-1:0] a_next, b_next;
+
+    always_comb begin
+        if (CT_MODE) begin
+            // CT: a_out = a + (w*b mod q), b_out = a - (w*b mod q)
+            wb_mod     = mod_reduce(product_s1);
+            gs_product = '0;
+            a_next     = mod_add(sum_s1 + {1'b0, wb_mod});
+            b_next     = mod_add(diff_s1 - {1'b0, wb_mod} + {1'b0, MODULUS[DATA_WIDTH-1:0]});
+        end else begin
+            // GS: a_out = (a+b) mod q, b_out = (a-b)*w mod q
+            wb_mod     = '0;
+            gs_product = {{(PROD_WIDTH-DATA_WIDTH-1){1'b0}}, diff_s1[DATA_WIDTH-1:0]} *
+                         {{(PROD_WIDTH-DATA_WIDTH){1'b0}}, w_in};
+            a_next     = mod_add(sum_s1);
+            b_next     = mod_reduce(gs_product);
+        end
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             a_out     <= '0;
@@ -129,21 +153,8 @@ module ntt_butterfly #(
             valid_out <= 1'b0;
         end else begin
             valid_out <= valid_s1;
-            if (CT_MODE) begin
-                // CT: a_out = a + (w*b mod q), b_out = a - (w*b mod q)
-                logic [DATA_WIDTH-1:0] wb_mod;
-                wb_mod = mod_reduce(product_s1);
-                a_out <= mod_add(sum_s1 + {1'b0, wb_mod});
-                b_out <= mod_add(diff_s1 - {1'b0, wb_mod} + {1'b0, MODULUS[DATA_WIDTH-1:0]});
-            end else begin
-                // GS: a_out = (a+b) mod q, b_out = (a-b)*w mod q
-                a_out <= mod_add(sum_s1);
-                // Compute (diff * w) mod q.
-                logic [PROD_WIDTH-1:0] gs_product;
-                gs_product = {{(PROD_WIDTH-DATA_WIDTH-1){1'b0}}, diff_s1[DATA_WIDTH-1:0]} *
-                             {{(PROD_WIDTH-DATA_WIDTH){1'b0}}, w_in}; // Note: w_in needs pipeline reg in real design.
-                b_out <= mod_reduce(gs_product);
-            end
+            a_out     <= a_next;
+            b_out     <= b_next;
         end
     end
 
