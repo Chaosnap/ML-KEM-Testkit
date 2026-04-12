@@ -1,3 +1,4 @@
+/* verilator lint_off DECLFILENAME */
 // mod_reduce.sv - Modular reduction modules for NTT butterfly
 //
 // Provides synthesizable modular reduction without the % operator.
@@ -25,15 +26,19 @@ module barrett_reduce_8380417 (
 );
 
     localparam logic [22:0] Q = 23'd8380417;
-    localparam logic [22:0] M = 23'd8396807;  // floor(2^46 / q).
+    localparam logic [23:0] M = 24'd8396807;  // floor(2^46 / q).
 
-    logic [68:0] xm;       // x * m (46 + 23 = 69 bits max).
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [69:0] xm;       // x * m (46 + 24 = 70 bits max).
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [22:0] q_hat;    // floor(xm / 2^46).
+    /* verilator lint_off UNUSEDSIGNAL */
     logic [46:0] qhat_q;   // q_hat * q.
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [23:0] t;        // x - qhat_q (may be up to 2q).
 
     always_comb begin
-        xm     = {23'b0, x} * {46'b0, M};
+        xm     = {24'b0, x} * {46'b0, M};
         q_hat  = xm[68:46];                     // Right shift by 46.
         qhat_q = {24'b0, q_hat} * {24'b0, Q};
         t      = x[23:0] - qhat_q[23:0];        // Low bits only (mod 2^24 is fine).
@@ -89,9 +94,11 @@ module mod_add #(
     input  logic [WIDTH-1:0] b,
     output logic [WIDTH-1:0] r
 );
+    localparam logic [WIDTH:0]   MOD_WIDE = (WIDTH+1)'(MODULUS);
+    localparam logic [WIDTH-1:0] MOD_NARROW = WIDTH'(MODULUS);
     logic [WIDTH:0] sum;
     assign sum = {1'b0, a} + {1'b0, b};
-    assign r = (sum >= MODULUS) ? sum[WIDTH-1:0] - MODULUS[WIDTH-1:0] : sum[WIDTH-1:0];
+    assign r = (sum >= MOD_WIDE) ? sum[WIDTH-1:0] - MOD_NARROW : sum[WIDTH-1:0];
 endmodule
 
 // Modular subtraction: (a - b) mod q, where a, b < q.
@@ -104,7 +111,8 @@ module mod_sub #(
     input  logic [WIDTH-1:0] b,
     output logic [WIDTH-1:0] r
 );
+    localparam logic [WIDTH-1:0] MOD_NARROW = WIDTH'(MODULUS);
     logic [WIDTH:0] diff;
     assign diff = {1'b0, a} - {1'b0, b};
-    assign r = diff[WIDTH] ? diff[WIDTH-1:0] + MODULUS[WIDTH-1:0] : diff[WIDTH-1:0];
+    assign r = diff[WIDTH] ? diff[WIDTH-1:0] + MOD_NARROW : diff[WIDTH-1:0];
 endmodule

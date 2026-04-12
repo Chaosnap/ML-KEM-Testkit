@@ -112,6 +112,8 @@ module ntt_engine #(
 
     ntt_state_t ntt_fsm;
 
+    localparam logic [LOG_N-1:0] LAST_STAGE = LOG_N - 1;
+
     logic [LOG_N-1:0] stage;       // Current NTT stage (0 to LOG_N-1).
     logic [LOG_N-1:0] group;       // Current butterfly group.
     logic [LOG_N-1:0] pair;        // Current butterfly pair within group.
@@ -208,7 +210,7 @@ module ntt_engine #(
                             ntt_fsm <= NTT_READ;
                         end else begin
                             group <= '0;
-                            if (stage < LOG_N - 1) begin
+                            if (stage < LAST_STAGE) begin
                                 stage <= stage + 1;
                                 ntt_fsm <= NTT_READ;
                             end else begin
