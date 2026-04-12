@@ -104,29 +104,33 @@ module ntt_butterfly #(
     );
         logic [PROD_WIDTH-1:0] tmp;
         logic [PROD_WIDTH-1:0] q;
-        logic [PROD_WIDTH-1:0] res;
+        logic [DATA_WIDTH-1:0] res;
         tmp = x;
         q   = PROD_WIDTH'(MODULUS);
+        /* verilator lint_off WIDTHTRUNC */
         if (tmp >= 2 * q)
             res = tmp % q;
         else if (tmp >= q)
             res = tmp - q;
         else
             res = tmp;
-        return res[DATA_WIDTH-1:0];
+        /* verilator lint_on WIDTHTRUNC */
+        return res;
     endfunction
 
     function automatic logic [DATA_WIDTH-1:0] mod_add(
         input logic [DATA_WIDTH:0] x
     );
-        logic [DATA_WIDTH:0] q;
-        logic [DATA_WIDTH:0] res;
+        logic [DATA_WIDTH:0]   q;
+        logic [DATA_WIDTH-1:0] res;
         q = (DATA_WIDTH+1)'(MODULUS);
+        /* verilator lint_off WIDTHTRUNC */
         if (x >= q)
             res = x - q;
         else
             res = x;
-        return res[DATA_WIDTH-1:0];
+        /* verilator lint_on WIDTHTRUNC */
+        return res;
     endfunction
 
     // Stage 2 combinational: compute reduced values before registering.
