@@ -1,12 +1,16 @@
-// pqc_axi_csr.sv - AXI-Lite CSR slave for PQC accelerator cores
+// pqc_axi_csr.sv - AXI-Lite slave for PQC accelerator cores
 //
-// Implements the standard pqc-testkit register map as an AXI4-Lite slave.
-// This module is shared by all PQC cores (ML-KEM, ML-DSA, SLH-DSA).
-// It handles bus protocol and register read/write; the actual PQC datapath
-// connects via the internal register ports.
+// Implements the standard pqc-testkit register map and the host window
+// into the data buffer. This module is shared by all PQC cores (ML-KEM,
+// ML-DSA, SLH-DSA).
+//
+// Address map (16-bit AXI address):
+//   0x0000 - 0x00FF  CSR registers (below)
+//   0x4000 - 0x7FFF  Data buffer window (16 KB, byte strobes honoured)
+//   other            reads return 0xDEADBEEF, writes ignored
 //
 // Register map (matches pkg/fpga/device.go):
-//   0x00 CTRL          RW  start | reset
+//   0x00 CTRL          WO  bit0 start pulse | bit1 reset pulse (reads 0)
 //   0x04 STATUS        RO  busy | done | error
 //   0x08 ALG_ID        RO  algorithm identifier
 //   0x0C SEC_LEVEL     RW  security level
@@ -14,9 +18,9 @@
 //   0x14 CYCLE_COUNT   RO  cycle counter
 //   0x18 VERSION       RO  core version
 //   0x1C ERROR_CODE    RO  error code
-//   0x20 DATA_IN_ADDR  RW  input buffer offset
-//   0x24 DATA_IN_LEN   RW  input data length
-//   0x28 DATA_OUT_ADDR RW  output buffer offset
+//   0x20 DATA_IN_ADDR  RW  input buffer byte offset  (reset 0x0000)
+//   0x24 DATA_IN_LEN   RW  input data length (informational)
+//   0x28 DATA_OUT_ADDR RW  output buffer byte offset (reset 0x1800)
 //   0x2C DATA_OUT_LEN  RO  output data length
 
 module pqc_axi_csr #(
@@ -24,7 +28,11 @@ module pqc_axi_csr #(
     parameter int VERSION_MAJ  = 1,
     parameter int VERSION_MIN  = 0,
     parameter int VERSION_PAT  = 0,
-    parameter int ADDR_WIDTH   = 6          // Address bits (covers 0x00-0x2C).
+    parameter int ADDR_WIDTH   = 16,
+    parameter int BUF_AW       = 12,        // Data buffer word address bits.
+    parameter logic [31:0] DEFAULT_SEC_LEVEL = 32'd768,
+    parameter logic [31:0] DEFAULT_IN_ADDR   = 32'h0000,
+    parameter logic [31:0] DEFAULT_OUT_ADDR  = 32'h1800
 ) (
     input  logic                    clk,
     input  logic                    rst_n,
@@ -48,7 +56,7 @@ module pqc_axi_csr #(
     output logic                    s_axi_rvalid,
     input  logic                    s_axi_rready,
 
-    // Datapath control signals (directly to/from PQC core).
+    // Datapath control signals.
     output logic                    ctrl_start,     // Pulse: begin operation.
     output logic                    ctrl_reset,     // Pulse: reset datapath.
     input  logic                    status_busy,
@@ -61,140 +69,186 @@ module pqc_axi_csr #(
     output logic [31:0]             data_in_addr,
     output logic [31:0]             data_in_len,
     output logic [31:0]             data_out_addr,
-    input  logic [31:0]             data_out_len
+    input  logic [31:0]             data_out_len,
+
+    // Data buffer host port (port A of pqc_data_buffer).
+    output logic                    mem_en,
+    output logic [3:0]              mem_we,
+    output logic [BUF_AW-1:0]       mem_addr,
+    output logic [31:0]             mem_din,
+    input  logic [31:0]             mem_dout
 );
 
+    localparam logic [31:0] ALG_ID_VAL  = ALG_ID;
+    localparam logic [31:0] VERSION_VAL = (VERSION_MAJ << 16) | (VERSION_MIN << 8) | VERSION_PAT;
+
+    function automatic logic is_mem(input logic [ADDR_WIDTH-1:0] a);
+        return a[15:14] == 2'b01;
+    endfunction
+
+    function automatic logic is_csr(input logic [ADDR_WIDTH-1:0] a);
+        return a[15:8] == 8'h00;
+    endfunction
+
     // =========================================================================
-    // Internal registers
+    // Registers
     // =========================================================================
 
-    logic [31:0] ctrl_reg;
     logic [31:0] sec_level_reg;
     logic [31:0] op_mode_reg;
     logic [31:0] data_in_addr_reg;
     logic [31:0] data_in_len_reg;
     logic [31:0] data_out_addr_reg;
 
-    // Constant registers.
-    localparam logic [31:0] ALG_ID_VAL  = ALG_ID;
-    localparam logic [31:0] VERSION_VAL = (VERSION_MAJ << 16) | (VERSION_MIN << 8) | VERSION_PAT;
-
-    // Output assignments.
     assign sec_level     = sec_level_reg;
     assign op_mode       = op_mode_reg;
     assign data_in_addr  = data_in_addr_reg;
     assign data_in_len   = data_in_len_reg;
     assign data_out_addr = data_out_addr_reg;
 
-    // CTRL register generates pulses.
-    assign ctrl_start = ctrl_reg[0];
-    assign ctrl_reset = ctrl_reg[1];
-
     // =========================================================================
-    // AXI-Lite write channel
+    // Write channel: accept AW and W independently, then commit.
     // =========================================================================
 
-    logic aw_handshake, w_handshake;
-    logic [ADDR_WIDTH-1:0] aw_addr_latched;
+    logic                  aw_full, w_full;
+    logic [ADDR_WIDTH-1:0] aw_addr;
+    logic [31:0]           w_data;
+    logic [3:0]            w_strb;
+    logic                  do_write;
+
+    assign s_axi_awready = !aw_full;
+    assign s_axi_wready  = !w_full;
+    assign s_axi_bresp   = 2'b00;
+    assign do_write      = aw_full && w_full && !s_axi_bvalid;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            s_axi_awready <= 1'b0;
-            s_axi_wready  <= 1'b0;
-            s_axi_bvalid  <= 1'b0;
-            s_axi_bresp   <= 2'b00;
-            aw_handshake  <= 1'b0;
-            w_handshake   <= 1'b0;
-            aw_addr_latched <= '0;
-            ctrl_reg       <= '0;
-            sec_level_reg  <= 32'd768;  // Default ML-KEM-768.
-            op_mode_reg    <= '0;
-            data_in_addr_reg  <= '0;
+            aw_full           <= 1'b0;
+            w_full            <= 1'b0;
+            aw_addr           <= '0;
+            w_data            <= '0;
+            w_strb            <= '0;
+            s_axi_bvalid      <= 1'b0;
+            ctrl_start        <= 1'b0;
+            ctrl_reset        <= 1'b0;
+            sec_level_reg     <= DEFAULT_SEC_LEVEL;
+            op_mode_reg       <= '0;
+            data_in_addr_reg  <= DEFAULT_IN_ADDR;
             data_in_len_reg   <= '0;
-            data_out_addr_reg <= '0;
+            data_out_addr_reg <= DEFAULT_OUT_ADDR;
         end else begin
-            // Auto-clear start pulse after one cycle.
-            if (ctrl_reg[0]) ctrl_reg[0] <= 1'b0;
-            if (ctrl_reg[1]) ctrl_reg[1] <= 1'b0;
+            ctrl_start <= 1'b0;
+            ctrl_reset <= 1'b0;
 
-            // Address channel handshake.
-            if (s_axi_awvalid && !aw_handshake) begin
-                s_axi_awready <= 1'b1;
-                aw_addr_latched <= s_axi_awaddr;
-                aw_handshake <= 1'b1;
-            end else begin
-                s_axi_awready <= 1'b0;
+            if (s_axi_awvalid && s_axi_awready) begin
+                aw_addr <= s_axi_awaddr;
+                aw_full <= 1'b1;
+            end
+            if (s_axi_wvalid && s_axi_wready) begin
+                w_data <= s_axi_wdata;
+                w_strb <= s_axi_wstrb;
+                w_full <= 1'b1;
             end
 
-            // Data channel handshake.
-            if (s_axi_wvalid && !w_handshake) begin
-                s_axi_wready <= 1'b1;
-                w_handshake <= 1'b1;
-            end else begin
-                s_axi_wready <= 1'b0;
-            end
-
-            // When both address and data are received, write the register.
-            if (aw_handshake && w_handshake) begin
-                case (aw_addr_latched[5:2])  // Word-aligned offset.
-                    4'h0: ctrl_reg           <= s_axi_wdata;  // 0x00 CTRL
-                    4'h3: sec_level_reg      <= s_axi_wdata;  // 0x0C SEC_LEVEL
-                    4'h4: op_mode_reg        <= s_axi_wdata;  // 0x10 OP_MODE
-                    4'h8: data_in_addr_reg   <= s_axi_wdata;  // 0x20 DATA_IN_ADDR
-                    4'h9: data_in_len_reg    <= s_axi_wdata;  // 0x24 DATA_IN_LEN
-                    4'hA: data_out_addr_reg  <= s_axi_wdata;  // 0x28 DATA_OUT_ADDR
-                    default: ;  // Read-only registers: ignore writes.
-                endcase
+            if (do_write) begin
+                if (is_csr(aw_addr)) begin
+                    case (aw_addr[7:2])
+                        6'h00: begin                        // 0x00 CTRL
+                            ctrl_start <= w_data[0];
+                            ctrl_reset <= w_data[1];
+                        end
+                        6'h03: sec_level_reg     <= w_data; // 0x0C SEC_LEVEL
+                        6'h04: op_mode_reg       <= w_data; // 0x10 OP_MODE
+                        6'h08: data_in_addr_reg  <= w_data; // 0x20 DATA_IN_ADDR
+                        6'h09: data_in_len_reg   <= w_data; // 0x24 DATA_IN_LEN
+                        6'h0A: data_out_addr_reg <= w_data; // 0x28 DATA_OUT_ADDR
+                        default: ;                          // Read-only.
+                    endcase
+                end
+                aw_full      <= 1'b0;
+                w_full       <= 1'b0;
                 s_axi_bvalid <= 1'b1;
-                aw_handshake <= 1'b0;
-                w_handshake  <= 1'b0;
             end
 
-            // Response handshake.
-            if (s_axi_bvalid && s_axi_bready) begin
+            if (s_axi_bvalid && s_axi_bready)
                 s_axi_bvalid <= 1'b0;
-            end
         end
     end
 
     // =========================================================================
-    // AXI-Lite read channel
+    // Read channel. Buffer reads take one extra cycle (BRAM latency).
     // =========================================================================
+
+    typedef enum logic [1:0] { R_IDLE, R_ISSUE, R_MEM, R_RESP } rstate_t;
+    rstate_t               rstate;
+    logic [ADDR_WIDTH-1:0] ar_addr;
+
+    assign s_axi_arready = (rstate == R_IDLE);
+    assign s_axi_rresp   = 2'b00;
+    assign s_axi_rvalid  = (rstate == R_RESP);
+
+    logic [31:0] csr_rdata;
+    always_comb begin
+        csr_rdata = 32'hDEAD_BEEF;
+        if (is_csr(ar_addr)) begin
+            case (ar_addr[7:2])
+                6'h00: csr_rdata = 32'h0;
+                6'h01: csr_rdata = {29'b0, status_error, status_done, status_busy};
+                6'h02: csr_rdata = ALG_ID_VAL;
+                6'h03: csr_rdata = sec_level_reg;
+                6'h04: csr_rdata = op_mode_reg;
+                6'h05: csr_rdata = cycle_count;
+                6'h06: csr_rdata = VERSION_VAL;
+                6'h07: csr_rdata = error_code;
+                6'h08: csr_rdata = data_in_addr_reg;
+                6'h09: csr_rdata = data_in_len_reg;
+                6'h0A: csr_rdata = data_out_addr_reg;
+                6'h0B: csr_rdata = data_out_len;
+                default: ;
+            endcase
+        end
+    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            s_axi_arready <= 1'b0;
-            s_axi_rvalid  <= 1'b0;
-            s_axi_rdata   <= '0;
-            s_axi_rresp   <= 2'b00;
+            rstate      <= R_IDLE;
+            ar_addr     <= '0;
+            s_axi_rdata <= '0;
         end else begin
-            if (s_axi_arvalid && !s_axi_rvalid) begin
-                s_axi_arready <= 1'b1;
-                s_axi_rvalid  <= 1'b1;
-
-                case (s_axi_araddr[5:2])
-                    4'h0: s_axi_rdata <= ctrl_reg;
-                    4'h1: s_axi_rdata <= {29'b0, status_error, status_done, status_busy};
-                    4'h2: s_axi_rdata <= ALG_ID_VAL;
-                    4'h3: s_axi_rdata <= sec_level_reg;
-                    4'h4: s_axi_rdata <= op_mode_reg;
-                    4'h5: s_axi_rdata <= cycle_count;
-                    4'h6: s_axi_rdata <= VERSION_VAL;
-                    4'h7: s_axi_rdata <= error_code;
-                    4'h8: s_axi_rdata <= data_in_addr_reg;
-                    4'h9: s_axi_rdata <= data_in_len_reg;
-                    4'hA: s_axi_rdata <= data_out_addr_reg;
-                    4'hB: s_axi_rdata <= data_out_len;
-                    default: s_axi_rdata <= 32'hDEAD_BEEF;
-                endcase
-            end else begin
-                s_axi_arready <= 1'b0;
-            end
-
-            if (s_axi_rvalid && s_axi_rready) begin
-                s_axi_rvalid <= 1'b0;
-            end
+            case (rstate)
+                R_IDLE: if (s_axi_arvalid) begin
+                    ar_addr <= s_axi_araddr;
+                    rstate  <= R_ISSUE;
+                end
+                R_ISSUE: begin
+                    if (is_mem(ar_addr)) begin
+                        // Port A is shared with writes: wait for a free cycle.
+                        if (!do_write) rstate <= R_MEM;
+                    end else begin
+                        s_axi_rdata <= csr_rdata;
+                        rstate      <= R_RESP;
+                    end
+                end
+                R_MEM: begin
+                    s_axi_rdata <= mem_dout;
+                    rstate      <= R_RESP;
+                end
+                R_RESP: if (s_axi_rready) rstate <= R_IDLE;
+                default: rstate <= R_IDLE;
+            endcase
         end
     end
+
+    // =========================================================================
+    // Data buffer port A.
+    // =========================================================================
+
+    logic mem_wr, mem_rd;
+    assign mem_wr   = do_write && is_mem(aw_addr);
+    assign mem_rd   = (rstate == R_ISSUE) && is_mem(ar_addr) && !do_write;
+    assign mem_en   = mem_wr || mem_rd;
+    assign mem_we   = mem_wr ? w_strb : 4'b0000;
+    assign mem_addr = mem_wr ? aw_addr[BUF_AW+1:2] : ar_addr[BUF_AW+1:2];
+    assign mem_din  = w_data;
 
 endmodule

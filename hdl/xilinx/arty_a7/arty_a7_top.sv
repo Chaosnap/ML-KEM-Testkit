@@ -1,29 +1,32 @@
 // arty_a7_top.sv - Board-level wrapper for Arty A7-35T / A7-100T
 //
-// Wraps pqc_mlkem_top with a UART-to-AXI bridge for communication
-// with the pqc-testkit host tool.
+// UART RX -> uart_axi_bridge -> AXI-Lite -> pqc_mlkem_top
+//   (CSR registers + 16 KB data buffer + ML-KEM datapath) -> UART TX
 //
 // Pin assignments:
-//   - UART TX/RX via USB-UART bridge (directly on board)
+//   - UART TX/RX via the on-board USB-UART bridge (115200 8N1)
 //   - LED[0]: busy indicator
-//   - LED[1]: done indicator
+//   - LED[1]: done indicator (sticky until next start/reset)
 //   - LED[2]: error indicator
-//   - LED[3]: heartbeat (toggles every ~0.5s)
-//   - BTN[0]: reset
+//   - LED[3]: heartbeat (~1.5 Hz)
+//   - BTN[0]: reset (active-high push button)
 //
 // Build:
-//   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
+//   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
 //
 // Test:
 //   ./pqc-testkit fpga -T uart -d /dev/ttyUSB0 -b 115200
 
-module arty_a7_top (
+module arty_a7_top #(
+    parameter int CLK_FREQ  = 100_000_000,
+    parameter int BAUD_RATE = 115200
+) (
     input  logic       clk_100mhz,    // 100 MHz oscillator.
-    input  logic       rst_n_btn,     // BTN[0] active-low reset.
+    input  logic       btn0,          // BTN[0], active-high: pressed = reset.
 
-    // UART (directly connected to USB-UART bridge on board).
-    input  logic       uart_rxd,      // UART receive.
-    output logic       uart_txd,      // UART transmit.
+    // UART (on-board USB-UART bridge).
+    input  logic       uart_rxd,      // UART receive (FPGA input).
+    output logic       uart_txd,      // UART transmit (FPGA output).
 
     // LEDs for status indication.
     output logic [3:0] led
@@ -35,25 +38,24 @@ module arty_a7_top (
 
     logic clk;
     logic rst_n;
-    logic [2:0] rst_sync;
+    logic [3:0] rst_sync;
 
     assign clk = clk_100mhz;
 
-    // Synchronize and debounce reset button.
-    always_ff @(posedge clk) begin
-        rst_sync <= {rst_sync[1:0], rst_n_btn};
+    // BTN0 asserts reset asynchronously; release is synchronised to clk
+    // through a 4-stage shift register. The registers power up at 0, so the
+    // design also starts in reset after configuration.
+    always_ff @(posedge clk or posedge btn0) begin
+        if (btn0)
+            rst_sync <= '0;
+        else
+            rst_sync <= {rst_sync[2:0], 1'b1};
     end
-    assign rst_n = rst_sync[2];
+    assign rst_n = rst_sync[3];
 
     // =========================================================================
-    // UART-to-AXI bridge
+    // UART and protocol bridge
     // =========================================================================
-
-    // The UART bridge translates the pqc-testkit serial protocol
-    // (CMD/ADDR/LEN/DATA/CRC frames) into AXI-Lite read/write transactions.
-    //
-    // This is a simplified bridge that handles register access.
-    // For a production design, use Xilinx AXI UART Lite IP or a custom bridge.
 
     logic [15:0] axi_awaddr;
     logic        axi_awvalid, axi_awready;
@@ -68,15 +70,13 @@ module arty_a7_top (
     logic [1:0]  axi_rresp;
     logic        axi_rvalid, axi_rready;
 
-    // UART RX/TX signals.
     logic [7:0]  rx_byte;
     logic        rx_valid;
     logic [7:0]  tx_byte;
     logic        tx_valid;
     logic        tx_ready;
 
-    // UART receiver.
-    uart_rx #(.CLK_FREQ(100_000_000), .BAUD_RATE(115200)) u_rx (
+    uart_rx #(.CLK_FREQ(CLK_FREQ), .BAUD_RATE(BAUD_RATE)) u_rx (
         .clk      (clk),
         .rst_n    (rst_n),
         .rx       (uart_rxd),
@@ -84,8 +84,7 @@ module arty_a7_top (
         .valid    (rx_valid)
     );
 
-    // UART transmitter.
-    uart_tx #(.CLK_FREQ(100_000_000), .BAUD_RATE(115200)) u_tx (
+    uart_tx #(.CLK_FREQ(CLK_FREQ), .BAUD_RATE(BAUD_RATE)) u_tx (
         .clk      (clk),
         .rst_n    (rst_n),
         .tx       (uart_txd),
@@ -94,8 +93,9 @@ module arty_a7_top (
         .ready    (tx_ready)
     );
 
-    // Protocol bridge: converts UART frames to AXI transactions.
-    uart_axi_bridge u_bridge (
+    uart_axi_bridge #(
+        .TIMEOUT_CYCLES (CLK_FREQ / 10)   // 100 ms inter-byte timeout.
+    ) u_bridge (
         .clk           (clk),
         .rst_n         (rst_n),
         .rx_byte       (rx_byte),
@@ -150,7 +150,7 @@ module arty_a7_top (
         .s_axi_rresp    (axi_rresp),
         .s_axi_rvalid   (axi_rvalid),
         .s_axi_rready   (axi_rready),
-        .irq            (),  // Not connected on Arty.
+        .irq            (),  // Not used on Arty.
         .o_busy         (status_busy),
         .o_done         (status_done),
         .o_error        (status_error)
@@ -160,13 +160,12 @@ module arty_a7_top (
     // LED indicators
     // =========================================================================
 
-    // Heartbeat counter.
     logic [25:0] heartbeat_cnt;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             heartbeat_cnt <= '0;
         else
-            heartbeat_cnt <= heartbeat_cnt + 1;
+            heartbeat_cnt <= heartbeat_cnt + 26'd1;
     end
 
     assign led[0] = status_busy;            // LED0: operation in progress.

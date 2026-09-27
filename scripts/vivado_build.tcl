@@ -3,17 +3,21 @@
 # Usage:
 #   vivado -mode batch -source scripts/vivado_build.tcl -tclargs <board> <algorithm>
 #
-# Example:
+# Examples:
 #   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
+#   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
 #
 # This script:
 #   1. Creates a new Vivado project for the target board
 #   2. Adds the vendor-agnostic core RTL and Xilinx-specific wrappers
 #   3. Applies board constraints (XDC)
-#   4. Runs synthesis, implementation, and bitstream generation
-#   5. Reports utilization and timing
+#   4. Selects the correct board-level top module
+#   5. Runs synthesis, implementation, and bitstream generation
+#   6. Reports utilization, timing, and power
 
+# -----------------------------------------------------------------------------
 # Parse arguments
+# -----------------------------------------------------------------------------
 if {$argc < 2} {
     puts "Usage: vivado -mode batch -source vivado_build.tcl -tclargs <board> <algorithm>"
     puts "  Boards: arty-a7-35t, arty-a7-100t, nexys-a7, zcu102, alveo-u250"
@@ -21,11 +25,13 @@ if {$argc < 2} {
     exit 1
 }
 
-set board_name [lindex $argv 0]
-set algorithm  [lindex $argv 1]
+set board_name  [lindex $argv 0]
+set algorithm   [lindex $argv 1]
 set project_dir "build/vivado/${board_name}_${algorithm}"
 
+# -----------------------------------------------------------------------------
 # Board-to-part mapping
+# -----------------------------------------------------------------------------
 array set board_parts {
     arty-a7-35t   xc7a35ticsg324-1L
     arty-a7-100t  xc7a100tcsg324-1
@@ -40,6 +46,7 @@ if {![info exists board_parts($board_name)]} {
 }
 
 set part $board_parts($board_name)
+
 puts "=== PQC Test Kit — Vivado Build ==="
 puts "Board:     $board_name"
 puts "Part:      $part"
@@ -47,60 +54,202 @@ puts "Algorithm: $algorithm"
 puts "Project:   $project_dir"
 puts ""
 
+# -----------------------------------------------------------------------------
 # Create project
+# -----------------------------------------------------------------------------
 create_project pqc_${algorithm} $project_dir -part $part -force
 
-# Add RTL sources — vendor-agnostic cores
-add_files -norecurse [glob -nocomplain hdl/core/*.sv hdl/core/*.v]
+# -----------------------------------------------------------------------------
+# Add vendor-agnostic RTL sources
+# -----------------------------------------------------------------------------
+set core_sources [glob -nocomplain hdl/core/*.sv hdl/core/*.v]
 
-# Add Xilinx-specific wrappers
-set xilinx_dir "hdl/xilinx/${board_name}"
-if {[file exists $xilinx_dir]} {
-    add_files -norecurse [glob -nocomplain ${xilinx_dir}/*.sv ${xilinx_dir}/*.v]
-}
-
-# Add constraints
-set xdc_file "hdl/xilinx/${board_name}/constraints.xdc"
-if {[file exists $xdc_file]} {
-    add_files -fileset constrs_1 -norecurse $xdc_file
-}
-
-# Set top module based on algorithm
-set_property top pqc_${algorithm}_top [current_fileset]
-
-# Run synthesis
-puts "--- Running Synthesis ---"
-launch_runs synth_1 -jobs 4
-wait_on_run synth_1
-
-# Check synthesis status
-if {[get_property STATUS [get_runs synth_1]] != "synth_design Complete!"} {
-    puts "ERROR: Synthesis failed"
+if {[llength $core_sources] == 0} {
+    puts "ERROR: No RTL sources found under hdl/core/"
     exit 1
 }
 
-# Report utilization after synthesis
+add_files -norecurse $core_sources
+
+# -----------------------------------------------------------------------------
+# Select board-specific wrapper directory
+#
+# Arty A7-35T and Arty A7-100T share the same board wrapper/XDC directory:
+#   hdl/xilinx/arty_a7/
+# -----------------------------------------------------------------------------
+if {$board_name eq "arty-a7-35t" || $board_name eq "arty-a7-100t"} {
+    set xilinx_dir "hdl/xilinx/arty_a7"
+} else {
+    set xilinx_dir "hdl/xilinx/${board_name}"
+}
+
+if {![file isdirectory $xilinx_dir]} {
+    puts "ERROR: Board support directory not found: $xilinx_dir"
+    exit 1
+}
+
+# Add board-specific wrapper RTL
+set board_sources [glob -nocomplain ${xilinx_dir}/*.sv ${xilinx_dir}/*.v]
+
+if {[llength $board_sources] == 0} {
+    puts "ERROR: No board wrapper RTL found in: $xilinx_dir"
+    exit 1
+}
+
+add_files -norecurse $board_sources
+
+# -----------------------------------------------------------------------------
+# Add constraints
+# -----------------------------------------------------------------------------
+set xdc_file "${xilinx_dir}/constraints.xdc"
+
+if {![file exists $xdc_file]} {
+    puts "ERROR: Constraint file not found: $xdc_file"
+    exit 1
+}
+
+add_files -fileset constrs_1 -norecurse $xdc_file
+
+# -----------------------------------------------------------------------------
+# Select top module
+#
+# Current arty_a7_top wraps pqc_mlkem_top and provides:
+#   - 100 MHz board clock
+#   - reset button
+#   - USB-UART RX/TX
+#   - UART-to-AXI bridge
+#   - status LEDs
+# Therefore the current Arty board wrapper is ML-KEM-specific.
+# -----------------------------------------------------------------------------
+if {$board_name eq "arty-a7-35t" || $board_name eq "arty-a7-100t"} {
+    if {$algorithm ne "mlkem"} {
+        puts "ERROR: Current hdl/xilinx/arty_a7/arty_a7_top.sv wraps ML-KEM only."
+        puts "       Use algorithm 'mlkem' or add a board wrapper for '$algorithm'."
+        exit 1
+    }
+    set top_name "arty_a7_top"
+} else {
+    set top_name "pqc_${algorithm}_top"
+}
+
+set_property top $top_name [get_filesets sources_1]
+update_compile_order -fileset sources_1
+
+puts "Board RTL:  $xilinx_dir"
+puts "XDC:        $xdc_file"
+puts "Top:        $top_name"
+puts ""
+
+# -----------------------------------------------------------------------------
+# Run synthesis
+# -----------------------------------------------------------------------------
+puts "--- Running Synthesis ---"
+launch_runs synth_1 -jobs 4
+
+if {[catch {wait_on_run synth_1} synth_err]} {
+    puts "ERROR: Synthesis run failed."
+    puts "Vivado message: $synth_err"
+    puts "Run directory: [get_property DIRECTORY [get_runs synth_1]]"
+    exit 1
+}
+
+set synth_status [get_property STATUS [get_runs synth_1]]
+puts "Synthesis status: $synth_status"
+
+if {$synth_status ne "synth_design Complete!"} {
+    puts "ERROR: Synthesis did not complete successfully."
+    puts "Run directory: [get_property DIRECTORY [get_runs synth_1]]"
+    exit 1
+}
+
+# Reports after synthesis
 open_run synth_1
-report_utilization -file ${project_dir}/utilization_synth.rpt
+report_utilization    -file ${project_dir}/utilization_synth.rpt
+report_utilization    -hierarchical -hierarchical_depth 4 \
+                      -file ${project_dir}/utilization_synth_hier.rpt
 report_timing_summary -file ${project_dir}/timing_synth.rpt
+close_design
 
-# Run implementation
-puts "--- Running Implementation ---"
-launch_runs impl_1 -jobs 4
-wait_on_run impl_1
+# Synthesis warnings, with removed/trimmed logic called out separately so a
+# datapath that was optimised away is visible immediately.
+set synth_log [file join [get_property DIRECTORY [get_runs synth_1]] runme.log]
+set warn_rpt  ${project_dir}/synth_warnings.rpt
+if {[file exists $synth_log]} {
+    set fin  [open $synth_log r]
+    set fout [open $warn_rpt w]
+    set n_warn 0
+    set n_trim 0
+    while {[gets $fin line] >= 0} {
+        if {[string match "CRITICAL WARNING:*" $line] || [string match "WARNING:*" $line]} {
+            puts $fout $line
+            incr n_warn
+            # 8-3332 sequential element removed, 8-6014 unused sequential
+            # element removed, 8-3848 net has no driver, 8-7129 port unused,
+            # 8-3936 register trimmed, 8-3917 port driven by constant.
+            if {[regexp {Synth 8-(3332|6014|3848|7129|3936|3917)} $line]} {
+                incr n_trim
+            }
+        }
+    }
+    close $fin
+    close $fout
+    puts "Synthesis warnings: $n_warn total, $n_trim removed/trimmed/unconnected (see $warn_rpt)"
+}
 
-# Report utilization after implementation
-open_run impl_1
-report_utilization -file ${project_dir}/utilization_impl.rpt
-report_timing_summary -file ${project_dir}/timing_impl.rpt
-report_power -file ${project_dir}/power.rpt
-
-# Generate bitstream
-puts "--- Generating Bitstream ---"
+# -----------------------------------------------------------------------------
+# Run implementation through bitstream generation
+# -----------------------------------------------------------------------------
+puts "--- Running Implementation + Bitstream ---"
 launch_runs impl_1 -to_step write_bitstream -jobs 4
-wait_on_run impl_1
+
+if {[catch {wait_on_run impl_1} impl_err]} {
+    puts "ERROR: Implementation/bitstream run failed."
+    puts "Vivado message: $impl_err"
+    puts "Run directory: [get_property DIRECTORY [get_runs impl_1]]"
+    puts "Check runme.log in the directory above for the first real ERROR message."
+    exit 1
+}
+
+set impl_status [get_property STATUS [get_runs impl_1]]
+puts "Implementation status: $impl_status"
+
+# -----------------------------------------------------------------------------
+# Reports after implementation
+# -----------------------------------------------------------------------------
+open_run impl_1
+report_utilization    -file ${project_dir}/utilization_impl.rpt
+report_utilization    -hierarchical -hierarchical_depth 4 \
+                      -file ${project_dir}/utilization_impl_hier.rpt
+report_timing_summary -file ${project_dir}/timing_impl.rpt
+report_power          -file ${project_dir}/power.rpt
+
+# Console summary: per-instance utilization and timing.
+puts ""
+puts "=== Hierarchical utilization (post-implementation) ==="
+puts [report_utilization -hierarchical -hierarchical_depth 4 -return_string]
+
+set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1 -nworst 1] 0]]
+set tns 0.0
+foreach p [get_timing_paths -setup -max_paths 10000 -slack_lesser_than 0] {
+    set tns [expr {$tns + [get_property SLACK $p]}]
+}
+puts "Timing: WNS = $wns ns, TNS = $tns ns"
+
+# -----------------------------------------------------------------------------
+# Final output
+# -----------------------------------------------------------------------------
+set bitstream_file "${project_dir}/pqc_${algorithm}.runs/impl_1/${top_name}.bit"
 
 puts ""
 puts "=== Build Complete ==="
-puts "Bitstream: ${project_dir}/pqc_${algorithm}.runs/impl_1/pqc_${algorithm}_top.bit"
+puts "Board:     $board_name"
+puts "Part:      $part"
+puts "Top:       $top_name"
+puts "Bitstream: $bitstream_file"
 puts "Reports:   ${project_dir}/"
+
+if {![file exists $bitstream_file]} {
+    puts "WARNING: Expected bitstream was not found at:"
+    puts "         $bitstream_file"
+    puts "         Check the impl_1 run directory and Vivado log."
+}

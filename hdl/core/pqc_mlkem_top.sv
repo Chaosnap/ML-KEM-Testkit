@@ -1,29 +1,31 @@
-// pqc_mlkem_top.sv - Complete ML-KEM (FIPS 203) accelerator core
+// pqc_mlkem_top.sv - ML-KEM (FIPS 203) accelerator core
 //
-// This is the synthesizable top-level for an ML-KEM hardware accelerator
-// that works with the pqc-testkit host tool. It integrates:
+// Synthesizable top-level of the ML-KEM hardware accelerator used by the
+// pqc-testkit host tool. Implements KeyGen_internal, Encaps_internal and
+// Decaps_internal (with implicit rejection) for ML-KEM-512/768/1024.
 //
-//   - AXI-Lite CSR slave (pqc_axi_csr) for host control
-//   - Data buffer (pqc_data_buffer) for key/ciphertext I/O
-//   - Keccak-f[1600] for SHA3/SHAKE hashing
-//   - NTT engine for polynomial multiplication
-//   - ML-KEM control FSM for keygen, encapsulation, decapsulation
+// Data path:
 //
-// Supported parameter sets:
-//   - ML-KEM-512  (k=2, n=256, q=3329)
-//   - ML-KEM-768  (k=3, n=256, q=3329)
-//   - ML-KEM-1024 (k=4, n=256, q=3329)
+//   AXI-Lite --> u_csr --(port A)--> u_dbuf (16 KB) <--(port B)--+
+//                  |                                             |
+//               start/status                                     |
+//                  v                                             |
+//               u_ctrl (microcode sequencer, u_rom) -------------+
+//                  |        |            |             |
+//              u_sponge   u_alu       u_unpack      u_pack
+//             (u_keccak) (NTT/INTT,   (SampleNTT,   (Compress,
+//                         basemul,     CBD, Decode,  Encode)
+//                         add/sub)     Decompress)
+//                             \           |             /
+//                              +---- u_polyram (16 polys) ---+
 //
-// Performance (estimated, single NTT butterfly):
-//   - Keygen:  ~50,000 cycles at 200 MHz = ~250 us
-//   - Encaps:  ~60,000 cycles
-//   - Decaps:  ~80,000 cycles
+// Host flow: write inputs to the data buffer (bus 0x4000 + DATA_IN_ADDR),
+// set SEC_LEVEL / OP_MODE, write CTRL.start, poll STATUS.done, read
+// DATA_OUT_LEN bytes from 0x4000 + DATA_OUT_ADDR.
 //
-// Area (estimated on Artix-7):
-//   - ~8,000-12,000 LUTs
-//   - ~4,000-6,000 FFs
-//   - 4-8 BRAMs (data buffer + coefficient RAM + twiddle ROM)
-//   - 1-2 DSP48E1 slices (NTT butterfly multiply)
+//   OP_MODE 0 KeyGen: in = d || z          out = ek || dk
+//   OP_MODE 1 Encaps: in = ek || m         out = c || K
+//   OP_MODE 2 Decaps: in = dk || c         out = K
 
 module pqc_mlkem_top #(
     parameter int AXI_ADDR_WIDTH = 16      // Address width for AXI-Lite.
@@ -50,7 +52,7 @@ module pqc_mlkem_top #(
     output logic                        s_axi_rvalid,
     input  logic                        s_axi_rready,
 
-    // Optional: interrupt output (active-high, pulses on done).
+    // Interrupt output (active-high, level while done).
     output logic                        irq,
 
     // Status outputs for board-level indicators (active-high).
@@ -60,72 +62,32 @@ module pqc_mlkem_top #(
 );
 
     // =========================================================================
-    // ML-KEM parameters
+    // CSR <-> sequencer
     // =========================================================================
 
-    localparam int Q         = 3329;      // Modulus.
-    localparam int N         = 256;       // Polynomial degree.
-    localparam int LOG_N     = 8;
-    localparam int COEFF_W   = 12;        // Coefficient width (ceil(log2(q))).
+    logic        ctrl_start, ctrl_reset;
+    logic        status_busy, status_done, status_error;
+    logic [31:0] sec_level, op_mode, cycle_count, error_code;
+    logic [31:0] data_in_addr, data_in_len, data_out_addr, data_out_len;
 
-    // =========================================================================
-    // Internal signals
-    // =========================================================================
-
-    // CSR to/from datapath.
-    logic        ctrl_start;
-    logic        ctrl_reset;
-    logic        status_busy;
-    logic        status_done;
-    logic        status_error;
-    logic [31:0] sec_level;
-    logic [31:0] op_mode;
-    logic [31:0] cycle_count;
-    logic [31:0] error_code;
-    logic [31:0] data_in_addr;
-    logic [31:0] data_in_len;
-    logic [31:0] data_out_addr;
-    logic [31:0] data_out_len;
-
-    // Data buffer signals.
-    logic        dbuf_a_en, dbuf_a_we;
-    logic [10:0] dbuf_a_addr;
-    logic [31:0] dbuf_a_din, dbuf_a_dout;
-    logic        dbuf_b_en, dbuf_b_we;
-    logic [10:0] dbuf_b_addr;
-    logic [31:0] dbuf_b_din, dbuf_b_dout;
-
-    // Keccak signals.
-    logic           keccak_start;
-    logic           keccak_done;
-    logic           keccak_busy;
-    logic [1599:0]  keccak_din;
-    logic [1599:0]  keccak_dout;
-
-    // NTT signals.
-    logic           ntt_start, intt_start;
-    logic           ntt_done, ntt_busy;
-    logic           ntt_wr_en;
-    logic [LOG_N-1:0] ntt_wr_addr, ntt_rd_addr;
-    logic [COEFF_W-1:0] ntt_wr_data, ntt_rd_data;
-
-    // =========================================================================
-    // CSR register file
-    // =========================================================================
+    // Data buffer ports.
+    logic        dbuf_a_en, dbuf_b_en;
+    logic [3:0]  dbuf_a_we, dbuf_b_we;
+    logic [11:0] dbuf_a_addr, dbuf_b_addr;
+    logic [31:0] dbuf_a_din, dbuf_a_dout, dbuf_b_din, dbuf_b_dout;
 
     pqc_axi_csr #(
         .ALG_ID      (1),            // ML-KEM.
-        .VERSION_MAJ (1),
+        .VERSION_MAJ (2),
         .VERSION_MIN (0),
         .VERSION_PAT (0),
-        .ADDR_WIDTH  (6)
+        .ADDR_WIDTH  (AXI_ADDR_WIDTH),
+        .BUF_AW      (12)
     ) u_csr (
         .clk            (clk),
         .rst_n          (rst_n),
-
-        // AXI-Lite (directly forwarded, CSR is at base address).
-        .s_axi_awaddr   (s_axi_awaddr[5:0]),
-        .s_axi_awvalid  (s_axi_awvalid && !s_axi_awaddr[AXI_ADDR_WIDTH-1]),
+        .s_axi_awaddr   (s_axi_awaddr),
+        .s_axi_awvalid  (s_axi_awvalid),
         .s_axi_awready  (s_axi_awready),
         .s_axi_wdata    (s_axi_wdata),
         .s_axi_wstrb    (s_axi_wstrb),
@@ -134,15 +96,13 @@ module pqc_mlkem_top #(
         .s_axi_bresp    (s_axi_bresp),
         .s_axi_bvalid   (s_axi_bvalid),
         .s_axi_bready   (s_axi_bready),
-        .s_axi_araddr   (s_axi_araddr[5:0]),
-        .s_axi_arvalid  (s_axi_arvalid && !s_axi_araddr[AXI_ADDR_WIDTH-1]),
+        .s_axi_araddr   (s_axi_araddr),
+        .s_axi_arvalid  (s_axi_arvalid),
         .s_axi_arready  (s_axi_arready),
         .s_axi_rdata    (s_axi_rdata),
         .s_axi_rresp    (s_axi_rresp),
         .s_axi_rvalid   (s_axi_rvalid),
         .s_axi_rready   (s_axi_rready),
-
-        // Datapath signals.
         .ctrl_start     (ctrl_start),
         .ctrl_reset     (ctrl_reset),
         .status_busy    (status_busy),
@@ -155,17 +115,22 @@ module pqc_mlkem_top #(
         .data_in_addr   (data_in_addr),
         .data_in_len    (data_in_len),
         .data_out_addr  (data_out_addr),
-        .data_out_len   (data_out_len)
+        .data_out_len   (data_out_len),
+        .mem_en         (dbuf_a_en),
+        .mem_we         (dbuf_a_we),
+        .mem_addr       (dbuf_a_addr),
+        .mem_din        (dbuf_a_din),
+        .mem_dout       (dbuf_a_dout)
     );
 
     // =========================================================================
-    // Data buffer (8 KB dual-port BRAM)
+    // Data buffer (16 KB true dual-port BRAM)
     // =========================================================================
 
     pqc_data_buffer #(
-        .DEPTH      (2048),
-        .ADDR_WIDTH (11)
-    ) u_data_buf (
+        .DEPTH      (4096),
+        .ADDR_WIDTH (12)
+    ) u_dbuf (
         .clk    (clk),
         .a_en   (dbuf_a_en),
         .a_we   (dbuf_a_we),
@@ -180,292 +145,240 @@ module pqc_mlkem_top #(
     );
 
     // =========================================================================
-    // Keccak-f[1600] permutation
+    // Sequencer
     // =========================================================================
 
-    keccak_f1600 u_keccak (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .start  (keccak_start),
-        .done   (keccak_done),
-        .busy   (keccak_busy),
-        .din    (keccak_din),
-        .dout   (keccak_dout)
+    logic        units_clr;
+    logic        h_init, h_idle, h_absorb_valid, h_absorb_ready, h_finalize;
+    logic        h_squeeze_valid, h_squeeze_take;
+    logic [1:0]  h_mode;
+    logic [7:0]  h_absorb_byte, h_squeeze_byte;
+    logic        alu_start, alu_acc, alu_done;
+    logic [2:0]  alu_op;
+    logic [3:0]  alu_sa, alu_sb, alu_sc;
+    logic        up_start, up_check, up_done, up_range_err;
+    logic        up_src_valid, up_src_take;
+    logic [1:0]  up_mode;
+    logic [3:0]  up_param, up_slot;
+    logic [7:0]  up_src_byte;
+    logic        pk_start, pk_done, pk_out_valid;
+    logic [3:0]  pk_d, pk_slot;
+    logic [7:0]  pk_out_byte;
+    logic [1:0]  pr_sel;
+
+    mlkem_ctrl u_ctrl (
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .ctrl_start      (ctrl_start),
+        .ctrl_reset      (ctrl_reset),
+        .sec_level       (sec_level),
+        .op_mode         (op_mode),
+        .data_in_addr    (data_in_addr),
+        .data_out_addr   (data_out_addr),
+        .status_busy     (status_busy),
+        .status_done     (status_done),
+        .status_error    (status_error),
+        .error_code      (error_code),
+        .cycle_count     (cycle_count),
+        .buf_en          (dbuf_b_en),
+        .buf_we          (dbuf_b_we),
+        .buf_addr        (dbuf_b_addr),
+        .buf_din         (dbuf_b_din),
+        .buf_dout        (dbuf_b_dout),
+        .h_init          (h_init),
+        .h_mode          (h_mode),
+        .h_idle          (h_idle),
+        .h_absorb_valid  (h_absorb_valid),
+        .h_absorb_byte   (h_absorb_byte),
+        .h_absorb_ready  (h_absorb_ready),
+        .h_finalize      (h_finalize),
+        .h_squeeze_valid (h_squeeze_valid),
+        .h_squeeze_byte  (h_squeeze_byte),
+        .h_squeeze_take  (h_squeeze_take),
+        .alu_start       (alu_start),
+        .alu_op          (alu_op),
+        .alu_sa          (alu_sa),
+        .alu_sb          (alu_sb),
+        .alu_sc          (alu_sc),
+        .alu_acc         (alu_acc),
+        .alu_done        (alu_done),
+        .up_start        (up_start),
+        .up_mode         (up_mode),
+        .up_param        (up_param),
+        .up_check        (up_check),
+        .up_slot         (up_slot),
+        .up_done         (up_done),
+        .up_range_err    (up_range_err),
+        .up_src_valid    (up_src_valid),
+        .up_src_byte     (up_src_byte),
+        .up_src_take     (up_src_take),
+        .pk_start        (pk_start),
+        .pk_d            (pk_d),
+        .pk_slot         (pk_slot),
+        .pk_done         (pk_done),
+        .pk_out_valid    (pk_out_valid),
+        .pk_out_byte     (pk_out_byte),
+        .pr_sel          (pr_sel),
+        .units_clr       (units_clr)
     );
 
     // =========================================================================
-    // NTT engine (q=3329, n=256)
+    // Keccak sponge (SHA3-256/512, SHAKE128/256)
     // =========================================================================
 
-    ntt_engine #(
-        .DATA_WIDTH (COEFF_W),
-        .MODULUS    (Q),
-        .N          (N),
-        .LOG_N      (LOG_N)
-    ) u_ntt (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .start_ntt  (ntt_start),
-        .start_intt (intt_start),
-        .done       (ntt_done),
-        .busy       (ntt_busy),
-        .wr_en      (ntt_wr_en),
-        .wr_addr    (ntt_wr_addr),
-        .wr_data    (ntt_wr_data),
-        .rd_addr    (ntt_rd_addr),
-        .rd_data    (ntt_rd_data)
+    keccak_sponge u_sponge (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .init          (h_init),
+        .mode          (h_mode),
+        .idle          (h_idle),
+        .absorb_valid  (h_absorb_valid),
+        .absorb_byte   (h_absorb_byte),
+        .absorb_ready  (h_absorb_ready),
+        .finalize      (h_finalize),
+        .squeeze_valid (h_squeeze_valid),
+        .squeeze_byte  (h_squeeze_byte),
+        .squeeze_take  (h_squeeze_take)
     );
 
     // =========================================================================
-    // ML-KEM control FSM
+    // Polynomial RAM and the three units that share it
     // =========================================================================
-    //
-    // This FSM orchestrates the ML-KEM operations by coordinating the Keccak
-    // core, NTT engine, and data buffer. The operations follow FIPS 203:
-    //
-    // KeyGen (op_mode=0):
-    //   1. Generate seed via Keccak (SHAKE-256)
-    //   2. Expand public matrix A via NTT
-    //   3. Sample secret vector s and error vector e
-    //   4. Compute public key t = A*s + e
-    //   5. Output (ek, dk) to data buffer
-    //
-    // Encaps (op_mode=1):
-    //   1. Read encapsulation key from data buffer
-    //   2. Generate randomness via Keccak
-    //   3. NTT-based polynomial multiplication
-    //   4. Compress and output (ct, ss) to data buffer
-    //
-    // Decaps (op_mode=2):
-    //   1. Read decapsulation key and ciphertext from data buffer
-    //   2. Decompress ciphertext
-    //   3. NTT-based polynomial multiplication
-    //   4. Decode and re-encrypt for CCA check
-    //   5. Output shared secret to data buffer
 
-    typedef enum logic [3:0] {
-        FSM_IDLE           = 4'h0,
-        FSM_LOAD_INPUT     = 4'h1,  // Read input data from buffer.
-        FSM_HASH_SEED      = 4'h2,  // Run Keccak for seed expansion.
-        FSM_WAIT_KECCAK    = 4'h3,  // Wait for Keccak completion.
-        FSM_NTT_LOAD       = 4'h4,  // Load coefficients into NTT engine.
-        FSM_NTT_RUN        = 4'h5,  // Run NTT/INTT.
-        FSM_NTT_WAIT       = 4'h6,  // Wait for NTT completion.
-        FSM_NTT_READ       = 4'h7,  // Read NTT results.
-        FSM_POLY_ARITH     = 4'h8,  // Polynomial add/sub/compress.
-        FSM_STORE_OUTPUT   = 4'h9,  // Write output to buffer.
-        FSM_DONE           = 4'hA,
-        FSM_ERROR          = 4'hF
-    } fsm_state_t;
+    logic        pr_a_en, pr_a_we, pr_b_en, pr_b_we;
+    logic [10:0] pr_a_addr, pr_b_addr;
+    logic [23:0] pr_a_din, pr_a_dout, pr_b_din, pr_b_dout;
 
-    fsm_state_t fsm_state;
+    logic        alu_a_en, alu_a_we, alu_b_en, alu_b_we;
+    logic [10:0] alu_a_addr, alu_b_addr;
+    logic [23:0] alu_a_din, alu_b_din;
+    logic        up_wr_en;
+    logic [10:0] up_wr_addr;
+    logic [23:0] up_wr_data;
+    logic        pk_rd_en;
+    logic [10:0] pk_rd_addr;
 
-    // Cycle counter - counts clock cycles during operation.
-    logic [31:0] cycle_counter;
-    logic        counting;
+    mlkem_poly_alu u_alu (
+        .clk     (clk),
+        .rst_n   (rst_n),
+        .clr     (units_clr),
+        .start   (alu_start),
+        .op      (alu_op),
+        .slot_a  (alu_sa),
+        .slot_b  (alu_sb),
+        .slot_c  (alu_sc),
+        .acc     (alu_acc),
+        .done    (alu_done),
+        .ra_en   (alu_a_en),
+        .ra_we   (alu_a_we),
+        .ra_addr (alu_a_addr),
+        .ra_din  (alu_a_din),
+        .ra_dout (pr_a_dout),
+        .rb_en   (alu_b_en),
+        .rb_we   (alu_b_we),
+        .rb_addr (alu_b_addr),
+        .rb_din  (alu_b_din),
+        .rb_dout (pr_b_dout)
+    );
 
-    // Derive k (number of polynomials) from security level.
-    logic [2:0] k_param;  // k=2 for 512, k=3 for 768, k=4 for 1024.
+    mlkem_unpack u_unpack (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .clr       (units_clr),
+        .start     (up_start),
+        .mode      (up_mode),
+        .param     (up_param),
+        .check     (up_check),
+        .slot      (up_slot),
+        .done      (up_done),
+        .range_err (up_range_err),
+        .src_valid (up_src_valid),
+        .src_byte  (up_src_byte),
+        .src_take  (up_src_take),
+        .wr_en     (up_wr_en),
+        .wr_addr   (up_wr_addr),
+        .wr_data   (up_wr_data)
+    );
+
+    mlkem_pack u_pack (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .clr       (units_clr),
+        .start     (pk_start),
+        .d         (pk_d),
+        .slot      (pk_slot),
+        .done      (pk_done),
+        .rd_en     (pk_rd_en),
+        .rd_addr   (pk_rd_addr),
+        .rd_data   (pr_a_dout),
+        .out_valid (pk_out_valid),
+        .out_byte  (pk_out_byte)
+    );
+
     always_comb begin
-        case (sec_level)
-            32'd512:  k_param = 3'd2;
-            32'd768:  k_param = 3'd3;
-            32'd1024: k_param = 3'd4;
-            default:  k_param = 3'd3;  // Default to 768.
+        pr_b_en   = alu_b_en;
+        pr_b_we   = alu_b_we;
+        pr_b_addr = alu_b_addr;
+        pr_b_din  = alu_b_din;
+        case (pr_sel)
+            2'd1: begin
+                pr_a_en   = up_wr_en;
+                pr_a_we   = up_wr_en;
+                pr_a_addr = up_wr_addr;
+                pr_a_din  = up_wr_data;
+            end
+            2'd2: begin
+                pr_a_en   = pk_rd_en;
+                pr_a_we   = 1'b0;
+                pr_a_addr = pk_rd_addr;
+                pr_a_din  = '0;
+            end
+            default: begin
+                pr_a_en   = alu_a_en;
+                pr_a_we   = alu_a_we;
+                pr_a_addr = alu_a_addr;
+                pr_a_din  = alu_a_din;
+            end
         endcase
     end
 
-    // Sub-step counter for multi-step operations.
-    logic [7:0] step_cnt;
-    logic [2:0] poly_idx;  // Current polynomial index (0 to k-1).
-    logic [LOG_N-1:0] coeff_idx;  // Current coefficient index.
+    mlkem_polyram u_polyram (
+        .clk    (clk),
+        .a_en   (pr_a_en),
+        .a_we   (pr_a_we),
+        .a_addr (pr_a_addr),
+        .a_din  (pr_a_din),
+        .a_dout (pr_a_dout),
+        .b_en   (pr_b_en),
+        .b_we   (pr_b_we),
+        .b_addr (pr_b_addr),
+        .b_din  (pr_b_din),
+        .b_dout (pr_b_dout)
+    );
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            fsm_state     <= FSM_IDLE;
-            step_cnt      <= '0;
-            poly_idx      <= '0;
-            coeff_idx     <= '0;
-            cycle_counter <= '0;
-            counting      <= 1'b0;
-            keccak_start  <= 1'b0;
-            keccak_din    <= '0;
-            ntt_start     <= 1'b0;
-            intt_start    <= 1'b0;
-            ntt_wr_en     <= 1'b0;
-            ntt_wr_addr   <= '0;
-            ntt_wr_data   <= '0;
-            ntt_rd_addr   <= '0;
-            dbuf_b_en     <= 1'b0;
-            dbuf_b_we     <= 1'b0;
-            dbuf_b_addr   <= '0;
-            dbuf_b_din    <= '0;
-        end else begin
-            // Default: clear single-cycle pulses.
-            keccak_start <= 1'b0;
-            ntt_start    <= 1'b0;
-            intt_start   <= 1'b0;
-            ntt_wr_en    <= 1'b0;
-            dbuf_b_we    <= 1'b0;
+    // =========================================================================
+    // Output length and status
+    // =========================================================================
 
-            // Cycle counter.
-            if (counting)
-                cycle_counter <= cycle_counter + 1;
-
-            if (ctrl_reset) begin
-                fsm_state     <= FSM_IDLE;
-                cycle_counter <= '0;
-                counting      <= 1'b0;
-            end else begin
-                case (fsm_state)
-                    FSM_IDLE: begin
-                        if (ctrl_start) begin
-                            fsm_state     <= FSM_LOAD_INPUT;
-                            cycle_counter <= '0;
-                            counting      <= 1'b1;
-                            step_cnt      <= '0;
-                            poly_idx      <= '0;
-                            coeff_idx     <= '0;
-                        end
-                    end
-
-                    FSM_LOAD_INPUT: begin
-                        // Read input data from the data buffer into internal state.
-                        // For keygen: read the 32-byte seed (d || z).
-                        // For encaps: read the encapsulation key.
-                        // For decaps: read the decapsulation key + ciphertext.
-                        dbuf_b_en   <= 1'b1;
-                        dbuf_b_addr <= data_in_addr[12:2] + {3'b0, step_cnt};
-
-                        if (step_cnt < 8) begin  // 8 words = 32 bytes seed.
-                            step_cnt <= step_cnt + 1;
-                        end else begin
-                            step_cnt  <= '0;
-                            fsm_state <= FSM_HASH_SEED;
-                        end
-                    end
-
-                    FSM_HASH_SEED: begin
-                        // Run Keccak on the loaded seed for key/randomness expansion.
-                        keccak_start <= 1'b1;
-                        keccak_din   <= '0;  // Seed loaded into state via absorb.
-                        fsm_state    <= FSM_WAIT_KECCAK;
-                    end
-
-                    FSM_WAIT_KECCAK: begin
-                        if (keccak_done) begin
-                            fsm_state <= FSM_NTT_LOAD;
-                            coeff_idx <= '0;
-                        end
-                    end
-
-                    FSM_NTT_LOAD: begin
-                        // Load polynomial coefficients into NTT engine.
-                        // Coefficients are derived from Keccak output.
-                        ntt_wr_en   <= 1'b1;
-                        ntt_wr_addr <= coeff_idx;
-                        // Extract 12-bit coefficient from Keccak state.
-                        ntt_wr_data <= keccak_dout[coeff_idx*COEFF_W +: COEFF_W] % Q;
-
-                        if (coeff_idx < N - 1) begin
-                            coeff_idx <= coeff_idx + 1;
-                        end else begin
-                            coeff_idx <= '0;
-                            fsm_state <= FSM_NTT_RUN;
-                        end
-                    end
-
-                    FSM_NTT_RUN: begin
-                        ntt_start <= 1'b1;
-                        fsm_state <= FSM_NTT_WAIT;
-                    end
-
-                    FSM_NTT_WAIT: begin
-                        if (ntt_done) begin
-                            fsm_state <= FSM_NTT_READ;
-                            coeff_idx <= '0;
-                        end
-                    end
-
-                    FSM_NTT_READ: begin
-                        // Read NTT results back into data buffer.
-                        ntt_rd_addr <= coeff_idx;
-                        dbuf_b_en   <= 1'b1;
-                        dbuf_b_we   <= 1'b1;
-                        dbuf_b_addr <= data_out_addr[12:2] + {3'b0, coeff_idx};
-                        dbuf_b_din  <= {20'b0, ntt_rd_data};
-
-                        if (coeff_idx < N - 1) begin
-                            coeff_idx <= coeff_idx + 1;
-                        end else begin
-                            // Check if we need to process more polynomials.
-                            if (poly_idx < k_param - 1) begin
-                                poly_idx  <= poly_idx + 1;
-                                coeff_idx <= '0;
-                                fsm_state <= FSM_HASH_SEED;  // Re-hash for next polynomial.
-                            end else begin
-                                fsm_state <= FSM_STORE_OUTPUT;
-                            end
-                        end
-                    end
-
-                    FSM_POLY_ARITH: begin
-                        // Polynomial addition, subtraction, compression.
-                        // For a full implementation, this stage handles:
-                        //   - t = As + e (keygen)
-                        //   - u = A^T r + e1, v = t^T r + e2 + m (encaps)
-                        //   - m' = decompress(v - s^T u) (decaps)
-                        fsm_state <= FSM_STORE_OUTPUT;
-                    end
-
-                    FSM_STORE_OUTPUT: begin
-                        // Output is already in data buffer from NTT_READ.
-                        // In a full implementation, this stage writes the
-                        // final encoded public key, ciphertext, or shared secret.
-                        counting  <= 1'b0;
-                        fsm_state <= FSM_DONE;
-                    end
-
-                    FSM_DONE: begin
-                        fsm_state <= FSM_IDLE;
-                    end
-
-                    FSM_ERROR: begin
-                        counting <= 1'b0;
-                        // Stay in error until reset.
-                    end
-
-                    default: fsm_state <= FSM_IDLE;
-                endcase
-            end
-        end
+    // FIPS 203 sizes: ek = 384k+32, dk = 768k+96, c = 32(du*k+dv).
+    always_comb begin
+        logic [31:0] ek, dk, ct;
+        case (sec_level)
+            32'd512:  begin ek = 32'd800;  dk = 32'd1632; ct = 32'd768;  end
+            32'd1024: begin ek = 32'd1568; dk = 32'd3168; ct = 32'd1568; end
+            default:  begin ek = 32'd1184; dk = 32'd2400; ct = 32'd1088; end
+        endcase
+        case (op_mode)
+            32'd0:   data_out_len = ek + dk;
+            32'd1:   data_out_len = ct + 32'd32;
+            32'd2:   data_out_len = 32'd32;
+            default: data_out_len = 32'd0;
+        endcase
     end
 
-    // =========================================================================
-    // Status signals
-    // =========================================================================
-
-    assign status_busy  = (fsm_state != FSM_IDLE) && (fsm_state != FSM_DONE) && (fsm_state != FSM_ERROR);
-    assign status_done  = (fsm_state == FSM_DONE);
-    assign status_error = (fsm_state == FSM_ERROR);
-    assign cycle_count  = cycle_counter;
-    assign error_code   = (fsm_state == FSM_ERROR) ? 32'h0001 : 32'h0000;
-    assign data_out_len = {16'b0, k_param} * N * 2;  // Output size in bytes (approximate).
-
-    // Interrupt: pulse on done.
-    assign irq = status_done;
-
-    // Board-level status outputs.
+    assign irq     = status_done;
     assign o_busy  = status_busy;
     assign o_done  = status_done;
     assign o_error = status_error;
-
-    // Data buffer port A is directly accessible from AXI for host DMA.
-    // For PCIe/UART: the host reads/writes the data buffer at address offset 0x1000+.
-    // This connection is made in the board-level wrapper.
-    assign dbuf_a_en   = 1'b0;  // Connected at board level.
-    assign dbuf_a_we   = 1'b0;
-    assign dbuf_a_addr = '0;
-    assign dbuf_a_din  = '0;
 
 endmodule

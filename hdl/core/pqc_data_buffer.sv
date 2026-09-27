@@ -1,55 +1,54 @@
 // pqc_data_buffer.sv - Dual-port data buffer for PQC accelerator I/O
 //
-// Provides a shared memory region for host-to-FPGA and FPGA-to-host
-// data transfer. Port A is connected to the external bus (AXI/UART/PCIe)
-// for host access. Port B is connected to the PQC datapath for internal
-// access during operations.
+// Shared memory between the host and the PQC datapath. Port A is driven by
+// the bus slave (pqc_axi_csr data window, reached over PCIe/AXI/UART);
+// port B is driven by the accelerator's sequencer.
 //
-// Memory layout (configurable via parameters):
-//   0x0000 - 0x0FFF  Input region  (keys, messages, ciphertexts from host)
-//   0x1000 - 0x1FFF  Output region (keys, signatures, shared secrets to host)
+// Default ML-KEM layout (byte offsets, see scripts/gen_mlkem_ucode.py):
+//   0x0000 - 0x17FF  Input region  (DATA_IN_ADDR reset value 0x0000)
+//   0x1800 - 0x2FFF  Output region (DATA_OUT_ADDR reset value 0x1800)
+//   0x3000 - 0x3FFF  Core scratch  (seeds, hashes, re-encrypted ciphertext)
 //
-// Size: 8 KB default (sufficient for ML-KEM-1024 which has the largest
-// combined key+ciphertext at ~3.2 KB)
+// 16 KB = 4096 x 32-bit words with per-byte write enables; infers a true
+// dual-port block RAM (byte-write mode) on Xilinx and Intel devices.
 
 module pqc_data_buffer #(
-    parameter int DEPTH      = 2048,        // Number of 32-bit words.
-    parameter int ADDR_WIDTH = 11           // log2(DEPTH).
+    parameter int DEPTH      = 4096,        // Number of 32-bit words.
+    parameter int ADDR_WIDTH = 12           // log2(DEPTH).
 ) (
     input  logic                    clk,
 
-    // Port A: Host access (read/write from bus).
+    // Port A: host access.
     input  logic                    a_en,
-    input  logic                    a_we,
+    input  logic [3:0]              a_we,   // Byte write enables.
     input  logic [ADDR_WIDTH-1:0]   a_addr,
     input  logic [31:0]             a_din,
     output logic [31:0]             a_dout,
 
-    // Port B: Datapath access (read/write from PQC core).
+    // Port B: datapath access.
     input  logic                    b_en,
-    input  logic                    b_we,
+    input  logic [3:0]              b_we,
     input  logic [ADDR_WIDTH-1:0]   b_addr,
     input  logic [31:0]             b_din,
     output logic [31:0]             b_dout
 );
 
-    // True dual-port RAM. Infers BRAM on both Xilinx and Intel.
     logic [31:0] mem [0:DEPTH-1];
 
-    // Port A.
     always_ff @(posedge clk) begin
         if (a_en) begin
-            if (a_we)
-                mem[a_addr] <= a_din;
+            for (int i = 0; i < 4; i++)
+                if (a_we[i])
+                    mem[a_addr][8*i +: 8] <= a_din[8*i +: 8];
             a_dout <= mem[a_addr];
         end
     end
 
-    // Port B.
     always_ff @(posedge clk) begin
         if (b_en) begin
-            if (b_we)
-                mem[b_addr] <= b_din;
+            for (int i = 0; i < 4; i++)
+                if (b_we[i])
+                    mem[b_addr][8*i +: 8] <= b_din[8*i +: 8];
             b_dout <= mem[b_addr];
         end
     end

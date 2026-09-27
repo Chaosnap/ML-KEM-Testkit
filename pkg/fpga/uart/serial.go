@@ -48,7 +48,7 @@ func Open(portName string, baudRate int) (*SerialDevice, error) {
 		return nil, fmt.Errorf("opening serial port %s: %w", portName, err)
 	}
 
-	if err := port.SetReadTimeout(2 * time.Second); err != nil {
+	if err := port.SetReadTimeout(200 * time.Millisecond); err != nil {
 		port.Close()
 		return nil, fmt.Errorf("setting read timeout: %w", err)
 	}
@@ -84,16 +84,26 @@ func (d *SerialDevice) WriteReg(offset, value uint32) error {
 	return nil
 }
 
-// WriteData transfers data to the FPGA's data buffer via UART.
+// maxWriteChunk is the largest 0x03 payload the RTL bridge accepts
+// (hdl/core/uart_axi_bridge.sv MAX_WRITE).
+const maxWriteChunk = 256
+
+// WriteData transfers data to the FPGA's data buffer via UART. The offset
+// is a byte offset into the data buffer; large writes are split into
+// frames of at most maxWriteChunk bytes.
 func (d *SerialDevice) WriteData(offset uint32, data []byte) error {
-	_, err := d.sendCommand(cmdWriteData, offset, data)
-	if err != nil {
-		return fmt.Errorf("UART write data at 0x%X: %w", offset, err)
+	for start := 0; start < len(data); start += maxWriteChunk {
+		end := min(start+maxWriteChunk, len(data))
+		off := offset + uint32(start)
+		if _, err := d.sendCommand(cmdWriteData, off, data[start:end]); err != nil {
+			return fmt.Errorf("UART write data at 0x%X: %w", off, err)
+		}
 	}
 	return nil
 }
 
-// ReadData reads data from the FPGA's data buffer via UART.
+// ReadData reads data from the FPGA's data buffer via UART. The requested
+// length is sent as the 4-byte payload of the read-data command.
 func (d *SerialDevice) ReadData(offset uint32, length int) ([]byte, error) {
 	// Encode the requested length in the address field and send read command.
 	lenBuf := make([]byte, 4)
@@ -101,6 +111,9 @@ func (d *SerialDevice) ReadData(offset uint32, length int) ([]byte, error) {
 	resp, err := d.sendCommand(cmdReadData, offset, lenBuf)
 	if err != nil {
 		return nil, fmt.Errorf("UART read data at 0x%X: %w", offset, err)
+	}
+	if len(resp) != length {
+		return nil, fmt.Errorf("UART read data at 0x%X: expected %d bytes, got %d", offset, length, len(resp))
 	}
 	return resp, nil
 }
@@ -130,6 +143,11 @@ func (d *SerialDevice) sendCommand(cmd byte, addr uint32, data []byte) ([]byte, 
 	crc := crc32.ChecksumIEEE(frame[:9+dataLen])
 	binary.LittleEndian.PutUint32(frame[9+dataLen:], crc)
 
+	// Drop stale bytes (e.g. from an earlier timed-out response) so the
+	// next response header is parsed from the start of a frame.
+	if err := d.port.ResetInputBuffer(); err != nil {
+		return nil, fmt.Errorf("flushing input: %w", err)
+	}
 	if _, err := d.port.Write(frame); err != nil {
 		return nil, fmt.Errorf("sending command: %w", err)
 	}
@@ -137,12 +155,33 @@ func (d *SerialDevice) sendCommand(cmd byte, addr uint32, data []byte) ([]byte, 
 	return d.readResponse()
 }
 
+// maxResponse bounds the LEN field of a response (data buffer size).
+const maxResponse = 16384
+
+// readFull fills buf from the port. The serial port returns (0, nil) when
+// its per-read timeout expires, so a silent device is reported as an error
+// after d.timeout instead of blocking forever.
+func (d *SerialDevice) readFull(buf []byte) error {
+	deadline := time.Now().Add(d.timeout)
+	for got := 0; got < len(buf); {
+		n, err := d.port.Read(buf[got:])
+		if err != nil {
+			return err
+		}
+		got += n
+		if n == 0 && time.Now().After(deadline) {
+			return fmt.Errorf("timeout after %s: got %d of %d bytes (%w)", d.timeout, got, len(buf), io.ErrUnexpectedEOF)
+		}
+	}
+	return nil
+}
+
 // readResponse reads a framed response from the FPGA.
 // Frame: [STATUS:1][LEN:4][DATA:LEN][CRC:4]
 func (d *SerialDevice) readResponse() ([]byte, error) {
 	// Read header: status + length.
 	header := make([]byte, 5)
-	if _, err := io.ReadFull(d.port, header); err != nil {
+	if err := d.readFull(header); err != nil {
 		return nil, fmt.Errorf("reading response header: %w", err)
 	}
 
@@ -150,8 +189,11 @@ func (d *SerialDevice) readResponse() ([]byte, error) {
 	respLen := binary.LittleEndian.Uint32(header[1:5])
 
 	// Read data + CRC.
+	if respLen > maxResponse {
+		return nil, fmt.Errorf("response length %d exceeds %d (link out of sync?)", respLen, maxResponse)
+	}
 	tail := make([]byte, respLen+4)
-	if _, err := io.ReadFull(d.port, tail); err != nil {
+	if err := d.readFull(tail); err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 

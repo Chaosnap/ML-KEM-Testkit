@@ -1,29 +1,36 @@
 // uart_axi_bridge.sv - UART-to-AXI-Lite protocol bridge
 //
-// Translates the pqc-testkit UART protocol into AXI-Lite read/write
-// transactions. This bridges the gap between a serial connection
-// (used on dev boards like Arty A7) and the AXI-Lite CSR interface
-// of the PQC accelerator core.
+// Translates the pqc-testkit UART protocol into AXI-Lite transactions on
+// the accelerator bus: register commands access the CSR space, data
+// commands access the data buffer window at DATA_BASE.
 //
-// Protocol (matches pkg/fpga/uart/serial.go):
+// Protocol (matches pkg/fpga/uart/serial.go). All multi-byte fields are
+// little-endian; CRC is CRC-32/IEEE (Go hash/crc32.ChecksumIEEE).
 //
 // Host -> FPGA command frame:
-//   [CMD:1][ADDR:4][LEN:4][DATA:LEN][CRC:4]
+//   [CMD:1][ADDR:4][LEN:4][DATA:LEN][CRC:4]   CRC over CMD..DATA
 //
-//   CMD values:
-//     0x01: Read register  (ADDR=reg offset, LEN=0, returns 4 bytes)
-//     0x02: Write register (ADDR=reg offset, LEN=4, DATA=value)
-//     0x03: Write data     (ADDR=buf offset, LEN=data length, DATA=payload)
-//     0x04: Read data      (ADDR=buf offset, LEN=4, DATA=requested length)
+//   0x01 Read register   ADDR = bus address, LEN = 0          -> 4 bytes
+//   0x02 Write register  ADDR = bus address, LEN = 4, value   -> 0 bytes
+//   0x03 Write data      ADDR = buffer offset, LEN = 1..256   -> 0 bytes
+//   0x04 Read data       ADDR = buffer offset, LEN = 4,
+//                        DATA = u32 byte count (1..16384)     -> count bytes
 //
 // FPGA -> Host response frame:
-//   [STATUS:1][LEN:4][DATA:LEN][CRC:4]
+//   [STATUS:1][LEN:4][DATA:LEN][CRC:4]        CRC over STATUS..DATA
 //
-//   STATUS values:
-//     0x00: OK
-//     0x01: Error
+//   STATUS 0x00 OK; 0x01 error (bad CRC, unknown command, bad length or
+//   out-of-range buffer access; LEN = 0).
+//
+// A partially received frame is discarded after TIMEOUT_CYCLES without a
+// byte, so the host can always resynchronise.
 
-module uart_axi_bridge (
+module uart_axi_bridge #(
+    parameter int          TIMEOUT_CYCLES = 10_000_000,  // 100 ms at 100 MHz.
+    parameter logic [15:0] DATA_BASE      = 16'h4000,    // Bus address of buffer byte 0.
+    parameter int          DATA_SIZE      = 16384,       // Buffer size in bytes.
+    parameter int          MAX_WRITE      = 256          // Max 0x03 payload.
+) (
     input  logic        clk,
     input  logic        rst_n,
 
@@ -54,9 +61,19 @@ module uart_axi_bridge (
     output logic        m_axi_rready
 );
 
-    // =========================================================================
-    // Frame receive state machine
-    // =========================================================================
+    localparam logic [7:0] CMD_READ_REG   = 8'h01;
+    localparam logic [7:0] CMD_WRITE_REG  = 8'h02;
+    localparam logic [7:0] CMD_WRITE_DATA = 8'h03;
+    localparam logic [7:0] CMD_READ_DATA  = 8'h04;
+
+    // CRC-32/IEEE, reflected, one byte per call.
+    function automatic logic [31:0] crc32_byte(input logic [31:0] c, input logic [7:0] b);
+        logic [31:0] x;
+        x = c ^ {24'b0, b};
+        for (int i = 0; i < 8; i++)
+            x = x[0] ? ((x >> 1) ^ 32'hEDB8_8320) : (x >> 1);
+        return x;
+    endfunction
 
     typedef enum logic [3:0] {
         RX_CMD,
@@ -64,216 +81,298 @@ module uart_axi_bridge (
         RX_LEN,
         RX_DATA,
         RX_CRC,
-        EXEC_READ,
-        EXEC_WRITE,
-        TX_RESP,
-        TX_DONE
-    } rx_state_t;
+        EXEC,
+        AXI_WR,       // Write in flight (AW/W).
+        AXI_WR_RESP,  // Wait B.
+        AXI_RD,       // Read in flight (AR).
+        AXI_RD_RESP,  // Wait R.
+        TX_PREP,      // Select next response byte.
+        TX_SEND,      // Hand byte to uart_tx.
+        TX_HOLD       // Wait for uart_tx to accept.
+    } state_t;
 
-    rx_state_t rx_state;
+    typedef enum logic [1:0] { PH_HDR, PH_DATA, PH_CRC } phase_t;
 
-    logic [7:0]  cmd_reg;
-    logic [31:0] addr_reg;
-    logic [31:0] len_reg;
-    logic [7:0]  data_buf [0:255];  // Max 256 byte payload.
-    logic [31:0] crc_reg;
-    logic [7:0]  byte_cnt;          // Byte counter within current field.
+    state_t      state;
+    phase_t      phase;
 
-    // Response buffer.
-    logic [7:0]  resp_buf [0:263];   // STATUS + LEN + DATA + CRC.
-    logic [15:0] resp_len;
-    logic [15:0] resp_idx;
+    logic [7:0]  cmd;
+    logic [31:0] addr;
+    logic [31:0] len;
+    logic [31:0] cnt;             // Byte counter (field / payload / loop).
+    logic [31:0] crc;             // Running CRC (RX, then TX).
+    logic [31:0] crc_rx;          // Received CRC.
+    logic [7:0]  payload [0:MAX_WRITE-1];
+    logic [31:0] reg_val;         // 0x01 read value / 0x02 write value.
+    logic [31:0] resp_len;
+    logic        resp_err;
+    logic [31:0] timeout;
+    logic [7:0]  txb;
+    logic        axi_err;
+    logic [31:0] data_off;        // Current buffer byte offset (0x03/0x04).
 
-    // AXI transaction state.
-    logic        axi_read_pending;
-    logic        axi_write_pending;
+    // Command validation (evaluated once the whole frame is in).
+    logic [31:0] rd_count;
+    logic        frame_ok;
+    assign rd_count = {payload[3], payload[2], payload[1], payload[0]};
+    always_comb begin
+        frame_ok = (~crc == crc_rx);
+        case (cmd)
+            CMD_READ_REG:   frame_ok = frame_ok && (len == 32'd0);
+            CMD_WRITE_REG:  frame_ok = frame_ok && (len == 32'd4);
+            CMD_WRITE_DATA: frame_ok = frame_ok && (len != 32'd0) && (len <= MAX_WRITE) &&
+                                       (addr < DATA_SIZE) && (len <= DATA_SIZE - addr);
+            CMD_READ_DATA:  frame_ok = frame_ok && (len == 32'd4) && (rd_count != 32'd0) &&
+                                       (addr < DATA_SIZE) && (rd_count <= DATA_SIZE - addr);
+            default:        frame_ok = 1'b0;
+        endcase
+    end
+
+    logic [15:0] data_bus_addr;
+    assign data_bus_addr = DATA_BASE + {2'b00, data_off[13:2], 2'b00};
+
+    assign m_axi_bready = 1'b1;
+    assign m_axi_rready = 1'b1;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_state          <= RX_CMD;
-            cmd_reg           <= '0;
-            addr_reg          <= '0;
-            len_reg           <= '0;
-            crc_reg           <= '0;
-            byte_cnt          <= '0;
-            resp_len          <= '0;
-            resp_idx          <= '0;
-            tx_valid          <= 1'b0;
-            tx_byte           <= '0;
-            m_axi_awvalid     <= 1'b0;
-            m_axi_wvalid      <= 1'b0;
-            m_axi_arvalid     <= 1'b0;
-            m_axi_bready      <= 1'b1;
-            m_axi_rready      <= 1'b1;
-            m_axi_wstrb       <= 4'hF;
-            axi_read_pending  <= 1'b0;
-            axi_write_pending <= 1'b0;
+            state         <= RX_CMD;
+            phase         <= PH_HDR;
+            cmd           <= '0;
+            addr          <= '0;
+            len           <= '0;
+            cnt           <= '0;
+            crc           <= 32'hFFFF_FFFF;
+            crc_rx        <= '0;
+            reg_val       <= '0;
+            resp_len      <= '0;
+            resp_err      <= 1'b0;
+            timeout       <= '0;
+            txb           <= '0;
+            axi_err       <= 1'b0;
+            data_off      <= '0;
+            tx_byte       <= '0;
+            tx_valid      <= 1'b0;
+            m_axi_awaddr  <= '0;
+            m_axi_awvalid <= 1'b0;
+            m_axi_wdata   <= '0;
+            m_axi_wstrb   <= '0;
+            m_axi_wvalid  <= 1'b0;
+            m_axi_araddr  <= '0;
+            m_axi_arvalid <= 1'b0;
         end else begin
             tx_valid <= 1'b0;
 
-            // Clear AXI handshakes.
-            if (m_axi_awvalid && m_axi_awready) m_axi_awvalid <= 1'b0;
-            if (m_axi_wvalid && m_axi_wready)   m_axi_wvalid  <= 1'b0;
-            if (m_axi_arvalid && m_axi_arready)  m_axi_arvalid <= 1'b0;
+            // Inter-byte timeout while a frame is being received.
+            if (state inside {RX_ADDR, RX_LEN, RX_DATA, RX_CRC}) begin
+                if (rx_valid)
+                    timeout <= '0;
+                else if (timeout == TIMEOUT_CYCLES - 1) begin
+                    timeout <= '0;
+                    state   <= RX_CMD;
+                end else
+                    timeout <= timeout + 32'd1;
+            end else begin
+                timeout <= '0;
+            end
 
-            case (rx_state)
+            case (state)
                 // ----- Receive command frame -----
-                RX_CMD: begin
-                    if (rx_valid) begin
-                        cmd_reg  <= rx_byte;
-                        byte_cnt <= '0;
-                        rx_state <= RX_ADDR;
+                RX_CMD: if (rx_valid) begin
+                    cmd   <= rx_byte;
+                    crc   <= crc32_byte(32'hFFFF_FFFF, rx_byte);
+                    cnt   <= '0;
+                    state <= RX_ADDR;
+                end
+
+                RX_ADDR: if (rx_valid) begin
+                    addr[8*cnt[1:0] +: 8] <= rx_byte;
+                    crc <= crc32_byte(crc, rx_byte);
+                    cnt <= cnt + 32'd1;
+                    if (cnt[1:0] == 2'd3) begin
+                        cnt   <= '0;
+                        state <= RX_LEN;
                     end
                 end
 
-                RX_ADDR: begin
-                    if (rx_valid) begin
-                        // Little-endian: first byte is LSB (matches Go binary.LittleEndian).
-                        case (byte_cnt[1:0])
-                            2'd0: addr_reg[7:0]   <= rx_byte;
-                            2'd1: addr_reg[15:8]  <= rx_byte;
-                            2'd2: addr_reg[23:16] <= rx_byte;
-                            2'd3: addr_reg[31:24] <= rx_byte;
+                RX_LEN: if (rx_valid) begin
+                    len[8*cnt[1:0] +: 8] <= rx_byte;
+                    crc <= crc32_byte(crc, rx_byte);
+                    cnt <= cnt + 32'd1;
+                    if (cnt[1:0] == 2'd3) begin
+                        cnt   <= '0;
+                        state <= ({rx_byte, len[23:0]} == 32'd0) ? RX_CRC : RX_DATA;
+                    end
+                end
+
+                RX_DATA: if (rx_valid) begin
+                    if (cnt < MAX_WRITE)
+                        payload[cnt[$clog2(MAX_WRITE)-1:0]] <= rx_byte;
+                    crc <= crc32_byte(crc, rx_byte);
+                    cnt <= cnt + 32'd1;
+                    if (cnt == len - 32'd1) begin
+                        cnt   <= '0;
+                        state <= RX_CRC;
+                    end
+                end
+
+                RX_CRC: if (rx_valid) begin
+                    crc_rx[8*cnt[1:0] +: 8] <= rx_byte;
+                    cnt <= cnt + 32'd1;
+                    if (cnt[1:0] == 2'd3)
+                        state <= EXEC;
+                end
+
+                // ----- Execute -----
+                EXEC: begin
+                    cnt      <= '0;
+                    axi_err  <= 1'b0;
+                    data_off <= addr;
+                    reg_val  <= rd_count;
+                    resp_err <= !frame_ok;
+                    resp_len <= '0;
+                    if (!frame_ok) begin
+                        state <= TX_PREP;
+                    end else begin
+                        case (cmd)
+                            CMD_READ_REG: begin
+                                m_axi_araddr  <= addr[15:0];
+                                m_axi_arvalid <= 1'b1;
+                                state         <= AXI_RD;
+                            end
+                            CMD_WRITE_REG: begin
+                                m_axi_awaddr  <= addr[15:0];
+                                m_axi_awvalid <= 1'b1;
+                                m_axi_wdata   <= rd_count;
+                                m_axi_wstrb   <= 4'hF;
+                                m_axi_wvalid  <= 1'b1;
+                                state         <= AXI_WR;
+                            end
+                            CMD_WRITE_DATA: begin
+                                state <= AXI_WR;
+                                m_axi_awaddr  <= DATA_BASE + {2'b00, addr[13:2], 2'b00};
+                                m_axi_awvalid <= 1'b1;
+                                m_axi_wdata   <= {4{payload[0]}};
+                                m_axi_wstrb   <= 4'b0001 << addr[1:0];
+                                m_axi_wvalid  <= 1'b1;
+                            end
+                            default: begin   // CMD_READ_DATA: stream bytes.
+                                resp_len <= rd_count;
+                                state    <= TX_PREP;
+                            end
                         endcase
-                        byte_cnt <= byte_cnt + 1;
-                        if (byte_cnt == 3)
-                            rx_state <= RX_LEN;
                     end
+                    crc   <= 32'hFFFF_FFFF;
+                    phase <= PH_HDR;
                 end
 
-                RX_LEN: begin
-                    if (rx_valid) begin
-                        // Little-endian length field.
-                        case (byte_cnt[1:0])
-                            2'd0: len_reg[7:0]   <= rx_byte;
-                            2'd1: len_reg[15:8]  <= rx_byte;
-                            2'd2: len_reg[23:16] <= rx_byte;
-                            2'd3: len_reg[31:24] <= rx_byte;
-                        endcase
-                        byte_cnt <= byte_cnt + 1;
-                        if (byte_cnt == 7) begin
-                            byte_cnt <= '0;
-                            if (len_reg[23:0] == 0 && rx_byte == 0)
-                                rx_state <= RX_CRC;  // No data payload.
-                            else
-                                rx_state <= RX_DATA;
-                        end
-                    end
+                AXI_WR: begin
+                    if (m_axi_awvalid && m_axi_awready) m_axi_awvalid <= 1'b0;
+                    if (m_axi_wvalid && m_axi_wready)   m_axi_wvalid  <= 1'b0;
+                    if ((!m_axi_awvalid || m_axi_awready) && (!m_axi_wvalid || m_axi_wready))
+                        state <= AXI_WR_RESP;
                 end
 
-                RX_DATA: begin
-                    if (rx_valid) begin
-                        data_buf[byte_cnt] <= rx_byte;
-                        byte_cnt <= byte_cnt + 1;
-                        if ({24'b0, byte_cnt} + 1 >= len_reg) begin
-                            byte_cnt <= '0;
-                            rx_state <= RX_CRC;
-                        end
-                    end
-                end
-
-                RX_CRC: begin
-                    if (rx_valid) begin
-                        crc_reg  <= {crc_reg[23:0], rx_byte};
-                        byte_cnt <= byte_cnt + 1;
-                        if (byte_cnt == 3) begin
-                            // CRC check skipped for simplicity in initial version.
-                            // Execute the command.
-                            case (cmd_reg)
-                                8'h01: rx_state <= EXEC_READ;   // Read register.
-                                8'h02: rx_state <= EXEC_WRITE;  // Write register.
-                                8'h03: rx_state <= EXEC_WRITE;  // Write data.
-                                8'h04: rx_state <= EXEC_READ;   // Read data.
-                                default: begin
-                                    // Unknown command: send error response.
-                                    resp_buf[0] <= 8'h01;  // Error status.
-                                    resp_buf[1] <= '0;
-                                    resp_buf[2] <= '0;
-                                    resp_buf[3] <= '0;
-                                    resp_buf[4] <= '0;
-                                    resp_len    <= 9;  // STATUS + LEN + CRC.
-                                    resp_idx    <= '0;
-                                    rx_state    <= TX_RESP;
-                                end
-                            endcase
-                        end
-                    end
-                end
-
-                // ----- Execute AXI transactions -----
-                EXEC_READ: begin
-                    if (!axi_read_pending) begin
-                        m_axi_araddr   <= addr_reg[15:0];
-                        m_axi_arvalid  <= 1'b1;
-                        axi_read_pending <= 1'b1;
-                    end else if (m_axi_rvalid) begin
-                        // Build response: STATUS(OK) + LEN(4, little-endian) + DATA(4 bytes, little-endian) + CRC(4).
-                        // Go reads with binary.LittleEndian, so send LSB first.
-                        resp_buf[0] <= 8'h00;  // OK status.
-                        resp_buf[1] <= 8'h04;  // LEN LSB = 4.
-                        resp_buf[2] <= 8'h00;  // LEN.
-                        resp_buf[3] <= 8'h00;  // LEN.
-                        resp_buf[4] <= 8'h00;  // LEN MSB.
-                        resp_buf[5] <= m_axi_rdata[7:0];    // DATA LSB.
-                        resp_buf[6] <= m_axi_rdata[15:8];
-                        resp_buf[7] <= m_axi_rdata[23:16];
-                        resp_buf[8] <= m_axi_rdata[31:24];  // DATA MSB.
-                        // CRC placeholder (4 bytes of zeros).
-                        resp_buf[9]  <= '0;
-                        resp_buf[10] <= '0;
-                        resp_buf[11] <= '0;
-                        resp_buf[12] <= '0;
-                        resp_len <= 13;
-                        resp_idx <= '0;
-                        axi_read_pending <= 1'b0;
-                        rx_state <= TX_RESP;
-                    end
-                end
-
-                EXEC_WRITE: begin
-                    if (!axi_write_pending) begin
-                        m_axi_awaddr  <= addr_reg[15:0];
+                AXI_WR_RESP: if (m_axi_bvalid) begin
+                    if (m_axi_bresp != 2'b00) axi_err <= 1'b1;
+                    if (cmd == CMD_WRITE_DATA && cnt != len - 32'd1) begin
+                        // Next payload byte.
+                        cnt           <= cnt + 32'd1;
+                        data_off      <= data_off + 32'd1;
+                        m_axi_awaddr  <= DATA_BASE + {2'b00, 12'(( data_off + 32'd1) >> 2), 2'b00};
                         m_axi_awvalid <= 1'b1;
-                        // Data is already little-endian from Go: buf[0]=LSB, buf[3]=MSB.
-                        m_axi_wdata   <= {data_buf[3], data_buf[2], data_buf[1], data_buf[0]};
+                        m_axi_wdata   <= {4{payload[8'(cnt + 32'd1)]}};
+                        m_axi_wstrb   <= 4'b0001 << 2'(data_off + 32'd1);
                         m_axi_wvalid  <= 1'b1;
-                        axi_write_pending <= 1'b1;
-                    end else if (m_axi_bvalid) begin
-                        // Build response: STATUS(OK) + LEN(0, little-endian) + CRC.
-                        resp_buf[0] <= 8'h00;  // OK status.
-                        resp_buf[1] <= '0;     // LEN = 0 (LE).
-                        resp_buf[2] <= '0;
-                        resp_buf[3] <= '0;
-                        resp_buf[4] <= '0;
-                        // CRC placeholder.
-                        resp_buf[5] <= '0;
-                        resp_buf[6] <= '0;
-                        resp_buf[7] <= '0;
-                        resp_buf[8] <= '0;
-                        resp_len <= 9;
-                        resp_idx <= '0;
-                        axi_write_pending <= 1'b0;
-                        rx_state <= TX_RESP;
+                        state         <= AXI_WR;
+                    end else begin
+                        resp_err <= (m_axi_bresp != 2'b00) || axi_err;
+                        cnt      <= '0;
+                        state    <= TX_PREP;
+                    end
+                end
+
+                AXI_RD: begin
+                    if (m_axi_arready) begin
+                        m_axi_arvalid <= 1'b0;
+                        state         <= AXI_RD_RESP;
+                    end
+                end
+
+                AXI_RD_RESP: if (m_axi_rvalid) begin
+                    if (cmd == CMD_READ_REG) begin
+                        reg_val  <= m_axi_rdata;
+                        resp_len <= 32'd4;
+                        resp_err <= (m_axi_rresp != 2'b00);
+                        state    <= TX_PREP;
+                    end else begin
+                        txb   <= m_axi_rdata[8*data_off[1:0] +: 8];
+                        state <= TX_SEND;
                     end
                 end
 
                 // ----- Transmit response -----
-                TX_RESP: begin
-                    if (tx_ready && resp_idx < resp_len) begin
-                        tx_byte  <= resp_buf[resp_idx];
-                        tx_valid <= 1'b1;
-                        resp_idx <= resp_idx + 1;
-                    end else if (resp_idx >= resp_len) begin
-                        rx_state <= TX_DONE;
-                    end
+                TX_PREP: begin
+                    case (phase)
+                        PH_HDR: begin
+                            case (cnt[2:0])
+                                3'd0:    txb <= {7'b0, resp_err};
+                                3'd1:    txb <= resp_err ? 8'h00 : resp_len[7:0];
+                                3'd2:    txb <= resp_err ? 8'h00 : resp_len[15:8];
+                                3'd3:    txb <= resp_err ? 8'h00 : resp_len[23:16];
+                                default: txb <= resp_err ? 8'h00 : resp_len[31:24];
+                            endcase
+                            state <= TX_SEND;
+                        end
+                        PH_DATA: begin
+                            if (cmd == CMD_READ_DATA) begin
+                                m_axi_araddr  <= data_bus_addr;
+                                m_axi_arvalid <= 1'b1;
+                                state         <= AXI_RD;
+                            end else begin
+                                txb   <= reg_val[8*cnt[1:0] +: 8];
+                                state <= TX_SEND;
+                            end
+                        end
+                        default: begin  // PH_CRC
+                            txb   <= ~crc[8*cnt[1:0] +: 8];
+                            state <= TX_SEND;
+                        end
+                    endcase
                 end
 
-                TX_DONE: begin
-                    byte_cnt <= '0;
-                    rx_state <= RX_CMD;  // Ready for next command.
+                TX_SEND: if (tx_ready) begin
+                    tx_byte  <= txb;
+                    tx_valid <= 1'b1;
+                    if (phase != PH_CRC)
+                        crc <= crc32_byte(crc, txb);
+                    state <= TX_HOLD;
                 end
 
-                default: rx_state <= RX_CMD;
+                TX_HOLD: if (!tx_ready) begin
+                    // uart_tx has taken the byte; advance.
+                    state <= TX_PREP;
+                    cnt   <= cnt + 32'd1;
+                    case (phase)
+                        PH_HDR: if (cnt == 32'd4) begin
+                            cnt   <= '0;
+                            phase <= (resp_err || resp_len == 32'd0) ? PH_CRC : PH_DATA;
+                        end
+                        PH_DATA: begin
+                            data_off <= data_off + 32'd1;
+                            if (cnt == resp_len - 32'd1) begin
+                                cnt   <= '0;
+                                phase <= PH_CRC;
+                            end
+                        end
+                        default: if (cnt == 32'd3) begin
+                            cnt   <= '0;
+                            state <= RX_CMD;
+                        end
+                    endcase
+                end
+
+                default: state <= RX_CMD;
             endcase
         end
     end
