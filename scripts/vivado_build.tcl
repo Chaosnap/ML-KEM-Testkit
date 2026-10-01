@@ -3,6 +3,15 @@
 # Usage:
 #   vivado -mode batch -source scripts/vivado_build.tcl -tclargs <board> <algorithm>
 #
+# From the Vivado GUI Tcl console (any working directory; without arguments
+# the default target arty-a7-100t mlkem is built):
+#   source -notrace <repo>/scripts/vivado_build.tcl
+#
+# Paths are resolved from this script's location, so the current directory
+# does not matter. Failures raise a Tcl error instead of calling `exit`: in
+# batch mode Vivado still exits non-zero, in the GUI the console shows the
+# message and Vivado stays open.
+#
 # Examples:
 #   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
 #   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
@@ -18,16 +27,26 @@
 # -----------------------------------------------------------------------------
 # Parse arguments
 # -----------------------------------------------------------------------------
-if {$argc < 2} {
-    puts "Usage: vivado -mode batch -source vivado_build.tcl -tclargs <board> <algorithm>"
-    puts "  Boards: arty-a7-35t, arty-a7-100t, nexys-a7, zcu102, alveo-u250"
-    puts "  Algorithms: mlkem, mldsa, slhdsa"
-    exit 1
+# Print the message and abort the script with a Tcl error (not `exit`).
+proc fail {msg} {
+    puts "ERROR: $msg"
+    error $msg
 }
 
-set board_name  [lindex $argv 0]
-set algorithm   [lindex $argv 1]
-set project_dir "build/vivado/${board_name}_${algorithm}"
+# Without -tclargs (e.g. `source` in the GUI) build the default target.
+if {$argc >= 2} {
+    set board_name [lindex $argv 0]
+    set algorithm  [lindex $argv 1]
+} else {
+    set board_name arty-a7-100t
+    set algorithm  mlkem
+    puts "No <board> <algorithm> given, using defaults: $board_name $algorithm"
+    puts "  (Boards: arty-a7-35t, arty-a7-100t, nexys-a7, zcu102, alveo-u250;"
+    puts "   algorithms: mlkem, mldsa, slhdsa)"
+}
+
+set repo_root   [file normalize [file join [file dirname [info script]] ..]]
+set project_dir "${repo_root}/build/vivado/${board_name}_${algorithm}"
 
 # -----------------------------------------------------------------------------
 # Board-to-part mapping
@@ -41,8 +60,7 @@ array set board_parts {
 }
 
 if {![info exists board_parts($board_name)]} {
-    puts "ERROR: Unknown board '$board_name'"
-    exit 1
+    fail "Unknown board '$board_name'"
 }
 
 set part $board_parts($board_name)
@@ -51,6 +69,7 @@ puts "=== PQC Test Kit — Vivado Build ==="
 puts "Board:     $board_name"
 puts "Part:      $part"
 puts "Algorithm: $algorithm"
+puts "Repo:      $repo_root"
 puts "Project:   $project_dir"
 puts ""
 
@@ -62,11 +81,10 @@ create_project pqc_${algorithm} $project_dir -part $part -force
 # -----------------------------------------------------------------------------
 # Add vendor-agnostic RTL sources
 # -----------------------------------------------------------------------------
-set core_sources [glob -nocomplain hdl/core/*.sv hdl/core/*.v]
+set core_sources [glob -nocomplain ${repo_root}/hdl/core/*.sv ${repo_root}/hdl/core/*.v]
 
 if {[llength $core_sources] == 0} {
-    puts "ERROR: No RTL sources found under hdl/core/"
-    exit 1
+    fail "No RTL sources found under hdl/core/"
 }
 
 add_files -norecurse $core_sources
@@ -78,22 +96,20 @@ add_files -norecurse $core_sources
 #   hdl/xilinx/arty_a7/
 # -----------------------------------------------------------------------------
 if {$board_name eq "arty-a7-35t" || $board_name eq "arty-a7-100t"} {
-    set xilinx_dir "hdl/xilinx/arty_a7"
+    set xilinx_dir "${repo_root}/hdl/xilinx/arty_a7"
 } else {
-    set xilinx_dir "hdl/xilinx/${board_name}"
+    set xilinx_dir "${repo_root}/hdl/xilinx/${board_name}"
 }
 
 if {![file isdirectory $xilinx_dir]} {
-    puts "ERROR: Board support directory not found: $xilinx_dir"
-    exit 1
+    fail "Board support directory not found: $xilinx_dir"
 }
 
 # Add board-specific wrapper RTL
 set board_sources [glob -nocomplain ${xilinx_dir}/*.sv ${xilinx_dir}/*.v]
 
 if {[llength $board_sources] == 0} {
-    puts "ERROR: No board wrapper RTL found in: $xilinx_dir"
-    exit 1
+    fail "No board wrapper RTL found in: $xilinx_dir"
 }
 
 add_files -norecurse $board_sources
@@ -104,8 +120,7 @@ add_files -norecurse $board_sources
 set xdc_file "${xilinx_dir}/constraints.xdc"
 
 if {![file exists $xdc_file]} {
-    puts "ERROR: Constraint file not found: $xdc_file"
-    exit 1
+    fail "Constraint file not found: $xdc_file"
 }
 
 add_files -fileset constrs_1 -norecurse $xdc_file
@@ -123,9 +138,8 @@ add_files -fileset constrs_1 -norecurse $xdc_file
 # -----------------------------------------------------------------------------
 if {$board_name eq "arty-a7-35t" || $board_name eq "arty-a7-100t"} {
     if {$algorithm ne "mlkem"} {
-        puts "ERROR: Current hdl/xilinx/arty_a7/arty_a7_top.sv wraps ML-KEM only."
         puts "       Use algorithm 'mlkem' or add a board wrapper for '$algorithm'."
-        exit 1
+        fail "Current hdl/xilinx/arty_a7/arty_a7_top.sv wraps ML-KEM only."
     }
     set top_name "arty_a7_top"
 } else {
@@ -147,19 +161,17 @@ puts "--- Running Synthesis ---"
 launch_runs synth_1 -jobs 4
 
 if {[catch {wait_on_run synth_1} synth_err]} {
-    puts "ERROR: Synthesis run failed."
     puts "Vivado message: $synth_err"
     puts "Run directory: [get_property DIRECTORY [get_runs synth_1]]"
-    exit 1
+    fail "Synthesis run failed."
 }
 
 set synth_status [get_property STATUS [get_runs synth_1]]
 puts "Synthesis status: $synth_status"
 
 if {$synth_status ne "synth_design Complete!"} {
-    puts "ERROR: Synthesis did not complete successfully."
     puts "Run directory: [get_property DIRECTORY [get_runs synth_1]]"
-    exit 1
+    fail "Synthesis did not complete successfully."
 }
 
 # Reports after synthesis
@@ -203,11 +215,10 @@ puts "--- Running Implementation + Bitstream ---"
 launch_runs impl_1 -to_step write_bitstream -jobs 4
 
 if {[catch {wait_on_run impl_1} impl_err]} {
-    puts "ERROR: Implementation/bitstream run failed."
     puts "Vivado message: $impl_err"
     puts "Run directory: [get_property DIRECTORY [get_runs impl_1]]"
     puts "Check runme.log in the directory above for the first real ERROR message."
-    exit 1
+    fail "Implementation/bitstream run failed."
 }
 
 set impl_status [get_property STATUS [get_runs impl_1]]
