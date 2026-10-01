@@ -199,6 +199,8 @@ class Prog:
 
     def bmul(self, x, y, dst, acc):
         self.slots(x, y, dst)
+        # mlkem_poly_alu reads C long after A / B: C must not alias them.
+        assert dst not in (x, y), "BMUL destination aliases a source"
         self.emit("BMUL", p=ACC if acc else 0, a=x, b=y, c=dst,
                   text="BMUL   s%d * s%d -> s%d%s" % (x, y, dst, " (acc)" if acc else ""))
 
