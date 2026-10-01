@@ -13,19 +13,19 @@ import (
 	"github.com/akhilesharora/pqc-testkit/pkg/fpga/uart"
 	"github.com/cloudflare/circl/kem"
 	"github.com/cloudflare/circl/kem/mlkem/mlkem1024"
-	"github.com/cloudflare/circl/kem/mlkem/mlkem512"
 	"github.com/cloudflare/circl/kem/mlkem/mlkem768"
 	"github.com/spf13/cobra"
 )
 
 var (
-	fpgaTransport  string
-	fpgaDevice     string
-	fpgaBaud       int
-	fpgaMapSize    int
-	fpgaTimeout    int
-	fpgaVectorDir  string
-	fpgaSkipKAT    bool
+	fpgaTransport string
+	fpgaDevice    string
+	fpgaBaud      int
+	fpgaMapSize   int
+	fpgaTimeout   int
+	fpgaVectorDir string
+	fpgaSkipKAT   bool
+	fpgaLevels    []int
 )
 
 var fpgaCmd = &cobra.Command{
@@ -43,8 +43,9 @@ The command will:
   3. Check register read/write and a data-buffer write/read loopback
   4. Run an operation start/done cycle
   5. For ML-KEM cores, run KeyGen/Encaps/Decaps (and implicit rejection)
-     at every level on the FPGA and compare byte-for-byte against the
-     software reference (skip with --skip-kat)
+     at each --levels parameter set (default 768, matching the FIXED_LEVEL
+     of the bitstream) and compare byte-for-byte against the software
+     reference (skip with --skip-kat)
   6. Report hardware cycle counts from the performance counter`,
 	RunE: runFPGA,
 }
@@ -57,23 +58,29 @@ func init() {
 	fpgaCmd.Flags().IntVar(&fpgaTimeout, "timeout", 5, "operation timeout in seconds")
 	fpgaCmd.Flags().StringVarP(&fpgaVectorDir, "vectors", "v", "", "KAT vector directory (skip KAT if empty)")
 	fpgaCmd.Flags().BoolVar(&fpgaSkipKAT, "skip-kat", false, "skip ML-KEM known-answer tests, only identify and test connectivity")
+	fpgaCmd.Flags().IntSliceVar(&fpgaLevels, "levels", []int{768}, "ML-KEM levels built into the bitstream (768, 1024)")
 	rootCmd.AddCommand(fpgaCmd)
 }
 
-// openDevice opens an FPGA device using the specified transport.
+// openDevice opens an FPGA device using the fpga command's transport flags.
 // Use --transport sim to simulate without hardware.
 func openDevice() (fpga.Device, error) {
-	switch strings.ToLower(fpgaTransport) {
+	return openTransport(fpgaTransport, fpgaDevice, fpgaBaud, fpgaMapSize)
+}
+
+// openTransport opens an FPGA device over the named transport.
+func openTransport(transport, device string, baud, mapSize int) (fpga.Device, error) {
+	switch strings.ToLower(transport) {
 	case "pcie", "xdma":
-		return pcie.OpenXDMA(fpgaDevice)
+		return pcie.OpenXDMA(device)
 	case "axi", "uio":
-		return axi.OpenUIO(fpgaDevice, fpgaMapSize)
+		return axi.OpenUIO(device, mapSize)
 	case "uart", "serial":
-		return uart.Open(fpgaDevice, fpgaBaud)
+		return uart.Open(device, baud)
 	case "sim":
 		return fpga.OpenSim(fpga.DefaultSimConfig()), nil
 	default:
-		return nil, fmt.Errorf("unknown transport %q (supported: pcie, axi, uart, sim)", fpgaTransport)
+		return nil, fmt.Errorf("unknown transport %q (supported: pcie, axi, uart, sim)", transport)
 	}
 }
 
@@ -148,7 +155,7 @@ func runFPGA(cmd *cobra.Command, args []string) error {
 		fmt.Printf("[6/6] ML-KEM known-answer tests... skipped\n\n")
 	} else {
 		fmt.Printf("[6/6] ML-KEM known-answer tests (FPGA vs software, byte-for-byte):\n")
-		if err := testMLKEMKAT(dev, timeout); err != nil {
+		if err := testMLKEMKAT(dev, fpgaLevels, timeout); err != nil {
 			return fmt.Errorf("ML-KEM KAT: %w", err)
 		}
 		katResult = "PASS"
@@ -296,17 +303,28 @@ func runMLKEMOp(dev fpga.Device, level, op int, input []byte, timeout time.Durat
 	return out, cycles, err
 }
 
+// mlkemSchemes maps an ML-KEM level to its circl reference implementation.
+var mlkemSchemes = map[int]kem.Scheme{
+	768:  mlkem768.Scheme(),
+	1024: mlkem1024.Scheme(),
+}
+
 // testMLKEMKAT runs KeyGen, Encaps, Decaps and Decaps of a corrupted
-// ciphertext (implicit rejection) on the FPGA for every ML-KEM level with
-// fresh random seeds, and compares every output byte against circl.
-func testMLKEMKAT(dev fpga.Device, timeout time.Duration) error {
-	schemes := []struct {
+// ciphertext (implicit rejection) on the FPGA for each requested ML-KEM
+// level with fresh random seeds, and compares every output byte against
+// circl.
+func testMLKEMKAT(dev fpga.Device, levels []int, timeout time.Duration) error {
+	type levelScheme struct {
 		level  int
 		scheme kem.Scheme
-	}{
-		{512, mlkem512.Scheme()},
-		{768, mlkem768.Scheme()},
-		{1024, mlkem1024.Scheme()},
+	}
+	var schemes []levelScheme
+	for _, level := range levels {
+		scheme, ok := mlkemSchemes[level]
+		if !ok {
+			return fmt.Errorf("unsupported ML-KEM level %d (want 768 or 1024)", level)
+		}
+		schemes = append(schemes, levelScheme{level, scheme})
 	}
 	for _, sc := range schemes {
 		seed := make([]byte, sc.scheme.SeedSize())

@@ -31,6 +31,11 @@ make twiddle     # Generate NTT twiddle factors for FPGA synthesis
 
 ## Validate on real hardware
 
+The ML-KEM core is built for a single parameter set (`FIXED_LEVEL` in
+`hdl/core/pqc_mlkem_top.sv`, currently 768) so its resource usage compares
+fairly with single-level designs. The microcode ROM must contain the same
+level; regenerate it with `make ucode MLKEM_LEVELS=768` after changing either.
+
 ```bash
 # 1. Synthesize for your board
 vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
@@ -38,8 +43,8 @@ vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
 # 2. Program the FPGA
 vivado -mode batch -source scripts/program.tcl -tclargs path/to/bitstream.bit
 
-# 3. Run validation
-./pqc-testkit fpga -T uart -d /dev/ttyUSB1
+# 3. Run validation (KATs at the levels built into the bitstream, default 768)
+./pqc-testkit fpga -T uart -d /dev/ttyUSB1 --levels 768
 
 # Output:
 # [1/4] Connecting to FPGA... OK (uart)

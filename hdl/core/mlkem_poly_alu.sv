@@ -252,7 +252,10 @@ module mlkem_poly_alu (
                     b0 <= rb_dout[11:0];  b1 <= rb_dout[23:12];
                     c0 <= '0;             c1 <= '0;
                     cnt <= '0;
-                    state <= (cur_op == OP_BMUL && acc_r) ? S_LATCH_C : S_EXEC;
+                    if (cur_op == OP_BMUL && acc_r)
+                        state <= S_LATCH_C;
+                    else
+                        state <= S_EXEC;
                 end
 
                 S_LATCH_C: begin

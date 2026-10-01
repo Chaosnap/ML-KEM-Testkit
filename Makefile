@@ -1,4 +1,7 @@
-.PHONY: build test bench lint vectors twiddle simulate clean
+.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog simulate clean
+
+# ML-KEM levels in the microcode ROM; must include FIXED_LEVEL of pqc_mlkem_top.
+MLKEM_LEVELS ?= 768
 
 # Build the CLI binary.
 build:
@@ -22,6 +25,20 @@ vectors:
 # Generate NTT twiddle factor hex files for HDL synthesis.
 twiddle:
 	go run ./cmd/pqc-testkit gen-twiddle -o hdl/core
+
+# Regenerate the ML-KEM microcode and zeta ROMs.
+ucode:
+	python3 scripts/gen_mlkem_ucode.py --levels $(MLKEM_LEVELS)
+
+# Simulation-based TVLA on the RTL (docs/SIM_TVLA_GUIDE.md).
+tvla-sim: build
+	$(MAKE) -C testbench/tvla_sim
+	./pqc-testkit sca sim --op decaps -n 200 -o build/tvla_sim
+
+# Icarus Verilog testbenches for UART + NTT, VCDs in build/sim/
+# (docs/IVERILOG_SIM_GUIDE.md).
+sim-iverilog:
+	$(MAKE) -C testbench/iverilog
 
 # Run FPGA validation in simulation mode (no hardware needed).
 simulate:

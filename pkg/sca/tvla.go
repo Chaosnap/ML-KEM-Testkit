@@ -167,26 +167,43 @@ func WelchTTest(fixed, random [][]float64) (TVLAResult, error) {
 		varR /= nr - 1
 
 		// Welch's t-statistic.
-		denom := math.Sqrt(varF/nf + varR/nr)
-		if denom > 0 {
-			tValues[s] = (meanF - meanR) / denom
-		}
+		tValues[s] = welchT(meanF, varF, nf, meanR, varR, nr)
 	}
 
-	// Find maximum |t|.
+	return newTVLAResult(tValues, len(fixed), len(random)), nil
+}
+
+// LeakageThreshold is the TVLA pass/fail bound on |t| (confidence > 99.999%).
+const LeakageThreshold = 4.5
+
+// welchT returns Welch's t-statistic for two classes given their means,
+// unbiased variances and sizes. With zero variance in both classes (e.g.
+// constant cycle counts) any difference in the means is certain leakage.
+func welchT(meanF, varF, nf, meanR, varR, nr float64) float64 {
+	denom := math.Sqrt(varF/nf + varR/nr)
+	switch {
+	case denom > 0:
+		return (meanF - meanR) / denom
+	case meanF != meanR:
+		return math.Inf(int(math.Copysign(1, meanF-meanR)))
+	default:
+		return 0
+	}
+}
+
+// newTVLAResult fills in the maximum |t| and the leakage verdict.
+func newTVLAResult(tValues []float64, numFixed, numRandom int) TVLAResult {
 	result := TVLAResult{
 		TValues:   tValues,
-		NumFixed:  len(fixed),
-		NumRandom: len(random),
+		NumFixed:  numFixed,
+		NumRandom: numRandom,
 	}
 	for i, t := range tValues {
-		absT := math.Abs(t)
-		if absT > result.MaxAbsT {
+		if absT := math.Abs(t); absT > result.MaxAbsT {
 			result.MaxAbsT = absT
 			result.MaxAbsTIndex = i
 		}
 	}
-	result.Leakage = result.MaxAbsT > 4.5
-
-	return result, nil
+	result.Leakage = result.MaxAbsT > LeakageThreshold
+	return result
 }

@@ -13,14 +13,20 @@ Examples:
   python3 scripts/uart_test.py -p /dev/cu.usbserial-XXXX1 selftest
   python3 scripts/uart_test.py -p /dev/ttyUSB1 info
   python3 scripts/uart_test.py -p /dev/ttyUSB1 read 0x08
-  python3 scripts/uart_test.py -p /dev/ttyUSB1 write 0x0C 1024
+  python3 scripts/uart_test.py -p /dev/ttyUSB1 write 0x0C 768
   python3 scripts/uart_test.py -p /dev/ttyUSB1 loopback --size 2000
   python3 scripts/uart_test.py -p /dev/ttyUSB1 roundtrip
   python3 scripts/uart_test.py -p /dev/ttyUSB1 run keygen --level 768 \\
           --in-hex <128 hex chars d||z> --out kg_out.bin
+  python3 scripts/uart_test.py -p /dev/ttyUSB1 acvp \\
+          ML-KEM-keyGen-FIPS203/internalProjection.json \\
+          ML-KEM-encapDecap-FIPS203/internalProjection.json
 
 Byte-for-byte comparison against the software reference (Level 6) is done
 by the Go tool:  pqc-testkit fpga -T uart -d <port>
+
+The bitstream is built for ML-KEM-768 only (FIXED_LEVEL = 768), so every
+test defaults to level 768; pass --level/--levels for other builds.
 """
 
 import argparse
@@ -53,7 +59,8 @@ ERRORS = {0: "none", 1: "unsupported SEC_LEVEL/OP_MODE",
           2: "ek failed modulus check", 3: "illegal microcode"}
 
 # FIPS 203 sizes: level -> (ek, dk, ct)
-SIZES = {512: (800, 1632, 768), 768: (1184, 2400, 1088), 1024: (1568, 3168, 1568)}
+SIZES = {768: (1184, 2400, 1088), 1024: (1568, 3168, 1568)}   # ML-KEM-512 not supported.
+DEFAULT_LEVEL = 768      # FIXED_LEVEL of pqc_mlkem_top in the current bitstream.
 
 
 class ProtocolError(Exception):
@@ -224,6 +231,83 @@ def cmd_roundtrip(link, args):
     return ok
 
 
+def cmd_acvp(link, args):
+    """Run NIST ACVP-Server ML-KEM vectors (internalProjection.json) on the FPGA.
+
+    The expected outputs come from NIST, not from a local reference, so this is
+    an independent check of FIPS 203 conformance. Supported groups:
+      keyGen AFT                    d||z        -> ek||dk      must equal (ek, dk)
+      encapsulation AFT             ek||m       -> c||K        must equal (c, k)
+      decapsulation VAL             dk||c       -> K           must equal k
+      encapsulationKeyCheck VAL     Encaps(ek) must fail with error 2 iff testPassed is false
+    decapsulationKeyCheck is skipped: the core does not implement the dk hash check.
+    """
+    import json
+    counts = {}                                       # kind -> [pass, fail]
+    skipped = 0
+
+    def record(kind, tc, good, detail=""):
+        c = counts.setdefault(kind, [0, 0])
+        c[0 if good else 1] += 1
+        if not good or args.verbose:
+            print("  tcId %-4d %-24s %s %s" % (tc, kind, "PASS" if good else "FAIL", detail))
+
+    for path in args.files:
+        with open(path) as f:
+            vs = json.load(f)
+        groups = vs["testGroups"]
+        answers = ("ek", "k", "testPassed")
+        if not all(any(a in t for a in answers) and ("d" in t or "ek" in t or "dk" in t)
+                   for g in groups for t in g["tests"]):
+            sys.exit("%s has no expected values: use internalProjection.json, not prompt.json" % path)
+        print("%s  (vsId %s, %s)" % (path, vs.get("vsId"), vs.get("mode")))
+        for g in groups:
+            level = int(g["parameterSet"].split("-")[-1])
+            func = g.get("function", "keyGen")
+            if level not in args.levels:
+                skipped += len(g["tests"])
+                continue
+            ek_len, dk_len, ct_len = SIZES[level]
+            for t in g["tests"]:
+                h = {k: bytes.fromhex(v) for k, v in t.items() if k in ("d", "z", "ek", "dk", "c", "k", "m")}
+                kind = "ML-KEM-%d %s" % (level, func)
+                tc = t["tcId"]
+                try:
+                    if func == "keyGen":
+                        out, _ = link.run(level, 0, h["d"] + h["z"])
+                        record(kind, tc, out == h["ek"] + h["dk"])
+                    elif func == "encapsulation":
+                        out, _ = link.run(level, 1, h["ek"] + h["m"])
+                        record(kind, tc, out == h["c"] + h["k"])
+                    elif func == "decapsulation":
+                        out, _ = link.run(level, 2, h["dk"] + h["c"])
+                        record(kind, tc, out == h["k"], t.get("reason", ""))
+                    elif func == "encapsulationKeyCheck":
+                        try:
+                            link.run(level, 1, h["ek"] + os.urandom(32))
+                            accepted = True
+                        except ProtocolError as e:
+                            if "core error 2" not in str(e):
+                                raise
+                            accepted = False
+                        record(kind, tc, accepted == t["testPassed"], t.get("reason", ""))
+                    else:
+                        skipped += 1
+                except ProtocolError as e:
+                    record(kind, tc, False, str(e))
+
+    print()
+    total_fail = 0
+    for kind in sorted(counts):
+        p, fl = counts[kind]
+        total_fail += fl
+        print("  %-36s %3d/%-3d %s" % (kind, p, p + fl, "PASS" if fl == 0 else "FAIL"))
+    print("  skipped (other levels / decapsulationKeyCheck): %d" % skipped)
+    ok = bool(counts) and total_fail == 0
+    print("\nACVP %s" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def cmd_selftest(link, args):
     ok = True
 
@@ -234,8 +318,9 @@ def cmd_selftest(link, args):
 
     print("Level 2: register access")
     orig = link.rd(REG["SEC_LEVEL"])
-    link.wr(REG["SEC_LEVEL"], 1024)
-    check("write/read SEC_LEVEL", link.rd(REG["SEC_LEVEL"]) == 1024)
+    check("SEC_LEVEL reset value %d" % DEFAULT_LEVEL, orig == DEFAULT_LEVEL, "SEC_LEVEL=%d" % orig)
+    link.wr(REG["SEC_LEVEL"], 999)
+    check("write/read SEC_LEVEL", link.rd(REG["SEC_LEVEL"]) == 999)
     link.wr(REG["SEC_LEVEL"], orig)
     try:
         frame = struct.pack("<BII", CMD_READ_REG, REG["ALG_ID"], 0)
@@ -261,7 +346,7 @@ def cmd_selftest(link, args):
     print("Level 5: operation start/done")
     link.wr(REG["CTRL"], 2)                          # reset pulse
     check("CTRL.reset clears STATUS", link.rd(REG["STATUS"]) == 0)
-    for level in (512, 768, 1024):
+    for level in args.levels:
         try:
             seed = os.urandom(64)
             out, cycles = link.run(level, 0, seed)
@@ -282,6 +367,12 @@ def cmd_selftest(link, args):
     st, code = link.rd(REG["STATUS"]), link.rd(REG["ERROR_CODE"])
     check("unsupported SEC_LEVEL -> error code 1", (st & 4) and code == 1)
     link.wr(REG["CTRL"], 2)
+    for level in sorted({512} | (set(SIZES) - set(args.levels))):
+        link.wr(REG["SEC_LEVEL"], level)
+        link.wr(REG["CTRL"], 1)
+        st, code = link.rd(REG["STATUS"]), link.rd(REG["ERROR_CODE"])
+        check("ML-KEM-%d not in bitstream -> error code 1" % level, (st & 4) and code == 1)
+        link.wr(REG["CTRL"], 2)
     link.wr(REG["SEC_LEVEL"], orig)
 
     print("\nSELFTEST %s" % ("PASS" if ok else "FAIL"))
@@ -307,20 +398,25 @@ def main():
     p.add_argument("--offset", type=lambda s: int(s, 0), default=OUT_BASE + 1)
     p = sub.add_parser("run", help="run one ML-KEM operation")
     p.add_argument("op", choices=sorted(OPS))
-    p.add_argument("--level", type=int, choices=sorted(SIZES), default=768)
+    p.add_argument("--level", type=int, choices=sorted(SIZES), default=DEFAULT_LEVEL)
     p.add_argument("--in", dest="infile", help="binary input file")
     p.add_argument("--in-hex", help="input as hex string")
     p.add_argument("--out", help="write output bytes to this file")
     p = sub.add_parser("roundtrip", help="KeyGen -> Encaps -> Decaps on the FPGA, check shared keys")
-    p.add_argument("--levels", type=int, nargs="+", choices=sorted(SIZES), default=[512, 768, 1024])
-    sub.add_parser("selftest", help="run verification levels 2-5")
+    p.add_argument("--levels", type=int, nargs="+", choices=sorted(SIZES), default=[DEFAULT_LEVEL])
+    p = sub.add_parser("acvp", help="run NIST ACVP-Server ML-KEM vectors (internalProjection.json)")
+    p.add_argument("files", nargs="+", help="ML-KEM-keyGen-FIPS203/ and/or ML-KEM-encapDecap-FIPS203/ internalProjection.json")
+    p.add_argument("--levels", type=int, nargs="+", choices=sorted(SIZES), default=[DEFAULT_LEVEL])
+    p.add_argument("-v", "--verbose", action="store_true", help="print every test case, not only failures")
+    p = sub.add_parser("selftest", help="run verification levels 2-5")
+    p.add_argument("--levels", type=int, nargs="+", choices=sorted(SIZES), default=[DEFAULT_LEVEL])
 
     args = ap.parse_args()
     link = Link(args.port, args.baud, args.timeout)
     try:
         handler = {"info": cmd_info, "read": cmd_read, "write": cmd_write,
                    "loopback": cmd_loopback, "run": cmd_run, "roundtrip": cmd_roundtrip,
-                   "selftest": cmd_selftest}[args.cmd]
+                   "acvp": cmd_acvp, "selftest": cmd_selftest}[args.cmd]
         result = handler(link, args)
         sys.exit(0 if result is None or result else 1)
     except ProtocolError as e:

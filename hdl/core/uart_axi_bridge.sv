@@ -164,7 +164,8 @@ module uart_axi_bridge #(
             tx_valid <= 1'b0;
 
             // Inter-byte timeout while a frame is being received.
-            if (state inside {RX_ADDR, RX_LEN, RX_DATA, RX_CRC}) begin
+            // (Explicit compares rather than `inside`, for Icarus Verilog.)
+            if (state == RX_ADDR || state == RX_LEN || state == RX_DATA || state == RX_CRC) begin
                 if (rx_valid)
                     timeout <= '0;
                 else if (timeout == TIMEOUT_CYCLES - 1) begin
@@ -201,7 +202,10 @@ module uart_axi_bridge #(
                     cnt <= cnt + 32'd1;
                     if (cnt[1:0] == 2'd3) begin
                         cnt   <= '0;
-                        state <= ({rx_byte, len[23:0]} == 32'd0) ? RX_CRC : RX_DATA;
+                        if ({rx_byte, len[23:0]} == 32'd0)
+                            state <= RX_CRC;
+                        else
+                            state <= RX_DATA;
                     end
                 end
 
@@ -356,7 +360,10 @@ module uart_axi_bridge #(
                     case (phase)
                         PH_HDR: if (cnt == 32'd4) begin
                             cnt   <= '0;
-                            phase <= (resp_err || resp_len == 32'd0) ? PH_CRC : PH_DATA;
+                            if (resp_err || resp_len == 32'd0)
+                                phase <= PH_CRC;
+                            else
+                                phase <= PH_DATA;
                         end
                         PH_DATA: begin
                             data_off <= data_off + 32'd1;

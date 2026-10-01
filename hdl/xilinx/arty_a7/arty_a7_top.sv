@@ -129,7 +129,8 @@ module arty_a7_top #(
     logic status_busy, status_done, status_error;
 
     pqc_mlkem_top #(
-        .AXI_ADDR_WIDTH (16)
+        .AXI_ADDR_WIDTH (16),
+        .FIXED_LEVEL    (768)    // Must match scripts/gen_mlkem_ucode.py --levels.
     ) u_mlkem (
         .clk            (clk),
         .rst_n          (rst_n),

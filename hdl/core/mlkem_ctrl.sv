@@ -13,11 +13,16 @@
 //   NTT/INTT/BMUL/ADD/SUB      mlkem_poly_alu on poly RAM
 //
 // Error codes (ERROR_CODE register):
-//   1 = unsupported SEC_LEVEL or OP_MODE
+//   1 = unsupported SEC_LEVEL or OP_MODE (SEC_LEVEL must be FIXED_LEVEL when
+//       that parameter is set, and must have programs in the microcode ROM)
 //   2 = encapsulation key failed the FIPS 203 modulus check
 //   3 = illegal microcode instruction
 
-module mlkem_ctrl (
+module mlkem_ctrl #(
+    // Non-zero: the core is built for this ML-KEM level only (768/1024).
+    // The level decode becomes constant so synthesis drops the others.
+    parameter int FIXED_LEVEL = 0
+) (
     input  logic        clk,
     input  logic        rst_n,
 
@@ -150,14 +155,18 @@ module mlkem_ctrl (
     // ---------------------------------------------------------------------
     logic [95:0] rom_data;
     logic [10:0] rom_entry;
+    logic [2:0]  rom_level_mask;
 
-    mlkem_ucode_rom u_rom (
-        .clk       (clk),
-        .addr      (pc),
-        .data      (rom_data),
-        .level_idx (lvl_idx),
-        .op        (op_idx),
-        .entry     (rom_entry)
+    mlkem_ucode_rom #(
+        .ADDR_W (11)
+    ) u_rom (
+        .clk        (clk),
+        .addr       (pc),
+        .data       (rom_data),
+        .level_idx  (lvl_idx),
+        .op         (op_idx),
+        .entry      (rom_entry),
+        .level_mask (rom_level_mask)
     );
 
     logic [7:0]  f_op, f_p;
@@ -182,16 +191,19 @@ module mlkem_ctrl (
     // ---------------------------------------------------------------------
     // Parameter decode.
     // ---------------------------------------------------------------------
-    logic [1:0] lvl_req;
-    logic       lvl_ok, op_ok;
+    logic [31:0] lvl_sel;
+    logic [1:0]  lvl_req;
+    logic        lvl_ok, op_ok;
+    assign lvl_sel = (FIXED_LEVEL != 0) ? 32'(FIXED_LEVEL) : sec_level;
     always_comb begin
         lvl_ok = 1'b1;
-        case (sec_level)
-            32'd512:  lvl_req = 2'd0;
+        case (lvl_sel)
             32'd768:  lvl_req = 2'd1;
             32'd1024: lvl_req = 2'd2;
             default: begin lvl_req = 2'd0; lvl_ok = 1'b0; end
         endcase
+        if (sec_level != lvl_sel || !rom_level_mask[lvl_req])
+            lvl_ok = 1'b0;
         op_ok = (op_mode < 32'd3);
     end
 

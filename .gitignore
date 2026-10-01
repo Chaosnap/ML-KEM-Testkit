@@ -44,3 +44,6 @@ vectors/**/.downloaded
 # OS
 .DS_Store
 Thumbs.db
+
+# Verilator
+obj_dir/
