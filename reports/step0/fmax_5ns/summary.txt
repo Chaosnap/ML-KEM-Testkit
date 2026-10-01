@@ -1,0 +1,4 @@
+period_ns 5
+wns_ns -4.536
+whs_ns 0.060
+fmax_mhz 104.9

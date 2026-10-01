@@ -1,4 +1,4 @@
-.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog simulate clean
+.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog sim-acvp profile regress simulate clean
 
 # ML-KEM levels in the microcode ROM; must include FIXED_LEVEL of pqc_mlkem_top.
 MLKEM_LEVELS ?= 768
@@ -39,6 +39,18 @@ tvla-sim: build
 # (docs/IVERILOG_SIM_GUIDE.md).
 sim-iverilog:
 	$(MAKE) -C testbench/iverilog
+
+# ML-KEM-768 ACVP vectors on the RTL core in Verilator (testbench/core_sim).
+sim-acvp:
+	python3 scripts/sim_acvp.py
+
+# Per-instruction cycle profile of KeyGen/Encaps/Decaps-768 from RTL simulation.
+profile:
+	python3 scripts/profile_ucode.py --op all
+
+# All simulation tests (Go, Icarus, cocotb if installed, ACVP on the core).
+regress:
+	scripts/regress.sh
 
 # Run FPGA validation in simulation mode (no hardware needed).
 simulate:

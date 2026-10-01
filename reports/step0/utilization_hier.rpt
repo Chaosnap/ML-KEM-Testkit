@@ -1,0 +1,51 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.1 (lin64) Build 5076996 Wed May 22 18:36:09 MDT 2024
+| Date         : Thu Oct  1 13:04:15 2026
+| Host         : orbstack running 64-bit unknown
+| Command      : report_utilization -hierarchical -file /home/vivadouser/project/ML_KEM_Test/ML-KEM-Testkit/reports/step0/utilization_hier.rpt
+| Design       : arty_a7_top
+| Device       : xc7a100tcsg324-1
+| Speed File   : -1
+| Design State : Routed
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++------------------+-----------------+------------+------------+---------+------+------+--------+--------+------------+
+|     Instance     |      Module     | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs | RAMB36 | RAMB18 | DSP Blocks |
++------------------+-----------------+------------+------------+---------+------+------+--------+--------+------------+
+| arty_a7_top      |           (top) |      12082 |      12082 |       0 |    0 | 6792 |      5 |      2 |          8 |
+|   (arty_a7_top)  |           (top) |          1 |          1 |       0 |    0 |   31 |      0 |      0 |          0 |
+|   u_bridge       | uart_axi_bridge |       1543 |       1543 |       0 |    0 | 2426 |      0 |      0 |          0 |
+|   u_mlkem        |   pqc_mlkem_top |      10455 |      10455 |       0 |    0 | 4259 |      5 |      2 |          8 |
+|     (u_mlkem)    |   pqc_mlkem_top |         22 |         22 |       0 |    0 |    0 |      0 |      0 |          0 |
+|     u_alu        |  mlkem_poly_alu |        669 |        669 |       0 |    0 |  249 |      0 |      1 |          6 |
+|       (u_alu)    |  mlkem_poly_alu |        343 |        343 |       0 |    0 |  199 |      0 |      1 |          0 |
+|       u_mul0     |    mlkem_modmul |        157 |        157 |       0 |    0 |   25 |      0 |      0 |          3 |
+|       u_mul1     |  mlkem_modmul_0 |        152 |        152 |       0 |    0 |   25 |      0 |      0 |          3 |
+|       u_zetas    |     mlkem_zetas |         20 |         20 |       0 |    0 |    0 |      0 |      0 |          0 |
+|     u_csr        |     pqc_axi_csr |        176 |        176 |       0 |    0 |  263 |      0 |      0 |          0 |
+|     u_ctrl       |      mlkem_ctrl |        617 |        617 |       0 |    0 |  269 |      0 |      0 |          0 |
+|       (u_ctrl)   |      mlkem_ctrl |        230 |        230 |       0 |    0 |  223 |      0 |      0 |          0 |
+|       u_rom      | mlkem_ucode_rom |        387 |        387 |       0 |    0 |   46 |      0 |      0 |          0 |
+|     u_dbuf       | pqc_data_buffer |         11 |         11 |       0 |    0 |    0 |      4 |      0 |          0 |
+|     u_pack       |      mlkem_pack |        153 |        153 |       0 |    0 |   81 |      0 |      0 |          1 |
+|     u_polyram    |   mlkem_polyram |         12 |         12 |       0 |    0 |    0 |      1 |      1 |          0 |
+|     u_sponge     |   keccak_sponge |       8577 |       8577 |       0 |    0 | 3315 |      0 |      0 |          0 |
+|       (u_sponge) |   keccak_sponge |       2635 |       2635 |       0 |    0 | 1684 |      0 |      0 |          0 |
+|       u_keccak   |    keccak_f1600 |       5942 |       5942 |       0 |    0 | 1631 |      0 |      0 |          0 |
+|     u_unpack     |    mlkem_unpack |        224 |        224 |       0 |    0 |   82 |      0 |      0 |          1 |
+|   u_rx           |         uart_rx |         63 |         63 |       0 |    0 |   51 |      0 |      0 |          0 |
+|   u_tx           |         uart_tx |         25 |         25 |       0 |    0 |   25 |      0 |      0 |          0 |
++------------------+-----------------+------------+------------+---------+------+------+--------+--------+------------+
+* Note: The sum of lower-level cells may be larger than their parent cells total, due to cross-hierarchy LUT combining
+
+
