@@ -16,7 +16,8 @@
 // word aligned with lengths that are multiples of 4 (gen_mlkem_ucode.py
 // asserts this), so the buffer is accessed one word per cycle:
 //   HABS, DECODE  prefetch words into a 2-entry FIFO, one read per cycle,
-//                 bytes handed to the sponge / unpacker at 1 byte per cycle
+//                 one word (4 bytes) per cycle into the sponge / unpacker
+//   HSQZ          one squeezed word written per cycle
 //   CMP           a, b word reads interleaved: 2 cycles per word
 //   COPY, CSEL    read word, write word: 2 cycles per word
 //
@@ -55,12 +56,15 @@ module mlkem_ctrl (
     output logic [1:0]  h_mode,
     input  logic        h_idle,
     output logic        h_absorb_valid,
-    output logic [7:0]  h_absorb_byte,
+    output logic [63:0] h_absorb_data,
+    output logic [3:0]  h_absorb_n,
     input  logic        h_absorb_ready,
     output logic        h_finalize,
     input  logic        h_squeeze_valid,
-    input  logic [7:0]  h_squeeze_byte,
+    input  logic [63:0] h_squeeze_data,
+    input  logic [3:0]  h_squeeze_avail,
     output logic        h_squeeze_take,
+    output logic [3:0]  h_squeeze_n,
 
     // Polynomial ALU.
     output logic        alu_start,
@@ -78,9 +82,10 @@ module mlkem_ctrl (
     output logic        up_check,
     output logic [2:0]  up_slot,
     input  logic        up_done,
-    input  logic        up_range_err,
+    input  logic [1:0]  up_range_err,
     output logic        up_src_valid,
-    output logic [7:0]  up_src_byte,
+    output logic [63:0] up_src_data,
+    output logic [3:0]  up_src_n,
     input  logic        up_src_take,
 
     // Packer.
@@ -145,8 +150,7 @@ module mlkem_ctrl (
     logic [7:0]  i_op;
     logic [7:0]  i_p;
     logic [13:0] ptr_a, ptr_b, ptr_c;   // Effective byte addresses.
-    logic [15:0] len;                   // Bytes (HABS, HSQZ) or words (CMP, COPY, CSEL).
-    logic        imm_idx;
+    logic [15:0] len;                   // Words left (HABS, HSQZ, CMP, COPY, CSEL).
     logic        flag;                  // CMP mismatch (sticky per run).
     logic        ek_bad;                // Modulus-check failure (sticky per run).
     logic [13:0] in_base, out_base;
@@ -206,16 +210,13 @@ module mlkem_ctrl (
     logic [31:0] fq0, fq1;              // FIFO entries, fq0 = head.
     logic [1:0]  fcnt;                  // Valid entries.
     logic        finfl;                 // Read issued last cycle.
-    logic [1:0]  fbyte;                 // Next byte of the head word.
     logic [15:0] rd_left;               // Words still to be read.
     logic        fstream, f_take, f_pop, f_issue;
-    logic [7:0]  f_byte;
 
     assign fstream = (state == C_HABS) || (state == C_UNIT && i_op == OP_DECODE);
-    assign f_byte  = fq0[{fbyte, 3'b000} +: 8];
     assign f_take  = (state == C_HABS) ? (fcnt != 2'd0 && h_absorb_ready)
                    : (state == C_UNIT && i_op == OP_DECODE && up_src_take);
-    assign f_pop   = f_take && (fbyte == 2'd3);
+    assign f_pop   = f_take;            // Consumers take a whole word.
     assign f_issue = fstream && (rd_left != 16'd0) &&
                      (3'(fcnt) + 3'(finfl) - 3'(f_pop) < 3'd2);
 
@@ -255,8 +256,7 @@ module mlkem_ctrl (
             C_HSQZ: begin
                 wr_req  = h_squeeze_valid;
                 wr_ptr  = ptr_a;
-                wr_be   = 4'b0001 << ptr_a[1:0];
-                wr_word = {4{h_squeeze_byte}};
+                wr_word = h_squeeze_data[31:0];
             end
             C_UNIT: begin
                 if (i_op == OP_DECODE)
@@ -284,14 +284,21 @@ module mlkem_ctrl (
     // ---------------------------------------------------------------------
     assign h_init         = (state == C_HINIT) && h_idle;
     assign h_mode         = i_p[1:0];
+    // HABI absorbs its 1-2 immediate bytes in one chunk (the generator keeps
+    // them inside a lane); HABS one FIFO word. HSQZ squeezes a word (its
+    // squeeze position is always a multiple of 4).
     assign h_absorb_valid = (state == C_HABI) || (state == C_HABS && fcnt != 2'd0);
-    assign h_absorb_byte  = (state == C_HABI) ? (imm_idx ? imm[15:8] : imm[7:0]) : f_byte;
+    assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq0};
+    assign h_absorb_n     = (state == C_HABI) ? ((i_p == 8'd1) ? 4'd1 : 4'd2) : 4'd4;
     assign h_finalize     = (state == C_HFIN) && h_absorb_ready;
     assign h_squeeze_take = (state == C_HSQZ && h_squeeze_valid) ||
                             (state == C_UNIT && unit_src_sponge && up_src_take);
+    assign h_squeeze_n    = (state == C_HSQZ) ? 4'd4 : h_squeeze_avail;
 
+    // Unpacker source: whole sponge lane chunks, or FIFO words (DECODE).
     assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt != 2'd0);
-    assign up_src_byte  = unit_src_sponge ? h_squeeze_byte  : f_byte;
+    assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {32'b0, fq0};
+    assign up_src_n     = unit_src_sponge ? h_squeeze_avail : 4'd4;
 
     // ---------------------------------------------------------------------
     // Sequencer.
@@ -311,13 +318,11 @@ module mlkem_ctrl (
             fq1             <= '0;
             fcnt            <= '0;
             finfl           <= 1'b0;
-            fbyte           <= '0;
             rd_left         <= '0;
             cmp_b_next      <= 1'b0;
             cmp_got_a       <= 1'b0;
             cmp_got_b       <= 1'b0;
             cmp_a           <= '0;
-            imm_idx         <= 1'b0;
             flag            <= 1'b0;
             ek_bad          <= 1'b0;
             in_base         <= '0;
@@ -354,7 +359,7 @@ module mlkem_ctrl (
             if (status_busy)
                 cycle_count <= cycle_count + 32'd1;
 
-            if (up_range_err)
+            if (|up_range_err)
                 ek_bad <= 1'b1;
 
             if (ctrl_reset) begin
@@ -369,8 +374,6 @@ module mlkem_ctrl (
                 units_clr    <= 1'b1;
             end else begin
                 // Word prefetch FIFO (push after pop: the new word may land in fq0).
-                if (f_take)
-                    fbyte <= fbyte + 2'd1;
                 if (f_pop)
                     fq0 <= fq1;
                 if (finfl) begin
@@ -424,13 +427,11 @@ module mlkem_ctrl (
                         i_op    <= f_op;
                         i_p     <= f_p;
                         imm     <= f_a;
-                        len     <= (f_op == OP_HABS || f_op == OP_HSQZ) ? f_len : {2'b00, f_len[15:2]};
+                        len     <= {2'b00, f_len[15:2]};
                         rd_left <= {2'b00, f_len[15:2]};
                         fcnt    <= '0;
                         finfl   <= 1'b0;
-                        fbyte   <= '0;
                         cmp_b_next <= 1'b0;
-                        imm_idx <= 1'b0;
                         ptr_a   <= eff(f_a, in_base, out_base);
                         ptr_b   <= eff(f_b, in_base, out_base);
                         ptr_c   <= eff(f_c, in_base, out_base);
@@ -496,16 +497,12 @@ module mlkem_ctrl (
 
                     C_HINIT: if (h_idle) state <= C_NEXT;
 
-                    C_HABI: if (h_absorb_ready) begin
-                        imm_idx <= 1'b1;
-                        if (imm_idx || i_p == 8'd1)
-                            state <= C_NEXT;
-                    end
+                    C_HABI: if (h_absorb_ready) state <= C_NEXT;
 
                     C_HFIN: if (h_absorb_ready) state <= C_NEXT;
 
                     C_HSQZ: if (h_squeeze_valid) begin
-                        ptr_a <= ptr_a + 14'd1;
+                        ptr_a <= ptr_a + 14'd4;
                         len   <= len - 16'd1;
                         if (len == 16'd1)
                             state <= C_NEXT;

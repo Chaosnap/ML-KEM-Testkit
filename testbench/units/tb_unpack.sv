@@ -1,11 +1,14 @@
-// tb_unpack.sv - mlkem_unpack DECODE mode against FIPS 203
+// tb_unpack.sv - mlkem_unpack against FIPS 203 (DECODE, SAMPLE, CBD)
 //
-// For each d, streams ByteEncode_d of polys whose fields cover every value
-// in [0, 2^d) into mlkem_unpack (MODE_DECODE, modulus check on for d = 12),
-// with a byte source that stalls pseudo-randomly, captures the poly RAM
-// writes and compares them with Decompress_d(ByteDecode_d) (field mod q for
-// d = 12) from gen_vectors.py; for d = 12 also counts range_err pulses.
-// Prints "TB_UNPACK PASS" on success.
+// Byte streams from gen_vectors.py are fed through the chunk source
+// interface with random chunk sizes (1..8 bytes) and random stalls; the
+// poly RAM writes are captured and compared with the Python reference:
+//   DECODE d in {1,4,5,10,11,12}: Decompress_d(ByteDecode_d), every field
+//          value covered; d = 12 also counts range_err (modulus check)
+//   SAMPLE: SampleNTT (Algorithm 7) on random 672-byte strings
+//   CBD eta in {2,3}: SamplePolyCBD_eta (Algorithm 8)
+// DECODE and CBD sources hold exactly the bytes the poly needs, and the
+// TB checks they are all consumed. Prints "TB_UNPACK PASS" on success.
 //
 // Plusarg +dir=<vector directory> (default ".").
 
@@ -13,7 +16,8 @@
 
 module tb_unpack;
 
-    localparam int ND = 6;
+    localparam int MAXP = 16;
+
     // d values under test (function: Icarus has no unpacked array parameters).
     function automatic int ds(input int i);
         case (i)
@@ -21,19 +25,21 @@ module tb_unpack;
             3: return 10;  4: return 11;  default: return 12;
         endcase
     endfunction
-    localparam int MAXP = 16;
 
     logic        clk = 1'b0;
     logic        rst_n = 1'b0;
     always #5 clk = ~clk;
 
     logic        start = 1'b0;
+    logic [1:0]  mode = 2'd2;
     logic [3:0]  param = '0;
     logic        check = 1'b0;
     logic [2:0]  slot = '0;
-    logic        done, range_err, src_take, wr_en;
+    logic        done, src_take, wr_en;
+    logic [1:0]  range_err;
     logic        src_valid;
-    logic [7:0]  src_byte;
+    logic [63:0] src_data;
+    logic [3:0]  src_n;
     logic [9:0]  wr_addr;
     logic [23:0] wr_data;
 
@@ -42,14 +48,15 @@ module tb_unpack;
         .rst_n     (rst_n),
         .clr       (1'b0),
         .start     (start),
-        .mode      (2'd2),           // MODE_DECODE
+        .mode      (mode),
         .param     (param),
         .check     (check),
         .slot      (slot),
         .done      (done),
         .range_err (range_err),
         .src_valid (src_valid),
-        .src_byte  (src_byte),
+        .src_data  (src_data),
+        .src_n     (src_n),
         .src_take  (src_take),
         .wr_en     (wr_en),
         .wr_addr   (wr_addr),
@@ -60,31 +67,76 @@ module tb_unpack;
     logic [11:0] exp_c [0:MAXP*256-1];
     logic [11:0] exp_e [0:MAXP-1];
     logic [23:0] ram   [0:1023];
-    int          ptr, nerr, nwr;
+    int          ptr = 0, lim = 0, nerr, nwr;
     logic [31:0] lfsr = 32'h1;
     string       dir;
     int          errors = 0, checked = 0;
 
-    // Byte source: valid about 3/4 of the time.
-    assign src_valid = lfsr[1:0] != 2'b00;
-    assign src_byte  = bytes[ptr];
+    // Chunk source: random size, valid about 3/4 of the time, never past lim.
+    always @(*) begin
+        int n;
+        n = 1 + int'(lfsr[6:4]);
+        if (n > lim - ptr) n = lim - ptr;
+        src_n     = 4'(n);
+        src_valid = (lfsr[1:0] != 2'b00) && (n > 0);
+        src_data  = '0;
+        for (int i = 0; i < 8; i++)
+            if (i < n) src_data[8 * i +: 8] = bytes[ptr + i];
+    end
 
     always @(posedge clk) begin
         lfsr <= {lfsr[30:0], lfsr[31] ^ lfsr[21] ^ lfsr[1] ^ lfsr[0]};
-        if (src_take) ptr <= ptr + 1;
+        if (src_take) ptr <= ptr + int'(src_n);
         if (wr_en) begin
             ram[wr_addr] <= wr_data;
             nwr <= nwr + 1;
         end
-        if (range_err) nerr <= nerr + 1;
+        nerr <= nerr + int'(range_err[0]) + int'(range_err[1]);
     end
+
+    // Run one poly: bytes [base, base + nbytes) in slot s.
+    task automatic run_poly(input logic [1:0] m, input int pr, input bit chk,
+                            input int s, input int base, input int nbytes);
+        @(negedge clk);
+        ptr = base;
+        lim = base + nbytes;
+        nerr = 0;
+        nwr = 0;
+        mode = m;
+        param = 4'(pr);
+        check = chk;
+        slot = 3'(s);
+        start = 1'b1;
+        @(negedge clk);
+        start = 1'b0;
+        while (!done) @(negedge clk);
+        repeat (2) @(negedge clk);
+    endtask
+
+    task automatic compare(input string what, input int s, input int ebase);
+        if (nwr != 128) begin
+            errors++;
+            $display("%s: %0d RAM writes, expected 128", what, nwr);
+        end
+        for (int i = 0; i < 256; i++) begin
+            logic [11:0] c;
+            c = ram[s * 128 + i / 2][12 * (i % 2) +: 12];
+            checked++;
+            if (c !== exp_c[ebase + i]) begin
+                errors++;
+                if (errors <= 10)
+                    $display("%s coef %0d: got %0d expected %0d", what, i, c, exp_c[ebase + i]);
+            end
+        end
+    endtask
 
     initial begin
         if (!$value$plusargs("dir=%s", dir)) dir = ".";
         repeat (3) @(posedge clk);
         rst_n = 1'b1;
 
-        for (int di = 0; di < ND; di++) begin
+        // DECODE.
+        for (int di = 0; di < 6; di++) begin
             int dd, np;
             dd = ds(di);
             np = ((1 << dd) / 256 < 2) ? 2 : (1 << dd) / 256;
@@ -92,47 +144,41 @@ module tb_unpack;
             $readmemh($sformatf("%s/unpack_exp_d%0d.hex", dir, dd), exp_c, 0, np * 256 - 1);
             $readmemh($sformatf("%s/unpack_err_d%0d.hex", dir, dd), exp_e, 0, np - 1);
             for (int p = 0; p < np; p++) begin
-                int s;
-                s = p % 8;
-                @(negedge clk);
-                ptr = p * 32 * dd;
-                nerr = 0;
-                nwr = 0;
-                param = 4'(dd);
-                check = (dd == 12);
-                slot = 3'(s);
-                start = 1'b1;
-                @(negedge clk);
-                start = 1'b0;
-                while (!done) @(negedge clk);
-                repeat (2) @(negedge clk);
-                if (ptr != (p + 1) * 32 * dd) begin
+                run_poly(2'd2, dd, dd == 12, p % 8, p * 32 * dd, 32 * dd);
+                if (ptr != lim) begin
                     errors++;
-                    $display("d=%0d poly %0d: consumed %0d bytes, expected %0d",
-                             dd, p, ptr - p * 32 * dd, 32 * dd);
-                end
-                if (nwr != 128) begin
-                    errors++;
-                    $display("d=%0d poly %0d: %0d RAM writes, expected 128", dd, p, nwr);
+                    $display("DECODE d=%0d poly %0d: %0d bytes left unconsumed", dd, p, lim - ptr);
                 end
                 if (nerr != int'(exp_e[p])) begin
                     errors++;
-                    $display("d=%0d poly %0d: %0d range_err pulses, expected %0d",
-                             dd, p, nerr, exp_e[p]);
+                    $display("DECODE d=%0d poly %0d: %0d range_err, expected %0d", dd, p, nerr, exp_e[p]);
                 end
-                for (int i = 0; i < 256; i++) begin
-                    logic [11:0] c;
-                    c = ram[s * 128 + i / 2][12 * (i % 2) +: 12];
-                    checked++;
-                    if (c !== exp_c[p * 256 + i]) begin
-                        errors++;
-                        if (errors <= 10)
-                            $display("d=%0d poly %0d coef %0d: got %0d expected %0d",
-                                     dd, p, i, c, exp_c[p * 256 + i]);
-                    end
-                end
+                compare($sformatf("DECODE d=%0d poly %0d", dd, p), p % 8, p * 256);
             end
         end
+
+        // SAMPLE (may stop before the end of the string).
+        $readmemh({dir, "/sample_bytes.hex"}, bytes, 0, 8 * 672 - 1);
+        $readmemh({dir, "/sample_exp.hex"}, exp_c, 0, 8 * 256 - 1);
+        for (int p = 0; p < 8; p++) begin
+            run_poly(2'd0, 0, 1'b0, p, p * 672, 672);
+            compare($sformatf("SAMPLE poly %0d", p), p, p * 256);
+        end
+
+        // CBD eta = 2, 3.
+        for (int eta = 2; eta <= 3; eta++) begin
+            $readmemh($sformatf("%s/cbd%0d_bytes.hex", dir, eta), bytes, 0, 4 * 64 * eta - 1);
+            $readmemh($sformatf("%s/cbd%0d_exp.hex", dir, eta), exp_c, 0, 4 * 256 - 1);
+            for (int p = 0; p < 4; p++) begin
+                run_poly(2'd1, eta, 1'b0, p, p * 64 * eta, 64 * eta);
+                if (ptr != lim) begin
+                    errors++;
+                    $display("CBD%0d poly %0d: %0d bytes left unconsumed", eta, p, lim - ptr);
+                end
+                compare($sformatf("CBD%0d poly %0d", eta, p), p, p * 256);
+            end
+        end
+
         $display("tb_unpack: %0d coefficients checked, %0d errors", checked, errors);
         if (errors == 0 && checked > 0) $display("TB_UNPACK PASS");
         else $display("TB_UNPACK FAIL");

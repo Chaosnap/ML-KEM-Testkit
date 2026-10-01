@@ -4,7 +4,7 @@
 #   scripts/regress.sh            (from the repository root)
 #
 # Steps: Go unit tests, Icarus UART/NTT/UART-link benches, Icarus unit
-# tests of modmul (exhaustive) / pack / unpack, cocotb Barrett
+# tests of keccak_sponge (vs hashlib), modmul (exhaustive) / pack / unpack, cocotb Barrett
 # (Icarus) and Keccak-f1600 (Verilator) tests if cocotb-config is on PATH,
 # the TVLA Verilator model build, and the ML-KEM-768 ACVP vectors on the full core (scripts/sim_acvp.py).
 # Exits non-zero on the first failure.
@@ -19,6 +19,10 @@ go test ./... -race -count=1 | grep -v "no test files"
 step "iverilog: uart, ntt, uart-link"
 make -s -C testbench/iverilog all | grep -E "PASS|FAIL"
 make -s -C testbench/iverilog uart-link BAUD=1000000 | grep -E "PASS|FAIL"
+
+step "iverilog: keccak_sponge vs hashlib"
+make -s -C testbench/sponge 2>&1 | grep -E "^TB_|^tb_|block"
+grep -q PASS build/sponge/tb_sponge.log
 
 step "iverilog units: modmul (exhaustive), pack, unpack"
 make -s -C testbench/units all 2>&1 | grep -E "^TB_|^tb_"

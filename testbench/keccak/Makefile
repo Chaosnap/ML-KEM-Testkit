@@ -6,7 +6,7 @@
 #   make SIM=questa       (commercial, SystemVerilog)
 
 TOPLEVEL_LANG = verilog
-VERILOG_SOURCES = ../../hdl/core/keccak_f1600.sv
+VERILOG_SOURCES = ../../hdl/core/keccak_f1600.sv ../../hdl/core/keccak_round.sv
 TOPLEVEL = keccak_f1600
 MODULE = test_keccak
 

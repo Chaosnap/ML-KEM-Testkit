@@ -15,7 +15,7 @@
 //               u_ctrl (microcode sequencer, u_rom) -------------+
 //                  |        |            |             |
 //              u_sponge   u_alu       u_unpack      u_pack
-//             (u_keccak) (NTT/INTT,   (SampleNTT,   (Compress,
+//            (keccak_round)(NTT/INTT,   (SampleNTT,   (Compress,
 //                         basemul,     CBD, Decode,  Encode)
 //                         add/sub)     Decompress)
 //                             \           |             /
@@ -157,16 +157,19 @@ module pqc_mlkem_top #(
     logic        h_init, h_idle, h_absorb_valid, h_absorb_ready, h_finalize;
     logic        h_squeeze_valid, h_squeeze_take;
     logic [1:0]  h_mode;
-    logic [7:0]  h_absorb_byte, h_squeeze_byte;
+    logic [63:0] h_absorb_data, h_squeeze_data;
+    logic [3:0]  h_absorb_n, h_squeeze_avail, h_squeeze_n;
     logic        alu_start, alu_acc, alu_done;
     logic [2:0]  alu_op;
     logic [2:0]  alu_sa, alu_sb, alu_sc;
-    logic        up_start, up_check, up_done, up_range_err;
+    logic        up_start, up_check, up_done;
+    logic [1:0]  up_range_err;
     logic        up_src_valid, up_src_take;
     logic [1:0]  up_mode;
     logic [3:0]  up_param;
     logic [2:0]  up_slot;
-    logic [7:0]  up_src_byte;
+    logic [63:0] up_src_data;
+    logic [3:0]  up_src_n;
     logic        pk_start, pk_done, pk_out_valid;
     logic [3:0]  pk_d;
     logic [2:0]  pk_slot;
@@ -196,12 +199,15 @@ module pqc_mlkem_top #(
         .h_mode          (h_mode),
         .h_idle          (h_idle),
         .h_absorb_valid  (h_absorb_valid),
-        .h_absorb_byte   (h_absorb_byte),
+        .h_absorb_data   (h_absorb_data),
+        .h_absorb_n      (h_absorb_n),
         .h_absorb_ready  (h_absorb_ready),
         .h_finalize      (h_finalize),
         .h_squeeze_valid (h_squeeze_valid),
-        .h_squeeze_byte  (h_squeeze_byte),
+        .h_squeeze_data  (h_squeeze_data),
+        .h_squeeze_avail (h_squeeze_avail),
         .h_squeeze_take  (h_squeeze_take),
+        .h_squeeze_n     (h_squeeze_n),
         .alu_start       (alu_start),
         .alu_op          (alu_op),
         .alu_sa          (alu_sa),
@@ -217,7 +223,8 @@ module pqc_mlkem_top #(
         .up_done         (up_done),
         .up_range_err    (up_range_err),
         .up_src_valid    (up_src_valid),
-        .up_src_byte     (up_src_byte),
+        .up_src_data     (up_src_data),
+        .up_src_n        (up_src_n),
         .up_src_take     (up_src_take),
         .pk_start        (pk_start),
         .pk_d            (pk_d),
@@ -230,7 +237,7 @@ module pqc_mlkem_top #(
     );
 
     // =========================================================================
-    // Keccak sponge (SHA3-256/512, SHAKE128/256)
+    // Keccak sponge (SHA3-256/512, SHAKE128/256), one 64-bit lane per cycle
     // =========================================================================
 
     keccak_sponge u_sponge (
@@ -240,12 +247,15 @@ module pqc_mlkem_top #(
         .mode          (h_mode),
         .idle          (h_idle),
         .absorb_valid  (h_absorb_valid),
-        .absorb_byte   (h_absorb_byte),
+        .absorb_data   (h_absorb_data),
+        .absorb_n      (h_absorb_n),
         .absorb_ready  (h_absorb_ready),
         .finalize      (h_finalize),
         .squeeze_valid (h_squeeze_valid),
-        .squeeze_byte  (h_squeeze_byte),
-        .squeeze_take  (h_squeeze_take)
+        .squeeze_data  (h_squeeze_data),
+        .squeeze_avail (h_squeeze_avail),
+        .squeeze_take  (h_squeeze_take),
+        .squeeze_n     (h_squeeze_n)
     );
 
     // =========================================================================
@@ -300,7 +310,8 @@ module pqc_mlkem_top #(
         .done      (up_done),
         .range_err (up_range_err),
         .src_valid (up_src_valid),
-        .src_byte  (up_src_byte),
+        .src_data  (up_src_data),
+        .src_n     (up_src_n),
         .src_take  (up_src_take),
         .wr_en     (up_wr_en),
         .wr_addr   (up_wr_addr),

@@ -97,6 +97,25 @@ def astr(a):
 class Prog:
     def __init__(self):
         self.code = []
+        self.apos = None    # Bytes absorbed since HINIT (None: not absorbing).
+        self.spos = None    # Bytes squeezed since HFIN (None: not squeezing).
+
+    # keccak_sponge takes chunks of up to 8 bytes that stay inside a 64-bit
+    # lane; mlkem_ctrl absorbs / squeezes buffer data one 32-bit word at a
+    # time and HABI bytes as one chunk. Check those constraints statically.
+    def _absorb(self, n, word):
+        assert self.apos is not None, "absorb outside HINIT..HFIN"
+        if word:
+            assert self.apos % 4 == 0, "HABS at sponge byte %d, not word aligned" % self.apos
+        else:
+            assert self.apos % 8 + n <= 8, "HABI bytes cross a lane (sponge byte %d)" % self.apos
+        self.apos += n
+
+    def _squeeze(self, n, word):
+        assert self.spos is not None, "squeeze before HFIN"
+        if word:
+            assert self.spos % 4 == 0, "HSQZ at sponge byte %d, not word aligned" % self.spos
+        self.spos += n
 
     def emit(self, op, p=0, a=0, b=0, c=0, ln=0, text=""):
         self.code.append((OP[op], p, a, b, c, ln, text or op))
@@ -119,18 +138,23 @@ class Prog:
     def hinit(self, mode):
         name = ["SHA3-256", "SHA3-512", "SHAKE128", "SHAKE256"][mode]
         self.emit("HINIT", p=mode, text="HINIT  " + name)
+        self.apos, self.spos = 0, None
 
     def habs(self, a, ln):
+        self._absorb(ln, True)
         self.emit("HABS", a=a, ln=ln, text="HABS   %s len=%d" % (astr(a), ln))
 
     def habi(self, *bs):
         v = bs[0] | ((bs[1] << 8) if len(bs) > 1 else 0)
+        self._absorb(len(bs), False)
         self.emit("HABI", p=len(bs), a=v, text="HABI   " + ",".join(map(str, bs)))
 
     def hfin(self):
         self.emit("HFIN")
+        self.apos, self.spos = None, 0
 
     def hsqz(self, a, ln):
+        self._squeeze(ln, True)
         self.emit("HSQZ", a=a, ln=ln, text="HSQZ   %s len=%d" % (astr(a), ln))
 
     def copy(self, s, d, ln):
@@ -146,10 +170,14 @@ class Prog:
     # --- polynomial helpers ---------------------------------------------
     def sample(self, dst):
         self.slots(dst)
+        assert self.spos == 0, "SAMPLE must start a fresh squeeze"
+        self.spos = None    # Consumes an unknown number of bytes.
         self.emit("SAMPLE", c=dst, text="SAMPLE -> s%d" % dst)
 
     def cbd(self, eta, dst):
         self.slots(dst)
+        assert self.spos == 0, "CBD must start a fresh squeeze"
+        self.spos = None
         self.emit("CBD", p=eta, c=dst, text="CBD%d   -> s%d" % (eta, dst))
 
     def decode(self, d, a, dst, check=False):

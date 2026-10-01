@@ -15,6 +15,10 @@ Writes (one hex value per line, $readmemh format):
                           [0, 2^d), then random; max(2, 2^d / 256) polys
   unpack_exp_d<d>.hex     expected coefficients (Decompress_d, or field mod q for d = 12)
   unpack_err_d<d>.hex     per poly: number of fields >= q (d = 12 modulus check)
+  sample_bytes.hex        NP_SAMPLE x 672 random bytes (4 SHAKE128 blocks)
+  sample_exp.hex          SampleNTT (FIPS 203 Algorithm 7) of each 672-byte string
+  cbd<eta>_bytes.hex      NP_CBD x 64*eta random bytes
+  cbd<eta>_exp.hex        SamplePolyCBD_eta (FIPS 203 Algorithm 8), eta = 2, 3
 """
 
 import os
@@ -24,6 +28,33 @@ import sys
 Q = 3329
 PACK_DS = [1, 4, 5, 10, 11, 12]
 UNPACK_DS = [1, 4, 5, 10, 11, 12]
+NP_SAMPLE, SAMPLE_BYTES = 8, 672
+NP_CBD = 4
+
+
+def sample_ntt(b):
+    """FIPS 203 Algorithm 7 on a fixed byte string (must yield 256)."""
+    a, i = [], 0
+    while len(a) < 256:
+        d1 = b[i] + 256 * (b[i + 1] % 16)
+        d2 = b[i + 1] // 16 + 16 * b[i + 2]
+        if d1 < Q:
+            a.append(d1)
+        if d2 < Q and len(a) < 256:
+            a.append(d2)
+        i += 3
+    return a
+
+
+def cbd(b, eta):
+    """FIPS 203 Algorithm 8."""
+    bits = [(b[i // 8] >> (i % 8)) & 1 for i in range(8 * len(b))]
+    out = []
+    for i in range(256):
+        x = sum(bits[2 * i * eta + j] for j in range(eta))
+        y = sum(bits[2 * i * eta + eta + j] for j in range(eta))
+        out.append((x - y) % Q)
+    return out
 
 
 def compress(x, d):
@@ -79,7 +110,23 @@ def main():
         write(os.path.join(out, "unpack_bytes_d%d.hex" % d), data, 2)
         write(os.path.join(out, "unpack_exp_d%d.hex" % d), exp, 3)
         write(os.path.join(out, "unpack_err_d%d.hex" % d), err, 3)
-    print("vectors: pack %d polys, unpack d=%s" % (len(polys), UNPACK_DS))
+    data, exp = [], []
+    for _ in range(NP_SAMPLE):
+        b = [rng.randrange(256) for _ in range(SAMPLE_BYTES)]
+        data += b
+        exp += sample_ntt(b)
+    write(os.path.join(out, "sample_bytes.hex"), data, 2)
+    write(os.path.join(out, "sample_exp.hex"), exp, 3)
+    for eta in (2, 3):
+        data, exp = [], []
+        for _ in range(NP_CBD):
+            b = [rng.randrange(256) for _ in range(64 * eta)]
+            data += b
+            exp += cbd(b, eta)
+        write(os.path.join(out, "cbd%d_bytes.hex" % eta), data, 2)
+        write(os.path.join(out, "cbd%d_exp.hex" % eta), exp, 3)
+    print("vectors: pack %d polys, unpack d=%s, sample %d, cbd 2x%d"
+          % (len(polys), UNPACK_DS, NP_SAMPLE, NP_CBD))
 
 
 if __name__ == "__main__":

@@ -124,7 +124,7 @@ testbench/tvla_sim/obj_dir/Vtb_tvla +in=in.mem +len=3488 +op=2 +vcd=one.vcd
 | `total` | 核心内所有信号，每根线只算一次 |
 | `top` | `pqc_mlkem_top` 自身这一层的信号（模块之间的连线等） |
 | `u_alu` | 多项式 ALU：NTT/INTT、basemul、加减 |
-| `u_sponge` | Keccak sponge，含 `u_keccak` 置换 |
+| `u_sponge` | Keccak sponge（单份 1600 位状态，`u_round` 为一轮置换的组合逻辑） |
 | `u_unpack` | SampleNTT、CBD、Decode、Decompress |
 | `u_pack` | Compress、Encode |
 | `u_polyram` | 多项式 RAM 的端口 |
