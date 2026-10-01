@@ -245,10 +245,11 @@ func testOperation(dev fpga.Device, timeout time.Duration) (uint32, error) {
 }
 
 // FPGA data buffer layout used by the ML-KEM core (reset values of
-// DATA_IN_ADDR / DATA_OUT_ADDR; see hdl/core/pqc_data_buffer.sv).
+// DATA_IN_ADDR / DATA_OUT_ADDR; see hdl/core/pqc_data_buffer.sv and
+// IN_BASE / OUT_BASE in scripts/gen_mlkem_ucode.py).
 const (
 	mlkemInOffset  = 0x0000
-	mlkemOutOffset = 0x1800
+	mlkemOutOffset = 0x0E00
 )
 
 // testBufferLoopback writes a random pattern to the data buffer at an

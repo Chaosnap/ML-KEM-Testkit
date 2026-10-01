@@ -8,7 +8,7 @@
 //
 // Data path:
 //
-//   AXI-Lite --> u_csr --(port A)--> u_dbuf (16 KB) <--(port B)--+
+//   AXI-Lite --> u_csr --(port A)--> u_dbuf (8 KB)  <--(port B)--+
 //                  |                                             |
 //               start/status                                     |
 //                  v                                             |
@@ -75,7 +75,7 @@ module pqc_mlkem_top #(
     // Data buffer ports.
     logic        dbuf_a_en, dbuf_b_en;
     logic [3:0]  dbuf_a_we, dbuf_b_we;
-    logic [11:0] dbuf_a_addr, dbuf_b_addr;
+    logic [10:0] dbuf_a_addr, dbuf_b_addr;
     logic [31:0] dbuf_a_din, dbuf_a_dout, dbuf_b_din, dbuf_b_dout;
 
     pqc_axi_csr #(
@@ -84,8 +84,10 @@ module pqc_mlkem_top #(
         .VERSION_MIN (0),
         .VERSION_PAT (0),
         .ADDR_WIDTH  (AXI_ADDR_WIDTH),
-        .BUF_AW      (12),
-        .DEFAULT_SEC_LEVEL (32'd768)
+        .BUF_AW      (11),
+        .DEFAULT_SEC_LEVEL (32'd768),
+        .DEFAULT_IN_ADDR   (32'h0000),     // = IN_BASE  in gen_mlkem_ucode.py
+        .DEFAULT_OUT_ADDR  (32'h0E00)      // = OUT_BASE in gen_mlkem_ucode.py
     ) u_csr (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -127,12 +129,12 @@ module pqc_mlkem_top #(
     );
 
     // =========================================================================
-    // Data buffer (16 KB true dual-port BRAM)
+    // Data buffer (8 KB true dual-port BRAM)
     // =========================================================================
 
     pqc_data_buffer #(
-        .DEPTH      (4096),
-        .ADDR_WIDTH (12)
+        .DEPTH      (2048),
+        .ADDR_WIDTH (11)
     ) u_dbuf (
         .clk    (clk),
         .a_en   (dbuf_a_en),

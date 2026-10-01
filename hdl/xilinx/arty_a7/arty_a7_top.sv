@@ -1,7 +1,7 @@
 // arty_a7_top.sv - Board-level wrapper for Arty A7-35T / A7-100T
 //
 // UART RX -> uart_axi_bridge -> AXI-Lite -> pqc_mlkem_top
-//   (CSR registers + 16 KB data buffer + ML-KEM datapath) -> UART TX
+//   (CSR registers + 8 KB data buffer + ML-KEM datapath) -> UART TX
 //
 // Pin assignments:
 //   - UART TX/RX via the on-board USB-UART bridge (115200 8N1)

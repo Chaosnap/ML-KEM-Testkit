@@ -151,7 +151,7 @@ python3 scripts/uart_test.py -p $PORT info
   SEC_LEVEL      0x00000300  768
   STATUS         0x00000000  0          busy=0 done=0 error=0
   DATA_IN_ADDR   0x00000000  0
-  DATA_OUT_ADDR  0x00001800  6144
+  DATA_OUT_ADDR  0x00000e00  3584
   DATA_OUT_LEN   0x00000e00  3584
   ...
 ```
@@ -295,7 +295,7 @@ func main() {
 
 	// 2. 配置并启动。
 	must(dev.WriteReg(fpga.RegDataInAddr, 0x0000))
-	must(dev.WriteReg(fpga.RegDataOutAddr, 0x1800))
+	must(dev.WriteReg(fpga.RegDataOutAddr, 0x0E00))
 	must(dev.WriteReg(fpga.RegSecLevel, 768))
 	must(dev.WriteReg(fpga.RegOpMode, fpga.OpKeyGen))
 	must(dev.WriteReg(fpga.RegCTRL, fpga.CtrlStart))
@@ -304,9 +304,9 @@ func main() {
 	cycles, err := fpga.WaitDone(dev, 5*time.Second)
 	must(err)
 
-	// 4. 读出结果：DATA_OUT_LEN 字节，从偏移 0x1800 开始。
+	// 4. 读出结果：DATA_OUT_LEN 字节，从偏移 0x0E00 开始。
 	n, _ := dev.ReadReg(fpga.RegDataOutLen)
-	out, err := dev.ReadData(0x1800, int(n))
+	out, err := dev.ReadData(0x0E00, int(n))
 	must(err)
 
 	// 5. 与软件参考比对。
@@ -380,15 +380,19 @@ CRC 使用 CRC-32/IEEE，与 Go 的 `crc32.ChecksumIEEE` 和 Python 的 `zlib.cr
 | 0x1C | ERROR_CODE | 只读 | 1 = SEC_LEVEL/OP_MODE 非法（含 bitstream 未包含的等级），2 = ek 模数检查失败，3 = 非法微码 |
 | 0x20 | DATA_IN_ADDR | 读写 | 输入在 buffer 中的字节偏移（复位值 0x0000） |
 | 0x24 | DATA_IN_LEN | 读写 | 仅作记录，硬件不使用 |
-| 0x28 | DATA_OUT_ADDR | 读写 | 输出在 buffer 中的字节偏移（复位值 0x1800） |
+| 0x28 | DATA_OUT_ADDR | 读写 | 输出在 buffer 中的字节偏移（复位值 0x0E00） |
 | 0x2C | DATA_OUT_LEN | 只读 | 由当前 SEC_LEVEL 和 OP_MODE 决定的输出长度 |
 
-### 6.3 data buffer 布局（16 KB）
+### 6.3 data buffer 布局（8 KB）
 | 偏移 | 用途 |
 |---|---|
-| 0x0000 – 0x17FF | 输入区（DATA_IN_ADDR） |
-| 0x1800 – 0x2FFF | 输出区（DATA_OUT_ADDR） |
-| 0x3000 – 0x3FFF | 核心内部 scratch，**主机不要在这里放输入或输出数据** |
+| 0x0000 – 0x0DFF | 输入区（DATA_IN_ADDR） |
+| 0x0E00 – 0x1BFF | 输出区（DATA_OUT_ADDR）；Decaps 时核心把重加密的 c′ 暂存在 OUT + 0x100 |
+| 0x1C00 – 0x1CFF | 核心内部 scratch，**主机不要在这里放输入或输出数据** |
+| 0x1D00 – 0x1FFF | 未使用 |
+
+buffer 只有 8 KB，但总线窗口仍是 0x4000–0x7FFF（16 KB）：偏移 0x2000–0x3FFF 是 0x0000–0x1FFF 的镜像。
+如果修改 DATA_IN_ADDR / DATA_OUT_ADDR，输入区要留 0xE00 字节、输出区要留 0xE00 字节，且不能和 scratch 重叠。
 
 ### 6.4 各运算的输入与输出（字节）
 | OP_MODE | 输入（写到 DATA_IN_ADDR） | 输出（从 DATA_OUT_ADDR 读） |

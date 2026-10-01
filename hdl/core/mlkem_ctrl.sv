@@ -38,7 +38,7 @@ module mlkem_ctrl (
     // Data buffer port B (byte-addressed via word + lane).
     output logic        buf_en,
     output logic [3:0]  buf_we,
-    output logic [11:0] buf_addr,
+    output logic [10:0] buf_addr,
     output logic [31:0] buf_din,
     input  logic [31:0] buf_dout,
 
@@ -250,11 +250,11 @@ module mlkem_ctrl (
         buf_we   = wr_req ? (4'b0001 << wr_ptr[1:0]) : 4'b0000;
         buf_din  = {4{wr_byte}};
         if (wr_req)
-            buf_addr = wr_ptr[13:2];
+            buf_addr = wr_ptr[12:2];
         else if (state == C_RD_WAIT && i_op == OP_CMP)
-            buf_addr = ptr_b[13:2];
+            buf_addr = ptr_b[12:2];
         else
-            buf_addr = rd_ptr[13:2];
+            buf_addr = rd_ptr[12:2];
     end
 
     // ---------------------------------------------------------------------

@@ -53,7 +53,7 @@ REG = {
     "DATA_IN_ADDR": 0x20, "DATA_IN_LEN": 0x24, "DATA_OUT_ADDR": 0x28,
     "DATA_OUT_LEN": 0x2C,
 }
-IN_BASE, OUT_BASE = 0x0000, 0x1800
+IN_BASE, OUT_BASE = 0x0000, 0x0E00   # = IN_BASE / OUT_BASE in gen_mlkem_ucode.py
 OPS = {"keygen": 0, "encaps": 1, "decaps": 2}
 ERRORS = {0: "none", 1: "unsupported SEC_LEVEL/OP_MODE",
           2: "ek failed modulus check", 3: "illegal microcode"}

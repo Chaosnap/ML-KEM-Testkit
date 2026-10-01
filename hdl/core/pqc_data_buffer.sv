@@ -4,17 +4,19 @@
 // the bus slave (pqc_axi_csr data window, reached over PCIe/AXI/UART);
 // port B is driven by the accelerator's sequencer.
 //
-// Default ML-KEM layout (byte offsets, see scripts/gen_mlkem_ucode.py):
-//   0x0000 - 0x17FF  Input region  (DATA_IN_ADDR reset value 0x0000)
-//   0x1800 - 0x2FFF  Output region (DATA_OUT_ADDR reset value 0x1800)
-//   0x3000 - 0x3FFF  Core scratch  (seeds, hashes, re-encrypted ciphertext)
+// ML-KEM-768 layout (byte offsets, see scripts/gen_mlkem_ucode.py):
+//   0x0000 - 0x0DFF  Input region  (DATA_IN_ADDR reset value 0x0000)
+//   0x0E00 - 0x1BFF  Output region (DATA_OUT_ADDR reset value 0x0E00);
+//                    Decaps keeps the re-encrypted c' at OUT + 0x100
+//   0x1C00 - 0x1CFF  Core scratch  (seeds, hashes, m')
+//   0x1D00 - 0x1FFF  unused
 //
-// 16 KB = 4096 x 32-bit words with per-byte write enables; infers a true
-// dual-port block RAM (byte-write mode) on Xilinx and Intel devices.
+// 8 KB = 2048 x 32-bit words with per-byte write enables; infers a true
+// dual-port block RAM (byte-write mode, 2 x RAMB36) on Xilinx devices.
 
 module pqc_data_buffer #(
-    parameter int DEPTH      = 4096,        // Number of 32-bit words.
-    parameter int ADDR_WIDTH = 12           // log2(DEPTH).
+    parameter int DEPTH      = 2048,        // Number of 32-bit words.
+    parameter int ADDR_WIDTH = 11           // log2(DEPTH).
 ) (
     input  logic                    clk,
 

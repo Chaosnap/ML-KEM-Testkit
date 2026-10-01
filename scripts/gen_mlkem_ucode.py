@@ -37,13 +37,20 @@ SHA3_256, SHA3_512, SHAKE128, SHAKE256 = 0, 1, 2, 3
 CHECK = 0x10  # DECODE: flag coefficients >= q (FIPS 203 7.2 modulus check).
 ACC = 0x01    # BMUL: accumulate into destination.
 
-# Scratch layout (absolute byte offsets in the 16 KB data buffer).
-SCR = 0x3000
+# Data buffer layout (byte offsets in the 8 KB pqc_data_buffer). The
+# DATA_IN_ADDR / DATA_OUT_ADDR reset values (pqc_axi_csr parameters in
+# pqc_mlkem_top) must equal IN_BASE / OUT_BASE; the host tools use them too.
+BUF_SIZE = 0x2000
+IN_BASE, IN_SIZE = 0x0000, 0x0E00      # >= 3488 B (Decaps: dk || c).
+OUT_BASE, OUT_SIZE = 0x0E00, 0x0E00    # >= 3584 B (KeyGen: ek || dk).
+SCR, SCR_SIZE = 0x1C00, 0x0100         # Core scratch.
 SEEDS = SCR + 0x000   # G output: rho||sigma or K||r.
 HEK = SCR + 0x040     # H(ek).
 MPRIME = SCR + 0x060  # m'.
 KBAR = SCR + 0x080    # J(z||c).
-CPRIME = SCR + 0x100  # re-encrypted c'.
+# Re-encrypted c' (1088 B) does not fit the scratch area; Decaps only
+# outputs K (32 B at OUT+0), so c' lives in the otherwise unused output area.
+CPRIME_OUT = 0x100
 
 # Poly RAM slots (mlkem_polyram: 8 slots x 128 words, 3-bit slot number).
 # S_VEC .. S_VEC+k-1 hold the k-vector (s_hat or r_hat).
@@ -55,6 +62,15 @@ PARAMS = {768: (3, 2, 2, 10, 4)}
 LEVEL = 768
 PC_BITS = 9                # Width of the program counter in mlkem_ctrl.sv.
 OPS = ["keygen", "encaps", "decaps"]
+
+
+def check_region(a, size, what):
+    """Abort if a buffer access leaves its region (IN, OUT or scratch)."""
+    off = a & 0x3FFF
+    base, lim, name = {1: (0, IN_SIZE, "IN"), 2: (0, OUT_SIZE, "OUT"),
+                       0: (SCR, SCR + SCR_SIZE, "scratch")}[a >> 14]
+    if not (base <= off and off + size <= lim):
+        raise SystemExit("%s: bytes 0x%x..0x%x outside the %s region" % (what, off, off + size - 1, name))
 
 
 def ABS(o):
@@ -80,6 +96,13 @@ class Prog:
 
     def emit(self, op, p=0, a=0, b=0, c=0, ln=0, text=""):
         self.code.append((OP[op], p, a, b, c, ln, text or op))
+        # Buffer bytes touched: (tagged address, length) per operand.
+        n = len(self.code) - 1
+        acc = {"HABS": [(a, ln)], "HSQZ": [(a, ln)], "COPY": [(a, ln), (b, ln)],
+               "CMP": [(a, ln), (b, ln)], "CSEL": [(a, ln), (b, ln), (c, ln)],
+               "DECODE": [(a, 32 * (p & 0x0F))], "ENCODE": [(b, 32 * p)]}.get(op, [])
+        for addr, size in acc:
+            check_region(addr, size, "pc %d %s" % (n, text or op))
 
     def slots(self, *ss):
         for x in ss:
@@ -289,8 +312,8 @@ def decaps(p, level):
     p.hfin()
     p.hsqz(ABS(KBAR), 32)
     # c' = K-PKE.Encrypt(ek, m', r'); K = (c == c') ? K' : K_bar
-    encrypt(p, level, ek, ABS(MPRIME), ABS(SEEDS + 32), ABS(CPRIME), check=False)
-    p.cmp(ABS(CPRIME), c, ct_len)
+    encrypt(p, level, ek, ABS(MPRIME), ABS(SEEDS + 32), OUT(CPRIME_OUT), check=False)
+    p.cmp(OUT(CPRIME_OUT), c, ct_len)
     p.csel(ABS(SEEDS), ABS(KBAR), OUT(0), 32)
     p.emit("END")
 

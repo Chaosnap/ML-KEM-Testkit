@@ -16,6 +16,7 @@
 | 0 | 10,455 | 4,259 | 3,013 | 8 | 6 | 5,013 | 110,560 | +0.132 ns | 60/60 | 5,542 | 104.9 |
 | 1a | 未跑 | | | 8 | 5.5（推断） | | 110,560 | 未跑 | 60/60 | | |
 | 1b | 未跑 | | | 8 | 5（推断） | | 110,560 | 未跑 | 60/60 | | |
+| 1c | 未跑 | | | 8 | 3（推断） | | 110,560 | 未跑 | 60/60 | | |
 
 第 0 步的 RTL 是 commit bf2ce6d（此前未提交的 `FIXED_LEVEL` / 768-only ROM 改动），
 见下文"与任务描述的差异"。HEAD 一行来自 `build/vivado/arty-a7-100t_mlkem/`
@@ -156,3 +157,29 @@ DECODE 的字节数由 d 推出（32·d 字节）。
 - 槽号 `[3:0]` → `[2:0]`、多项式 RAM 地址 `[10:0]` → `[9:0]`：`mlkem_ctrl`、
   `mlkem_poly_alu`、`mlkem_unpack`、`mlkem_pack`、`pqc_mlkem_top`、`testbench/iverilog/tb_ntt.sv`。
 - 结果：ACVP 60/60，全部回归通过；周期数不变。推断 BRAM：dbuf 4 + polyram 1 = 5。
+
+## 第 1c 步：数据缓冲 16 KB → 8 KB
+
+新布局（采用了建议的布局，生成器核对后定稿）：
+
+| 区域 | 偏移 | 大小 | 实际最大使用 |
+| ---- | ---- | ---: | ----------: |
+| 输入 IN | 0x0000–0x0DFF | 3,584 B | 3,488 B（Decaps：dk ‖ c，到 0xD9F） |
+| 输出 OUT | 0x0E00–0x1BFF | 3,584 B | 3,584 B（KeyGen：ek ‖ dk，正好用满）；Decaps 的 c′ 在 OUT+0x100（1,088 B） |
+| 暂存 SCR | 0x1C00–0x1CFF | 256 B | SEEDS 0x1C00（64）、HEK 0x1C40、MPRIME 0x1C60、KBAR 0x1C80（各 32），到 0x1C9F |
+| 未用 | 0x1D00–0x1FFF | 768 B | |
+
+- `gen_mlkem_ucode.py`：`IN_BASE/OUT_BASE/SCR` 及区域大小常量，`CPRIME` → `OUT(0x100)`。
+  每条访问缓冲区的指令（HABS/HSQZ/COPY/CMP/CSEL/DECODE/ENCODE）都检查访问范围是否在
+  自己的区域（IN / OUT / 暂存）内，越界则生成失败。已用负向测试确认：把 OUT、IN、SCR
+  各缩小一点，断言都会在对应指令处报错。
+- `pqc_data_buffer`：`DEPTH 2048`、`ADDR_WIDTH 11`；`pqc_mlkem_top`：`BUF_AW 11`、
+  `DEFAULT_OUT_ADDR = 0x0E00`；`mlkem_ctrl`：`buf_addr` 12 → 11 位（`ptr[12:2]`）。
+- 协议不变：CSR 数据窗口仍是 0x4000–0x7FFF，8 KB 缓冲在 0x6000–0x7FFF 镜像；
+  `uart_axi_bridge` 未改。
+- 主机端同步：`cmd/pqc-testkit/cmd/fpga.go`（`mlkemOutOffset`，`sca` 命令也用它）、
+  `scripts/uart_test.py`（`OUT_BASE`）、`docs/UART_TEST_GUIDE.md`（寄存器示例与布局表）、
+  `docs/SIM_TVLA_GUIDE.md`、`arty_a7_top.sv` 注释。`tb_core` 从 CSR 复位值读取偏移，无需修改。
+- 注意：和以前一样，整个缓冲区（包括暂存区、m′、K′、K̄ 和现在的 c′）都能被主机通过数据窗口读到。
+  对未防护的研究基线没有影响，但它不是一个可以部署的 KEM 实现。
+- 结果：ACVP 60/60，全部回归通过；周期数不变。推断 BRAM：dbuf 2 + polyram 1 = **3**。

@@ -6,7 +6,8 @@
 //
 // Address map (16-bit AXI address):
 //   0x0000 - 0x00FF  CSR registers (below)
-//   0x4000 - 0x7FFF  Data buffer window (16 KB, byte strobes honoured)
+//   0x4000 - 0x7FFF  Data buffer window (byte strobes honoured; a buffer
+//                    smaller than 16 KB repeats, 8 KB: 0x6000 = 0x4000)
 //   other            reads return 0xDEADBEEF, writes ignored
 //
 // Register map (matches pkg/fpga/device.go):
@@ -20,7 +21,7 @@
 //   0x1C ERROR_CODE    RO  error code
 //   0x20 DATA_IN_ADDR  RW  input buffer byte offset  (reset 0x0000)
 //   0x24 DATA_IN_LEN   RW  input data length (informational)
-//   0x28 DATA_OUT_ADDR RW  output buffer byte offset (reset 0x1800)
+//   0x28 DATA_OUT_ADDR RW  output buffer byte offset (reset DEFAULT_OUT_ADDR)
 //   0x2C DATA_OUT_LEN  RO  output data length
 
 module pqc_axi_csr #(

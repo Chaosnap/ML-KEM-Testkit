@@ -128,7 +128,7 @@ testbench/tvla_sim/obj_dir/Vtb_tvla +in=in.mem +len=3488 +op=2 +vcd=one.vcd
 | `u_unpack` | SampleNTT、CBD、Decode、Decompress |
 | `u_pack` | Compress、Encode |
 | `u_polyram` | 多项式 RAM 的端口 |
-| `u_dbuf` | 16 KB data buffer 的端口 |
+| `u_dbuf` | 8 KB data buffer 的端口 |
 | `u_ctrl` | 微码控制器 |
 | `u_csr` | AXI 寄存器 |
 
