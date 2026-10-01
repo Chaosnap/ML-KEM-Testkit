@@ -2,8 +2,8 @@
 //
 // Polys from gen_vectors.py cover every x in [0, q). For each d the TB loads
 // each poly into a behavioural poly RAM (1-cycle read latency, like
-// mlkem_polyram), runs mlkem_pack and compares the emitted byte stream with
-// the Python reference. Prints "TB_PACK PASS" on success.
+// mlkem_polyram), runs mlkem_pack and compares the emitted stream (32-bit
+// little-endian words) with the Python reference. Prints "TB_PACK PASS" on success.
 //
 // Plusarg +dir=<vector directory> (default ".").
 
@@ -31,7 +31,7 @@ module tb_pack;
     logic        done, rd_en, out_valid;
     logic [9:0]  rd_addr;
     logic [23:0] rd_data;
-    logic [7:0]  out_byte;
+    logic [31:0] out_word;
 
     mlkem_pack dut (
         .clk       (clk),
@@ -45,7 +45,7 @@ module tb_pack;
         .rd_addr   (rd_addr),
         .rd_data   (rd_data),
         .out_valid (out_valid),
-        .out_byte  (out_byte)
+        .out_word  (out_word)
     );
 
     logic [23:0] ram [0:1023];
@@ -60,10 +60,11 @@ module tb_pack;
     int          errors = 0, checked = 0;
 
     always @(posedge clk)
-        if (out_valid) begin
-            if (ngot < 32 * 12) got[ngot] = out_byte;
-            ngot++;
-        end
+        if (out_valid)
+            for (int b = 0; b < 4; b++) begin
+                if (ngot < 32 * 12) got[ngot] = out_word[8 * b +: 8];
+                ngot++;
+            end
 
     initial begin
         if (!$value$plusargs("dir=%s", dir)) dir = ".";

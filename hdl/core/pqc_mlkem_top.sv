@@ -173,7 +173,7 @@ module pqc_mlkem_top #(
     logic        pk_start, pk_done, pk_out_valid;
     logic [3:0]  pk_d;
     logic [2:0]  pk_slot;
-    logic [7:0]  pk_out_byte;
+    logic [31:0] pk_out_word;
     logic [1:0]  pr_sel;
 
     mlkem_ctrl u_ctrl (
@@ -231,7 +231,7 @@ module pqc_mlkem_top #(
         .pk_slot         (pk_slot),
         .pk_done         (pk_done),
         .pk_out_valid    (pk_out_valid),
-        .pk_out_byte     (pk_out_byte),
+        .pk_out_word     (pk_out_word),
         .pr_sel          (pr_sel),
         .units_clr       (units_clr)
     );
@@ -330,7 +330,7 @@ module pqc_mlkem_top #(
         .rd_addr   (pk_rd_addr),
         .rd_data   (pr_a_dout),
         .out_valid (pk_out_valid),
-        .out_byte  (pk_out_byte)
+        .out_word  (pk_out_word)
     );
 
     always_comb begin

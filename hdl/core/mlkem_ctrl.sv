@@ -18,6 +18,7 @@
 //   HABS, DECODE  prefetch words into a 2-entry FIFO, one read per cycle,
 //                 one word (4 bytes) per cycle into the sponge / unpacker
 //   HSQZ          one squeezed word written per cycle
+//   ENCODE        mlkem_pack emits whole words
 //   CMP           a, b word reads interleaved: 2 cycles per word
 //   COPY, CSEL    read word, write word: 2 cycles per word
 //
@@ -94,7 +95,7 @@ module mlkem_ctrl (
     output logic [2:0]  pk_slot,
     input  logic        pk_done,
     input  logic        pk_out_valid,
-    input  logic [7:0]  pk_out_byte,
+    input  logic [31:0] pk_out_word,
 
     // Poly RAM owner: 0 = ALU, 1 = unpacker, 2 = packer.
     output logic [1:0]  pr_sel,
@@ -263,8 +264,7 @@ module mlkem_ctrl (
                     rd_req = f_issue;
                 if (i_op == OP_ENCODE) begin
                     wr_req  = pk_out_valid;
-                    wr_be   = 4'b0001 << ptr_b[1:0];
-                    wr_word = {4{pk_out_byte}};
+                    wr_word = pk_out_word;
                 end
             end
             default: ;
@@ -547,7 +547,7 @@ module mlkem_ctrl (
 
                     C_UNIT: begin
                         if (i_op == OP_ENCODE && pk_out_valid)
-                            ptr_b <= ptr_b + 14'd1;
+                            ptr_b <= ptr_b + 14'd4;
                         if (alu_done || up_done || pk_done)
                             state <= C_NEXT;
                     end
