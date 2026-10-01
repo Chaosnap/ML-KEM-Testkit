@@ -18,6 +18,14 @@
 // per cycle. So SAMPLE / DECODE d=12 consume up to 3 bytes per cycle and
 // CBD eta=2 one byte per cycle. With rejection sampling an odd accepted
 // coefficient waits in `lo` for its partner.
+//
+// Pipeline (every stage registered, for timing):
+//   S0  source chunk register (cr_*), refilled when empty or used
+//   S1  bit buffer: append the chunk if nbits <= 32 (decided from registered
+//       state only), extract up to two fields
+//   S2  q * field for Decompress (shift-add)
+//   S3  field -> coefficient (SampleNTT accept, CBD, Decompress round/shift)
+//   S4  pair coefficients, count; S5 write the RAM word
 
 module mlkem_unpack (
     input  logic        clk,
@@ -40,7 +48,7 @@ module mlkem_unpack (
     output logic        src_take,
 
     // Poly RAM write port.
-    output logic        wr_en,
+    output logic        wr_en,      // Registered.
     output logic [9:0]  wr_addr,
     output logic [23:0] wr_data
 );
@@ -50,7 +58,7 @@ module mlkem_unpack (
     localparam logic [1:0] MODE_DECODE = 2'd2;
 
     localparam logic [11:0] Q  = 12'd3329;
-    localparam int          BW = 88;            // 24 bits left + one 64-bit chunk.
+    localparam int          BW = 96;            // 32 bits left + one 64-bit chunk.
 
     logic        running;
     logic [1:0]  mode_r;
@@ -58,16 +66,27 @@ module mlkem_unpack (
     logic        check_r;
     logic [2:0]  slot_r;
     logic [3:0]  w;                 // Field width.
+    logic [4:0]  w2;                // 2 * w.
     logic [BW-1:0] bitbuf;
     logic [6:0]  nbits;
     logic [8:0]  extracted;         // Fields extracted (CBD / DECODE).
     logic [11:0] taken_bits;        // Bits taken from the source (CBD / DECODE).
     logic [8:0]  count;             // Coefficients produced (written + lo).
     logic [6:0]  widx;              // Next RAM word.
-    logic [11:0] f0, f1;            // Stage-2 fields.
+    logic [11:0] f0, f1;            // S2 inputs.
     logic        fv0, fv1;
+    logic [11:0] g0, g1;            // S3 inputs: fields ...
+    (* use_dsp = "no" *) logic [23:0] qf0, qf1;   // ... and q * field.
+    logic        gv0, gv1;
+    logic [13:0] q0, q1;            // S4 inputs: {accept, bad, coef}.
+    logic        qv0, qv1;
     logic [11:0] lo;                // Accepted coefficient waiting for its pair.
     logic        have_lo;
+
+    // S0: source chunk register.
+    logic        cr_v;
+    logic [63:0] cr_d;
+    logic [3:0]  cr_n;
 
     always_comb begin
         case (mode_r)
@@ -75,21 +94,21 @@ module mlkem_unpack (
             MODE_CBD:    w = 4'(param_r << 1);
             default:     w = param_r;
         endcase
+        w2 = {w, 1'b0};
     end
 
     // ---------------------------------------------------------------------
-    // Stage 1: extract up to two fields, append a source chunk.
+    // S0 / S1: chunk register, bit buffer, field extraction.
     // ---------------------------------------------------------------------
     logic [1:0]    k;               // Fields extracted this cycle.
-    logic [6:0]    kw;              // k * w.
-    logic [BW-1:0] wmask, rest;
-    logic [6:0]    nbits_rest;
+    logic [5:0]    kw;              // k * w.
+    logic          ap;              // Append cr_d this cycle.
     logic          want_bytes;
-    logic [63:0]   chunk;
+    logic [BW-1:0] wmask, merged;
 
     always_comb begin
         logic [1:0] avail, need;
-        avail = (nbits >= 7'({w, 1'b0})) ? 2'd2 : (nbits >= 7'(w)) ? 2'd1 : 2'd0;
+        avail = (nbits >= 7'(w2)) ? 2'd2 : (nbits >= 7'(w)) ? 2'd1 : 2'd0;
         if (!running)
             need = 2'd0;
         else if (mode_r == MODE_SAMPLE)
@@ -97,17 +116,17 @@ module mlkem_unpack (
         else
             need = (extracted <= 9'd254) ? 2'd2 : (extracted == 9'd255) ? 2'd1 : 2'd0;
         k  = (avail < need) ? avail : need;
-        kw = (k == 2'd2) ? 7'({w, 1'b0}) : (k == 2'd1) ? 7'(w) : 7'd0;
-        wmask      = (BW'(1) << w) - BW'(1);
-        rest       = bitbuf >> kw;
-        nbits_rest = nbits - kw;
+        kw = (k == 2'd2) ? 6'(w2) : (k == 2'd1) ? 6'(w) : 6'd0;
+        // nbits <= 32 leaves room for a whole chunk before this cycle's fields
+        // are removed, so the decision needs no arithmetic on kw.
+        ap = running && cr_v && (nbits <= 7'd32);
+        wmask  = (BW'(1) << w) - BW'(1);
+        merged = bitbuf | (ap ? (BW'(cr_d) << nbits[5:0]) : '0);
         want_bytes = running && ((mode_r == MODE_SAMPLE) ? (count < 9'd256)
                                                         : (taken_bits < {w, 8'd0}));
-        chunk = (src_n >= 4'd8) ? src_data
-                                : (src_data & ((64'd1 << {src_n, 3'b000}) - 64'd1));
     end
 
-    assign src_take = want_bytes && src_valid && (nbits_rest <= 7'd24);
+    assign src_take = want_bytes && src_valid && (!cr_v || ap);
 
     // ---------------------------------------------------------------------
     // Stage 2: field -> coefficient (two lanes).
@@ -116,17 +135,21 @@ module mlkem_unpack (
         return {2'b0, v[0]} + {2'b0, v[1]} + {2'b0, v[2]};
     endfunction
 
-    // Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d), q*y as shift-add.
-    function automatic logic [11:0] decompress(input logic [11:0] y, input logic [3:0] d);
+    // q * y as shift-add (S2).
+    function automatic logic [23:0] q_times(input logic [11:0] y);
+        return ((24'(y) << 11) + (24'(y) << 10)) + ((24'(y) << 8) + 24'(y));
+    endfunction
+
+    // Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d), from qy = q*y (S3).
+    function automatic logic [11:0] decompress(input logic [23:0] qy, input logic [3:0] d);
         logic [23:0] t;
-        t = (24'(y) << 11) + (24'(y) << 10) + (24'(y) << 8) + 24'(y);
-        t = (t + (24'd1 << (d - 4'd1))) >> d;
+        t = (qy + (24'd1 << (d - 4'd1))) >> d;
         return t[11:0];
     endfunction
 
     // {accept, bad, coef} for one field.
-    function automatic logic [13:0] proc(input logic [11:0] f, input logic [1:0] m,
-                                         input logic [3:0] p);
+    function automatic logic [13:0] proc(input logic [11:0] f, input logic [23:0] qf,
+                                         input logic [1:0] m, input logic [3:0] p);
         logic [2:0] x, y;
         case (m)
             MODE_SAMPLE: return {(f < Q), 1'b0, f};
@@ -143,22 +166,24 @@ module mlkem_unpack (
             default: begin
                 if (p == 4'd12)
                     return {1'b1, (f >= Q), (f >= Q) ? 12'(f - Q) : f};
-                return {1'b1, 1'b0, decompress(f, p)};
+                return {1'b1, 1'b0, decompress(qf, p)};
             end
         endcase
     endfunction
 
     (* use_dsp = "no" *) logic [13:0] r0, r1;
-    assign r0 = proc(f0, mode_r, param_r);
-    assign r1 = proc(f1, mode_r, param_r);
+    assign r0 = proc(g0, qf0, mode_r, param_r);
+    assign r1 = proc(g1, qf1, mode_r, param_r);
 
-    // Accepted coefficients this cycle, limited to the 256 still needed.
+    // ---------------------------------------------------------------------
+    // S3: accepted coefficients this cycle, limited to the 256 still needed.
+    // ---------------------------------------------------------------------
     logic        a0, a1;
     logic [1:0]  nacc, total;
     logic [11:0] l0, l1, l2;        // [lo] ++ accepted, in order.
     always_comb begin
-        a0 = fv0 && r0[13];
-        a1 = fv1 && r1[13];
+        a0 = qv0 && q0[13];
+        a1 = qv1 && q1[13];
         if (count == 9'd255 && a0)
             a1 = 1'b0;
         if (count >= 9'd256) begin
@@ -168,17 +193,13 @@ module mlkem_unpack (
         nacc  = 2'(a0) + 2'(a1);
         total = 2'(have_lo) + nacc;
         // Compact [lo, c0, c1] into l0, l1, l2.
-        l0 = have_lo ? lo : (a0 ? r0[11:0] : r1[11:0]);
+        l0 = have_lo ? lo : (a0 ? q0[11:0] : q1[11:0]);
         if (have_lo)
-            l1 = a0 ? r0[11:0] : r1[11:0];
+            l1 = a0 ? q0[11:0] : q1[11:0];
         else
-            l1 = r1[11:0];
-        l2 = r1[11:0];
+            l1 = q1[11:0];
+        l2 = q1[11:0];
     end
-
-    assign wr_en   = running && (total >= 2'd2);
-    assign wr_addr = {slot_r, widx};
-    assign wr_data = {l1, l0};
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -187,29 +208,38 @@ module mlkem_unpack (
             param_r    <= '0;
             check_r    <= 1'b0;
             slot_r     <= '0;
-            bitbuf     <= '0;
             nbits      <= '0;
             extracted  <= '0;
             taken_bits <= '0;
             count      <= '0;
             widx       <= '0;
-            f0         <= '0;
-            f1         <= '0;
             fv0        <= 1'b0;
             fv1        <= 1'b0;
-            lo         <= '0;
+            gv0        <= 1'b0;
+            gv1        <= 1'b0;
+            qv0        <= 1'b0;
+            qv1        <= 1'b0;
             have_lo    <= 1'b0;
+            cr_v       <= 1'b0;
+            wr_en      <= 1'b0;
             done       <= 1'b0;
             range_err  <= '0;
         end else if (clr) begin
             running   <= 1'b0;
             fv0       <= 1'b0;
             fv1       <= 1'b0;
+            gv0       <= 1'b0;
+            gv1       <= 1'b0;
+            qv0       <= 1'b0;
+            qv1       <= 1'b0;
+            cr_v      <= 1'b0;
+            wr_en     <= 1'b0;
             done      <= 1'b0;
             range_err <= '0;
         end else begin
             done      <= 1'b0;
             range_err <= '0;
+            wr_en     <= 1'b0;
 
             if (start && !running) begin
                 running    <= 1'b1;
@@ -217,7 +247,6 @@ module mlkem_unpack (
                 param_r    <= param;
                 check_r    <= check;
                 slot_r     <= slot;
-                bitbuf     <= '0;
                 nbits      <= '0;
                 extracted  <= '0;
                 taken_bits <= '0;
@@ -225,33 +254,39 @@ module mlkem_unpack (
                 widx       <= '0;
                 fv0        <= 1'b0;
                 fv1        <= 1'b0;
+                gv0        <= 1'b0;
+                gv1        <= 1'b0;
+                qv0        <= 1'b0;
+                qv1        <= 1'b0;
                 have_lo    <= 1'b0;
+                cr_v       <= 1'b0;
             end else if (running) begin
-                // Stage 1.
-                f0  <= 12'(bitbuf & wmask);
-                f1  <= 12'((bitbuf >> w) & wmask);
-                fv0 <= (k != 2'd0);
-                fv1 <= (k == 2'd2);
-                extracted <= extracted + 9'(k);
+                // S0.
                 if (src_take) begin
-                    bitbuf     <= rest | (BW'(chunk) << nbits_rest);
-                    nbits      <= nbits_rest + {src_n, 3'b000};
+                    cr_v       <= 1'b1;
                     taken_bits <= taken_bits + 12'({src_n, 3'b000});
-                end else begin
-                    bitbuf <= rest;
-                    nbits  <= nbits_rest;
+                end else if (ap) begin
+                    cr_v <= 1'b0;
                 end
-
-                // Stage 2.
+                // S1.
+                nbits     <= nbits + (ap ? 7'({cr_n, 3'b000}) : 7'd0) - 7'(kw);
+                extracted <= extracted + 9'(k);
+                fv0       <= (k != 2'd0);
+                fv1       <= (k == 2'd2);
+                // S2.
+                gv0 <= fv0;
+                gv1 <= fv1;
+                qv0 <= gv0;
+                qv1 <= gv1;
                 if (check_r)
-                    range_err <= {fv1 && r1[12], fv0 && r0[12]};
+                    range_err <= {gv1 && r1[12], gv0 && r0[12]};
+                // S3 -> S4.
                 if (total >= 2'd2) begin
+                    wr_en   <= 1'b1;
                     widx    <= widx + 7'd1;
                     have_lo <= (total == 2'd3);
-                    lo      <= l2;
                 end else begin
                     have_lo <= (total == 2'd1);
-                    lo      <= l0;
                 end
                 count <= count + 9'(nacc);
                 if (count + 9'(nacc) == 9'd256) begin
@@ -260,6 +295,35 @@ module mlkem_unpack (
                 end
             end
         end
+    end
+
+    // Data registers (no reset needed).
+    always_ff @(posedge clk) begin
+        if (src_take) begin
+            cr_d <= (src_n >= 4'd8) ? src_data
+                                    : (src_data & ((64'd1 << {src_n, 3'b000}) - 64'd1));
+            cr_n <= src_n;
+        end
+        // Shifts by w and 2w depend only on registered w; k picks one.
+        if (start && !running)
+            bitbuf <= '0;
+        else if (k == 2'd2)
+            bitbuf <= merged >> w2;
+        else if (k == 2'd1)
+            bitbuf <= merged >> w;
+        else
+            bitbuf <= merged;
+        f0 <= 12'(bitbuf & wmask);
+        f1 <= 12'((bitbuf >> w) & wmask);
+        g0  <= f0;
+        g1  <= f1;
+        qf0 <= q_times(f0);
+        qf1 <= q_times(f1);
+        q0  <= r0;
+        q1  <= r1;
+        lo <= (total >= 2'd2) ? l2 : l0;
+        wr_addr <= {slot_r, widx};
+        wr_data <= {l1, l0};
     end
 
 endmodule

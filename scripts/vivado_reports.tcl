@@ -10,6 +10,7 @@
 #   utilization_hier.rpt     report_utilization -hierarchical
 #   utilization_u_mlkem.rpt  report_utilization -cells [get_cells u_mlkem]
 #   timing_summary.rpt       report_timing_summary
+#   timing_paths.rpt         30 worst paths with distinct endpoints
 #   summary.txt              period / WNS / WHS one-liners
 #
 # clock_period_ns (default 10.000) overrides the XDC sys_clk period; use 5
@@ -43,6 +44,7 @@ route_design
 report_utilization -hierarchical -file $out_dir/utilization_hier.rpt
 report_utilization -cells [get_cells u_mlkem] -file $out_dir/utilization_u_mlkem.rpt
 report_timing_summary -max_paths 10 -file $out_dir/timing_summary.rpt
+report_timing -max_paths 30 -nworst 1 -unique_pins -sort_by slack -file $out_dir/timing_paths.rpt
 
 set wns [get_property SLACK [get_timing_paths -setup -max_paths 1]]
 set whs [get_property SLACK [get_timing_paths -hold -max_paths 1]]

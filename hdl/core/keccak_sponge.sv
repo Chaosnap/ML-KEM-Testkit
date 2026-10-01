@@ -91,9 +91,9 @@ module keccak_sponge (
     assign step       = do_absorb ? 8'(absorb_n) : 8'(squeeze_n);
     assign pos_next   = pos + step;
 
+    // Control registers (async reset).
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            st        <= '0;
             pos       <= '0;
             rate      <= 8'd136;
             dsuffix   <= 8'h06;
@@ -101,12 +101,10 @@ module keccak_sponge (
             running   <= 1'b0;
             round     <= '0;
         end else if (running) begin
-            st    <= st_round;
             round <= round + 5'd1;
             if (round == 5'd23)
                 running <= 1'b0;
         end else if (init) begin
-            st        <= '0;
             pos       <= '0;
             squeezing <= 1'b0;
             case (mode)
@@ -115,6 +113,30 @@ module keccak_sponge (
                 2'd2: begin rate <= 8'd168; dsuffix <= 8'h1F; end  // SHAKE128
                 2'd3: begin rate <= 8'd136; dsuffix <= 8'h1F; end  // SHAKE256
             endcase
+        end else if (do_final) begin
+            pos       <= '0;
+            squeezing <= 1'b1;
+            running   <= 1'b1;
+            round     <= '0;
+        end else if (do_absorb || do_squeeze) begin
+            if (pos_next == rate) begin
+                pos     <= '0;
+                running <= 1'b1;
+                round   <= '0;
+            end else begin
+                pos <= pos_next;
+            end
+        end
+    end
+
+    // State (no reset: HINIT clears it before every use, and leaving the
+    // 1600 flip-flops off the asynchronous reset net keeps recovery timing
+    // and routing in check).
+    always_ff @(posedge clk) begin
+        if (running) begin
+            st <= st_round;
+        end else if (init) begin
+            st <= '0;
         end else if (do_final) begin
             // M || suffix || 0* || 1 within the current block; rate is a
             // multiple of 8, so the final 0x80 is the top byte of lane
@@ -128,22 +150,10 @@ module keccak_sponge (
                     pad = pad ^ 64'h8000_0000_0000_0000;
                 st[64 * i +: 64] <= st[64 * i +: 64] ^ pad;
             end
-            pos       <= '0;
-            squeezing <= 1'b1;
-            running   <= 1'b1;
-            round     <= '0;
-        end else if (do_absorb || do_squeeze) begin
-            if (do_absorb)
-                for (int i = 0; i < 21; i++)
-                    if (lane == 5'(i))
-                        st[64 * i +: 64] <= st[64 * i +: 64] ^ ab_lane;
-            if (pos_next == rate) begin
-                pos     <= '0;
-                running <= 1'b1;
-                round   <= '0;
-            end else begin
-                pos <= pos_next;
-            end
+        end else if (do_absorb) begin
+            for (int i = 0; i < 21; i++)
+                if (lane == 5'(i))
+                    st[64 * i +: 64] <= st[64 * i +: 64] ^ ab_lane;
         end
     end
 

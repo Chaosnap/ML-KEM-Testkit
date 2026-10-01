@@ -232,6 +232,9 @@ report_utilization    -file ${project_dir}/utilization_impl.rpt
 report_utilization    -hierarchical -hierarchical_depth 4 \
                       -file ${project_dir}/utilization_impl_hier.rpt
 report_timing_summary -file ${project_dir}/timing_impl.rpt
+# The 30 worst paths with distinct endpoints (the summary shows one per group).
+report_timing -max_paths 30 -nworst 1 -unique_pins -sort_by slack \
+              -file ${project_dir}/timing_paths_impl.rpt
 report_power          -file ${project_dir}/power.rpt
 
 # Console summary: per-instance utilization and timing.
