@@ -81,9 +81,10 @@ module mlkem_unpack (
         return {2'b0, v[0]} + {2'b0, v[1]} + {2'b0, v[2]};
     endfunction
 
+    (* use_dsp = "no" *) logic [23:0] dm;   // Decompress: q * field (shift-add)
+
     always_comb begin
         logic [2:0]  x, y;
-        logic [23:0] dm;
         coef   = '0;
         accept = 1'b1;
         bad    = 1'b0;
@@ -110,8 +111,11 @@ module mlkem_unpack (
                     bad  = (field >= Q);
                     coef = bad ? 12'(field - Q) : field;
                 end else begin
-                    // Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d)
-                    dm   = (24'(field) * 24'(Q) + (24'd1 << (param_r - 4'd1))) >> param_r;
+                    // Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d), with
+                    // q*y = (y << 11) + (y << 10) + (y << 8) + y in LUTs.
+                    dm   = 24'(field) << 11;
+                    dm   = dm + (24'(field) << 10) + (24'(field) << 8) + 24'(field);
+                    dm   = (dm + (24'd1 << (param_r - 4'd1))) >> param_r;
                     coef = dm[11:0];
                 end
             end

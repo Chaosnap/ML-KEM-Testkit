@@ -7,7 +7,12 @@
 // Compress_d(x) = round(2^d * x / q) mod 2^d
 //               = floor(((x << d) + 1664) / 3329) mod 2^d
 // The division is an exact multiply-shift: floor(n / 3329) = (n * 161271) >> 29
-// for every n < 2^23 (all x < q, d <= 11).
+// for every n < 2^23 (all x < q, d <= 11). With n = (x << d) + 1664:
+//   n * 161271 = ((x * 161271) << d) + 1664 * 161271
+// x * 161271 is a constant multiply done with shifts and adds in LUTs (CSD
+// 161271 = 2^17 + 2^15 - 2^11 - 2^9 - 2^3 - 1) for both coefficients of a
+// word while it is latched, so no DSP is used and the variable shift by d
+// stays out of the adder tree.
 
 module mlkem_pack (
     input  logic        clk,
@@ -29,7 +34,14 @@ module mlkem_pack (
     output logic [7:0]  out_byte
 );
 
-    localparam logic [17:0] RECIP = 18'd161271;
+    localparam logic [40:0] RECIP_1664 = 41'd268354944;   // 1664 * 161271
+
+    // x * 161271 for x < q (< 2^30).
+    function automatic logic [29:0] mul_recip(input logic [11:0] v);
+        logic [29:0] e;
+        e = 30'(v);
+        return (e << 17) + (e << 15) - (e << 11) - (e << 9) - (e << 3) - e;
+    endfunction
 
     typedef enum logic [2:0] {
         S_IDLE,
@@ -46,19 +58,18 @@ module mlkem_pack (
     logic [6:0]  word;
     logic        half;           // 0 = even coefficient, 1 = odd.
     logic [11:0] c0, c1;
+    (* use_dsp = "no" *) logic [29:0] xr0, xr1;   // c0 * 161271, c1 * 161271
     logic [11:0] val;
     logic [19:0] bitbuf;
     logic [4:0]  nbits;
 
     // Compress_d.
     logic [11:0] x;
-    logic [22:0] num;
     logic [40:0] prod;
     logic [11:0] comp;
     always_comb begin
         x    = half ? c1 : c0;
-        num  = (23'(x) << d_r) + 23'd1664;
-        prod = 41'(num) * 41'(RECIP);
+        prod = (41'(half ? xr1 : xr0) << d_r) + RECIP_1664;
         comp = (d_r == 4'd12) ? x : 12'((prod >> 29) & ((41'd1 << d_r) - 41'd1));
     end
 
@@ -76,6 +87,8 @@ module mlkem_pack (
             half   <= 1'b0;
             c0     <= '0;
             c1     <= '0;
+            xr0    <= '0;
+            xr1    <= '0;
             val    <= '0;
             bitbuf <= '0;
             nbits  <= '0;
@@ -100,6 +113,8 @@ module mlkem_pack (
                 S_LATCH: begin
                     c0    <= rd_data[11:0];
                     c1    <= rd_data[23:12];
+                    xr0   <= mul_recip(rd_data[11:0]);
+                    xr1   <= mul_recip(rd_data[23:12]);
                     half  <= 1'b0;
                     state <= S_COMP;
                 end
