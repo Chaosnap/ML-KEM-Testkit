@@ -1,6 +1,6 @@
 // mlkem_polyram.sv - Polynomial coefficient RAM for the ML-KEM core
 //
-// True dual-port block RAM holding 16 polynomial slots. Each 24-bit word
+// True dual-port block RAM holding 8 polynomial slots (ML-KEM-768 needs 8). Each 24-bit word
 // packs two consecutive coefficients: word {slot, w} = {f[2w+1], f[2w]}.
 // Read latency is one cycle on both ports.
 
@@ -9,18 +9,18 @@ module mlkem_polyram (
 
     input  logic        a_en,
     input  logic        a_we,
-    input  logic [10:0] a_addr,
+    input  logic [9:0]  a_addr,
     input  logic [23:0] a_din,
     output logic [23:0] a_dout,
 
     input  logic        b_en,
     input  logic        b_we,
-    input  logic [10:0] b_addr,
+    input  logic [9:0]  b_addr,
     input  logic [23:0] b_din,
     output logic [23:0] b_dout
 );
 
-    logic [23:0] mem [0:2047];
+    logic [23:0] mem [0:1023];
 
     always_ff @(posedge clk) begin
         if (a_en) begin

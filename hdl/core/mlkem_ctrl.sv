@@ -57,9 +57,9 @@ module mlkem_ctrl (
     // Polynomial ALU.
     output logic        alu_start,
     output logic [2:0]  alu_op,
-    output logic [3:0]  alu_sa,
-    output logic [3:0]  alu_sb,
-    output logic [3:0]  alu_sc,
+    output logic [2:0]  alu_sa,
+    output logic [2:0]  alu_sb,
+    output logic [2:0]  alu_sc,
     output logic        alu_acc,
     input  logic        alu_done,
 
@@ -68,7 +68,7 @@ module mlkem_ctrl (
     output logic [1:0]  up_mode,
     output logic [3:0]  up_param,
     output logic        up_check,
-    output logic [3:0]  up_slot,
+    output logic [2:0]  up_slot,
     input  logic        up_done,
     input  logic        up_range_err,
     output logic        up_src_valid,
@@ -78,7 +78,7 @@ module mlkem_ctrl (
     // Packer.
     output logic        pk_start,
     output logic [3:0]  pk_d,
-    output logic [3:0]  pk_slot,
+    output logic [2:0]  pk_slot,
     input  logic        pk_done,
     input  logic        pk_out_valid,
     input  logic [7:0]  pk_out_byte,
@@ -400,7 +400,7 @@ module mlkem_ctrl (
                                                    (f_op == OP_CBD)    ? 2'd1 : 2'd2;
                                 up_param        <= f_p[3:0];
                                 up_check        <= f_p[4];
-                                up_slot         <= f_c[3:0];
+                                up_slot         <= f_c[2:0];
                                 unit_src_sponge <= (f_op != OP_DECODE);
                                 hold_v          <= 1'b0;
                                 rd_pend         <= 1'b0;
@@ -410,7 +410,7 @@ module mlkem_ctrl (
                             OP_ENCODE: begin
                                 pk_start        <= 1'b1;
                                 pk_d            <= f_p[3:0];
-                                pk_slot         <= f_a[3:0];
+                                pk_slot         <= f_a[2:0];
                                 unit_src_sponge <= 1'b0;
                                 pr_sel          <= 2'd2;
                                 state           <= C_UNIT;
@@ -421,9 +421,9 @@ module mlkem_ctrl (
                                                    (f_op == OP_INTT) ? 3'd1 :
                                                    (f_op == OP_BMUL) ? 3'd2 :
                                                    (f_op == OP_ADD)  ? 3'd3 : 3'd4;
-                                alu_sa          <= f_a[3:0];
-                                alu_sb          <= f_b[3:0];
-                                alu_sc          <= f_c[3:0];
+                                alu_sa          <= f_a[2:0];
+                                alu_sb          <= f_b[2:0];
+                                alu_sc          <= f_c[2:0];
                                 alu_acc         <= f_p[0];
                                 unit_src_sponge <= 1'b0;
                                 pr_sel          <= 2'd0;

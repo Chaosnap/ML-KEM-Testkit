@@ -21,21 +21,21 @@ module mlkem_poly_alu (
 
     input  logic        start,
     input  logic [2:0]  op,
-    input  logic [3:0]  slot_a,
-    input  logic [3:0]  slot_b,
-    input  logic [3:0]  slot_c,
+    input  logic [2:0]  slot_a,
+    input  logic [2:0]  slot_b,
+    input  logic [2:0]  slot_c,
     input  logic        acc,            // OP_BMUL: accumulate into slot C.
     output logic        done,           // One-cycle pulse.
 
     // Polynomial RAM ports.
     output logic        ra_en,
     output logic        ra_we,
-    output logic [10:0] ra_addr,
+    output logic [9:0] ra_addr,
     output logic [23:0] ra_din,
     input  logic [23:0] ra_dout,
     output logic        rb_en,
     output logic        rb_we,
-    output logic [10:0] rb_addr,
+    output logic [9:0] rb_addr,
     output logic [23:0] rb_din,
     input  logic [23:0] rb_dout
 );
@@ -88,7 +88,7 @@ module mlkem_poly_alu (
     state_t      state;
     logic [2:0]  cur_op;
     logic        scale;         // INTT final pass (x 128^-1).
-    logic [3:0]  sa, sb, sc;
+    logic [2:0]  sa, sb, sc;
     logic        acc_r;
     logic [2:0]  layer;         // NTT/INTT layer 0..6.
     logic [6:0]  item;          // Butterfly-word pair (0..63) or word (0..127).

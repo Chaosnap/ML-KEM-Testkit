@@ -21,7 +21,7 @@ module mlkem_unpack (
     input  logic [1:0]  mode,
     input  logic [3:0]  param,      // eta (CBD) or d (DECODE).
     input  logic        check,      // DECODE d=12: modulus check.
-    input  logic [3:0]  slot,
+    input  logic [2:0]  slot,
     output logic        done,       // One-cycle pulse.
     output logic        range_err,  // One-cycle pulse per bad coefficient.
 
@@ -32,7 +32,7 @@ module mlkem_unpack (
 
     // Poly RAM write port.
     output logic        wr_en,
-    output logic [10:0] wr_addr,
+    output logic [9:0] wr_addr,
     output logic [23:0] wr_data
 );
 
@@ -46,7 +46,7 @@ module mlkem_unpack (
     logic [1:0]  mode_r;
     logic [3:0]  param_r;
     logic        check_r;
-    logic [3:0]  slot_r;
+    logic [2:0]  slot_r;
     logic [3:0]  w;             // Field width.
     logic [19:0] bitbuf;
     logic [4:0]  nbits;

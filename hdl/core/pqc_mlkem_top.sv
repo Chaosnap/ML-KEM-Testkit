@@ -19,7 +19,7 @@
 //                         basemul,     CBD, Decode,  Encode)
 //                         add/sub)     Decompress)
 //                             \           |             /
-//                              +---- u_polyram (16 polys) ---+
+//                              +---- u_polyram (8 polys)  ---+
 //
 // Host flow: write inputs to the data buffer (bus 0x4000 + DATA_IN_ADDR),
 // set SEC_LEVEL / OP_MODE, write CTRL.start, poll STATUS.done, read
@@ -158,14 +158,16 @@ module pqc_mlkem_top #(
     logic [7:0]  h_absorb_byte, h_squeeze_byte;
     logic        alu_start, alu_acc, alu_done;
     logic [2:0]  alu_op;
-    logic [3:0]  alu_sa, alu_sb, alu_sc;
+    logic [2:0]  alu_sa, alu_sb, alu_sc;
     logic        up_start, up_check, up_done, up_range_err;
     logic        up_src_valid, up_src_take;
     logic [1:0]  up_mode;
-    logic [3:0]  up_param, up_slot;
+    logic [3:0]  up_param;
+    logic [2:0]  up_slot;
     logic [7:0]  up_src_byte;
     logic        pk_start, pk_done, pk_out_valid;
-    logic [3:0]  pk_d, pk_slot;
+    logic [3:0]  pk_d;
+    logic [2:0]  pk_slot;
     logic [7:0]  pk_out_byte;
     logic [1:0]  pr_sel;
 
@@ -249,17 +251,17 @@ module pqc_mlkem_top #(
     // =========================================================================
 
     logic        pr_a_en, pr_a_we, pr_b_en, pr_b_we;
-    logic [10:0] pr_a_addr, pr_b_addr;
+    logic [9:0]  pr_a_addr, pr_b_addr;
     logic [23:0] pr_a_din, pr_a_dout, pr_b_din, pr_b_dout;
 
     logic        alu_a_en, alu_a_we, alu_b_en, alu_b_we;
-    logic [10:0] alu_a_addr, alu_b_addr;
+    logic [9:0]  alu_a_addr, alu_b_addr;
     logic [23:0] alu_a_din, alu_b_din;
     logic        up_wr_en;
-    logic [10:0] up_wr_addr;
+    logic [9:0]  up_wr_addr;
     logic [23:0] up_wr_data;
     logic        pk_rd_en;
-    logic [10:0] pk_rd_addr;
+    logic [9:0]  pk_rd_addr;
 
     mlkem_poly_alu u_alu (
         .clk     (clk),

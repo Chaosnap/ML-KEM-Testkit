@@ -16,12 +16,12 @@ module mlkem_pack (
 
     input  logic        start,
     input  logic [3:0]  d,
-    input  logic [3:0]  slot,
+    input  logic [2:0]  slot,
     output logic        done,       // One-cycle pulse.
 
     // Poly RAM read port.
     output logic        rd_en,
-    output logic [10:0] rd_addr,
+    output logic [9:0] rd_addr,
     input  logic [23:0] rd_data,
 
     // Byte sink (always accepted).
@@ -42,7 +42,7 @@ module mlkem_pack (
 
     state_t      state;
     logic [3:0]  d_r;
-    logic [3:0]  slot_r;
+    logic [2:0]  slot_r;
     logic [6:0]  word;
     logic        half;           // 0 = even coefficient, 1 = odd.
     logic [11:0] c0, c1;

@@ -45,8 +45,10 @@ MPRIME = SCR + 0x060  # m'.
 KBAR = SCR + 0x080    # J(z||c).
 CPRIME = SCR + 0x100  # re-encrypted c'.
 
-# Poly RAM slots.
-S_VEC, S_ACC, S_A, S_E, S_T, S_S = 0, 4, 5, 6, 7, 8
+# Poly RAM slots (mlkem_polyram: 8 slots x 128 words, 3-bit slot number).
+# S_VEC .. S_VEC+k-1 hold the k-vector (s_hat or r_hat).
+S_VEC, S_ACC, S_A, S_E, S_T, S_S = 0, 3, 4, 5, 6, 7
+POLY_SLOTS = 8
 
 # level: (k, eta1, eta2, du, dv)
 PARAMS = {768: (3, 2, 2, 10, 4)}
@@ -79,6 +81,10 @@ class Prog:
     def emit(self, op, p=0, a=0, b=0, c=0, ln=0, text=""):
         self.code.append((OP[op], p, a, b, c, ln, text or op))
 
+    def slots(self, *ss):
+        for x in ss:
+            assert 0 <= x < POLY_SLOTS, "poly slot %d out of range" % x
+
     # --- byte-string / hash helpers -------------------------------------
     def hinit(self, mode):
         name = ["SHA3-256", "SHA3-512", "SHAKE128", "SHAKE256"][mode]
@@ -109,32 +115,41 @@ class Prog:
 
     # --- polynomial helpers ---------------------------------------------
     def sample(self, dst):
+        self.slots(dst)
         self.emit("SAMPLE", c=dst, text="SAMPLE -> s%d" % dst)
 
     def cbd(self, eta, dst):
+        self.slots(dst)
         self.emit("CBD", p=eta, c=dst, text="CBD%d   -> s%d" % (eta, dst))
 
     def decode(self, d, a, dst, check=False):
+        self.slots(dst)
         self.emit("DECODE", p=d | (CHECK if check else 0), a=a, c=dst,
                   text="DECODE d=%d%s %s -> s%d" % (d, " chk" if check else "", astr(a), dst))
 
     def encode(self, d, src, a):
+        self.slots(src)
         self.emit("ENCODE", p=d, a=src, b=a, text="ENCODE d=%d s%d -> %s" % (d, src, astr(a)))
 
     def ntt(self, s):
+        self.slots(s)
         self.emit("NTT", a=s, text="NTT    s%d" % s)
 
     def intt(self, s):
+        self.slots(s)
         self.emit("INTT", a=s, text="INTT   s%d" % s)
 
     def bmul(self, x, y, dst, acc):
+        self.slots(x, y, dst)
         self.emit("BMUL", p=ACC if acc else 0, a=x, b=y, c=dst,
                   text="BMUL   s%d * s%d -> s%d%s" % (x, y, dst, " (acc)" if acc else ""))
 
     def add(self, x, y, dst):
+        self.slots(x, y, dst)
         self.emit("ADD", a=x, b=y, c=dst, text="ADD    s%d + s%d -> s%d" % (x, y, dst))
 
     def sub(self, x, y, dst):
+        self.slots(x, y, dst)
         self.emit("SUB", a=x, b=y, c=dst, text="SUB    s%d - s%d -> s%d" % (x, y, dst))
 
     def prf(self, seed, nonce, eta, dst):
@@ -149,6 +164,7 @@ class Prog:
 def encrypt(p, level, ek, m, r, dst, check):
     """K-PKE.Encrypt(ek, m, r) -> c at dst (FIPS 203 Algorithm 14)."""
     k, eta1, eta2, du, dv = PARAMS[level]
+    assert S_VEC + k <= S_ACC, "k-vector overlaps S_ACC"
     rho = ek + 384 * k
     for j in range(k):
         p.prf(r, j, eta1, S_VEC + j)

@@ -49,18 +49,18 @@ module tb_ntt;
     // ---------------------------------------------------------------------
     logic        start = 1'b0;
     logic [2:0]  op    = OP_NTT;
-    logic [3:0]  slot  = '0;
+    logic [2:0]  slot  = '0;
     logic        done;
 
     logic        alu_a_en, alu_a_we, alu_b_en, alu_b_we;
-    logic [10:0] alu_a_addr, alu_b_addr;
+    logic [9:0]  alu_a_addr, alu_b_addr;
     logic [23:0] alu_a_din, alu_b_din;
     logic [23:0] a_dout, b_dout;
 
     logic        tb_own  = 1'b1;   // 1: TB drives RAM port A.
     logic        tb_en   = 1'b0;
     logic        tb_we   = 1'b0;
-    logic [10:0] tb_addr = '0;
+    logic [9:0]  tb_addr = '0;
     logic [23:0] tb_din  = '0;
 
     mlkem_poly_alu u_alu (
@@ -70,8 +70,8 @@ module tb_ntt;
         .start   (start),
         .op      (op),
         .slot_a  (slot),
-        .slot_b  (4'd0),
-        .slot_c  (4'd0),
+        .slot_b  (3'd0),
+        .slot_c  (3'd0),
         .acc     (1'b0),
         .done    (done),
         .ra_en   (alu_a_en),
@@ -159,7 +159,7 @@ module tb_ntt;
     // ---------------------------------------------------------------------
     // RAM access through port A.
     // ---------------------------------------------------------------------
-    task automatic load_poly(input logic [3:0] s);
+    task automatic load_poly(input logic [2:0] s);
         tb_own = 1'b1;
         for (int w = 0; w < 128; w++) begin
             @(negedge clk);
@@ -174,7 +174,7 @@ module tb_ntt;
     endtask
 
     // Fill a slot with a fixed pattern (guard slots).
-    task automatic fill_slot(input logic [3:0] s, input logic [23:0] pattern);
+    task automatic fill_slot(input logic [2:0] s, input logic [23:0] pattern);
         tb_own = 1'b1;
         for (int w = 0; w < 128; w++) begin
             @(negedge clk);
@@ -184,7 +184,7 @@ module tb_ntt;
         tb_en = 1'b0; tb_we = 1'b0;
     endtask
 
-    task automatic read_poly(input logic [3:0] s);
+    task automatic read_poly(input logic [2:0] s);
         tb_own = 1'b1;
         for (int w = 0; w < 128; w++) begin
             @(negedge clk);
@@ -226,7 +226,7 @@ module tb_ntt;
         end
     endtask
 
-    task automatic run_op(input logic [2:0] o, input logic [3:0] s);
+    task automatic run_op(input logic [2:0] o, input logic [2:0] s);
         @(negedge clk);
         tb_own = 1'b0;
         op     = o;
@@ -268,9 +268,9 @@ module tb_ntt;
         for (int i = 0; i < 256; i++) f_in[i] = (i == 0) ? 1 : 0;
         for (int i = 0; i < 256; i++) f_ref[i] = f_in[i];
         ref_ntt();
-        load_poly(4'd0);
-        run_op(OP_NTT, 4'd0);
-        read_poly(4'd0);
+        load_poly(3'd0);
+        run_op(OP_NTT, 3'd0);
+        read_poly(3'd0);
         compare("T1 NTT(1)");
 
         // ---- T2: ramp f[i] = i ----
@@ -279,9 +279,9 @@ module tb_ntt;
         for (int i = 0; i < 256; i++) f_in[i] = i;
         for (int i = 0; i < 256; i++) f_ref[i] = f_in[i];
         ref_ntt();
-        load_poly(4'd1);
-        run_op(OP_NTT, 4'd1);
-        read_poly(4'd1);
+        load_poly(3'd1);
+        run_op(OP_NTT, 3'd1);
+        read_poly(3'd1);
         compare("T2 NTT(ramp)");
 
         // ---- T3: random polynomial, NTT then INTT round trip ----
@@ -289,30 +289,30 @@ module tb_ntt;
         $display("--- T3: random f (slot 5), guard slots 4 and 6 ---");
         seed = 32'h2025_0203;
         for (int i = 0; i < 256; i++) f_in[i] = $unsigned($random(seed)) % Q;
-        fill_slot(4'd4, 24'hA5A_5A5);
-        fill_slot(4'd6, 24'h5A5_A5A);
+        fill_slot(3'd4, 24'hA5A_5A5);
+        fill_slot(3'd6, 24'h5A5_A5A);
         for (int i = 0; i < 256; i++) f_ref[i] = f_in[i];
         ref_ntt();
-        load_poly(4'd5);
-        run_op(OP_NTT, 4'd5);
-        read_poly(4'd5);
+        load_poly(3'd5);
+        run_op(OP_NTT, 3'd5);
+        read_poly(3'd5);
         compare("T3 NTT(random)");
 
         test_name = "T4_intt_roundtrip";
         $display("--- T4: INTT(NTT(f)) == f (slot 5) ---");
         ref_intt();                       // f_ref = NTT^-1(NTT(f)).
-        run_op(OP_INTT, 4'd5);
-        read_poly(4'd5);
+        run_op(OP_INTT, 3'd5);
+        read_poly(3'd5);
         compare("T4 INTT vs reference");
         for (int i = 0; i < 256; i++) f_ref[i] = f_in[i];
         compare("T4 INTT(NTT(f)) == f");
 
         test_name = "T5_guard_slots";
         $display("--- T5: neighbouring slots untouched ---");
-        read_poly(4'd4);
+        read_poly(3'd4);
         for (int i = 0; i < 256; i++) f_ref[i] = (i % 2) ? 12'hA5A : 12'h5A5;
         compare("T5 slot 4 intact");
-        read_poly(4'd6);
+        read_poly(3'd6);
         for (int i = 0; i < 256; i++) f_ref[i] = (i % 2) ? 12'h5A5 : 12'hA5A;
         compare("T5 slot 6 intact");
 

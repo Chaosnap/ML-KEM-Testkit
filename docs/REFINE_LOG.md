@@ -15,6 +15,7 @@
 | HEAD e2ba16b（参考，9/26 构建） | 10,212 | 4,205 | 2,897 | 8 | 9 | 5,497 | 110,560 | +0.028 ns | 60/60 | 6,077 | — |
 | 0 | 10,455 | 4,259 | 3,013 | 8 | 6 | 5,013 | 110,560 | +0.132 ns | 60/60 | 5,542 | 104.9 |
 | 1a | 未跑 | | | 8 | 5.5（推断） | | 110,560 | 未跑 | 60/60 | | |
+| 1b | 未跑 | | | 8 | 5（推断） | | 110,560 | 未跑 | 60/60 | | |
 
 第 0 步的 RTL 是 commit bf2ce6d（此前未提交的 `FIXED_LEVEL` / 768-only ROM 改动），
 见下文"与任务描述的差异"。HEAD 一行来自 `build/vivado/arty-a7-100t_mlkem/`
@@ -145,3 +146,13 @@ DECODE 的字节数由 d 推出（32·d 字节）。
 - `mlkem_poly_alu`：`zeta_r` 加 `rom_style = "distributed"`（第 0 步里它是 1 个 RAMB18）。
 - 结果：ACVP 60/60，全部回归通过；周期数不变（KeyGen 65,821 / Encaps 78,484 /
   Decaps 110,560）。推断 BRAM：dbuf 4 + polyram 1.5 = 5.5。
+
+## 第 1b 步：多项式 RAM 2048 → 1024 字
+
+- 槽位改为紧凑编号 `S_VEC, S_ACC, S_A, S_E, S_T, S_S = 0, 3, 4, 5, 6, 7`（共 8 个槽）；
+  生成器对每条多项式指令断言槽号 < 8，并断言 k 向量不覆盖 S_ACC。
+  确认过：除生成器外没有任何模块写死槽号 ≥ 8（`tb_ntt` 只用槽 0、1、4、5、6）。
+- `mlkem_polyram`：`mem [0:1023]`，地址 10 位（1K×24，一个 RAMB36 的 1K×36 配置）。
+- 槽号 `[3:0]` → `[2:0]`、多项式 RAM 地址 `[10:0]` → `[9:0]`：`mlkem_ctrl`、
+  `mlkem_poly_alu`、`mlkem_unpack`、`mlkem_pack`、`pqc_mlkem_top`、`testbench/iverilog/tb_ntt.sv`。
+- 结果：ACVP 60/60，全部回归通过；周期数不变。推断 BRAM：dbuf 4 + polyram 1 = 5。
