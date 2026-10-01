@@ -20,7 +20,7 @@
 //   P <job> <pc> <op> <exec_cycles> <overhead_cycles>
 // Every busy cycle is counted exactly once: C_FETCH / C_DECODE / C_NEXT are
 // sequencer overhead, all other states are execution of the instruction at
-// pc. pc = 2047 is the start-up C_NEXT that loads the program entry.
+// pc. pc = all-ones is the start-up C_NEXT that loads the program entry.
 //
 // Input and output offsets are taken from the reset values of DATA_IN_ADDR
 // and DATA_OUT_ADDR, so the testbench follows the buffer layout of the RTL.

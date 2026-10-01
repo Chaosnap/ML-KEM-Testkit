@@ -25,7 +25,7 @@ Examples:
 Byte-for-byte comparison against the software reference (Level 6) is done
 by the Go tool:  pqc-testkit fpga -T uart -d <port>
 
-The bitstream is built for ML-KEM-768 only (FIXED_LEVEL = 768), so every
+The core implements ML-KEM-768 only, so every
 test defaults to level 768; pass --level/--levels for other builds.
 """
 
@@ -60,7 +60,7 @@ ERRORS = {0: "none", 1: "unsupported SEC_LEVEL/OP_MODE",
 
 # FIPS 203 sizes: level -> (ek, dk, ct)
 SIZES = {768: (1184, 2400, 1088), 1024: (1568, 3168, 1568)}   # ML-KEM-512 not supported.
-DEFAULT_LEVEL = 768      # FIXED_LEVEL of pqc_mlkem_top in the current bitstream.
+DEFAULT_LEVEL = 768      # The only level the core implements.
 
 
 class ProtocolError(Exception):

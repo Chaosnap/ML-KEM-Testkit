@@ -5,7 +5,7 @@
 #
 # Steps: Go unit tests, Icarus UART/NTT/UART-link benches, cocotb Barrett
 # (Icarus) and Keccak-f1600 (Verilator) tests if cocotb-config is on PATH,
-# and the ML-KEM-768 ACVP vectors on the full core (scripts/sim_acvp.py).
+# the TVLA Verilator model build, and the ML-KEM-768 ACVP vectors on the full core (scripts/sim_acvp.py).
 # Exits non-zero on the first failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,6 +27,9 @@ if command -v cocotb-config >/dev/null; then
 else
     step "cocotb: SKIPPED (cocotb-config not on PATH)"
 fi
+
+step "tvla_sim: Verilator model builds"
+make -s -C testbench/tvla_sim >/dev/null && echo "TVLA_SIM BUILD PASS"
 
 step "ACVP ML-KEM-768 on the core (Verilator)"
 python3 scripts/sim_acvp.py

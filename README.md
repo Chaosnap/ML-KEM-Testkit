@@ -31,10 +31,9 @@ make twiddle     # Generate NTT twiddle factors for FPGA synthesis
 
 ## Validate on real hardware
 
-The ML-KEM core is built for a single parameter set (`FIXED_LEVEL` in
-`hdl/core/pqc_mlkem_top.sv`, currently 768) so its resource usage compares
-fairly with single-level designs. The microcode ROM must contain the same
-level; regenerate it with `make ucode MLKEM_LEVELS=768` after changing either.
+The ML-KEM core implements ML-KEM-768 only, so its resource usage compares
+fairly with single-level designs; any other SEC_LEVEL fails with
+ERROR_CODE 1. Regenerate the microcode ROM with `make ucode`.
 
 ```bash
 # 1. Synthesize for your board

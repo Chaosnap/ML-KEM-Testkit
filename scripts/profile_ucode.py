@@ -41,9 +41,8 @@ OPNAMES = {0x00: "END", 0x01: "HINIT", 0x02: "HABS", 0x03: "HABI", 0x04: "HFIN",
 ORDER = ["HINIT", "HABS", "HABI", "HFIN", "HSQZ", "COPY", "CMP", "CSEL", "SAMPLE",
          "CBD", "DECODE", "ENCODE", "NTT", "INTT", "BMUL", "ADD", "SUB", "END"]
 BYTE_OPS = {"HABS", "HSQZ", "COPY", "CMP", "CSEL"}
-STARTUP_PC = 2047
 
-_ROM_RE = re.compile(r"ADDR_W'\((\d+)\): data <= 96'h([0-9a-f]+);\s*//\s*(.*)")
+_ROM_RE = re.compile(r"ADDR_W'\((\d+)\): (?:data|rom_q) <= 96'h([0-9a-f]+);\s*//\s*(.*)")
 
 
 def read_rom():
@@ -56,9 +55,9 @@ def read_rom():
                 word = int(m.group(2), 16)
                 rom[int(m.group(1))] = (OPNAMES.get(word >> 88, "0x%02x" % (word >> 88)),
                                         (word >> 16) & 0xFFFF, m.group(3).strip())
-            m = re.search(r"entry = ADDR_W'\((\d+)\);\s*//\s*(\w+) ML-KEM-(\d+)", line)
+            m = re.search(r"entry = ADDR_W'\((\d+)\);\s*//\s*(\w+)", line)
             if m:
-                entries[(m.group(2), int(m.group(3)))] = int(m.group(1))
+                entries[m.group(2)] = int(m.group(1))
     return rom, entries
 
 
@@ -94,7 +93,7 @@ def profile(op, rom):
         per_pc[pc][1] += ov
     cls = collections.OrderedDict((k, {"n": 0, "exec": 0.0, "ovh": 0.0, "bytes": 0}) for k in ORDER + ["startup"])
     for pc, (ex, ov) in per_pc.items():
-        if pc == STARTUP_PC:
+        if pc not in rom:           # pc = all-ones: start-up C_NEXT loading the entry.
             name, ln = "startup", 0
         else:
             name, ln = rom[pc][0], rom[pc][1]
@@ -140,7 +139,7 @@ def table(p, rom, per_pc=False):
         w("| -: | ---: | --: | ----------- |")
         for pc in sorted(p["per_pc"]):
             ex, ov = p["per_pc"][pc]
-            txt = "(start-up)" if pc == STARTUP_PC else rom[pc][2]
+            txt = rom[pc][2] if pc in rom else "(start-up)"
             w("| %d | %.0f | %.0f | `%s` |" % (pc, ex, ov, txt))
     return "\n".join(out)
 

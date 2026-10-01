@@ -14,11 +14,16 @@
 | ---- | --: | -: | ----: | --: | ---: | --: | ------------: | -----------: | ---- | -----------: | ---------: |
 | HEAD e2ba16b（参考，9/26 构建） | 10,212 | 4,205 | 2,897 | 8 | 9 | 5,497 | 110,560 | +0.028 ns | 60/60 | 6,077 | — |
 | 0 | 10,455 | 4,259 | 3,013 | 8 | 6 | 5,013 | 110,560 | +0.132 ns | 60/60 | 5,542 | 104.9 |
+| 1a | 未跑 | | | 8 | 5.5（推断） | | 110,560 | 未跑 | 60/60 | | |
 
 第 0 步的 RTL 是 commit bf2ce6d（此前未提交的 `FIXED_LEVEL` / 768-only ROM 改动），
 见下文"与任务描述的差异"。HEAD 一行来自 `build/vivado/arty-a7-100t_mlkem/`
 里 9/26 的项目模式报告（副本在 `reports/step0/head_e2ba16b/`）；它的 Slice
 是任务描述给出的值，ACVP 和周期数是本次在仿真中对 HEAD 重新测得的（与 bf2ce6d 逐周期相同）。
+
+从第 1a 步起按你的要求不再运行 Vivado，只在仿真中验证（ACVP 60/60、全部回归、
+周期统计）。资源列只写由 RTL 推断出的 DSP / BRAM 数（标"推断"），等你自己跑
+Vivado 后再补 LUT / FF / Slice / WNS。
 
 ## 测量方法（命令）
 
@@ -127,3 +132,16 @@ DECODE 的字节数由 d 推出（32·d 字节）。
    cocotb 不在系统 Python 里（我在临时 venv 中装了 cocotb 2.1.0 来跑）：
    `testbench/ntt`（Barrett）在 Icarus 下 2/2 通过，`testbench/keccak` 在 Verilator 下 4/4 通过；
    keccak 测试在 Icarus 下编译失败（原本如此）。
+
+## 第 1a 步：微码 ROM 只保留 768、放进 LUT；zeta ROM 放进 LUT
+
+- `gen_mlkem_ucode.py`：只保留 768 的参数和程序（376 条），`--levels` 只接受 768；
+  ROM 去掉 `level_idx` / `level_mask` 端口，入口只按 op 选择，`ADDR_W = 9`，
+  输出寄存器加 `(* rom_style = "distributed" *)`。生成器断言指令数 < 511
+  （pc 全 1 是控制器的"装入入口"标记）。
+- `mlkem_ctrl`：`pc` 11 → 9 位，去掉 `FIXED_LEVEL` 参数和等级译码，
+  `lvl_ok = (sec_level == 768)`，其余等级仍返回错误码 1。
+- `pqc_mlkem_top` / `arty_a7_top`：去掉 `FIXED_LEVEL`，输出长度改为 768 常数。
+- `mlkem_poly_alu`：`zeta_r` 加 `rom_style = "distributed"`（第 0 步里它是 1 个 RAMB18）。
+- 结果：ACVP 60/60，全部回归通过；周期数不变（KeyGen 65,821 / Encaps 78,484 /
+  Decaps 110,560）。推断 BRAM：dbuf 4 + polyram 1.5 = 5.5。

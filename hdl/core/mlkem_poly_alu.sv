@@ -97,8 +97,9 @@ module mlkem_poly_alu (
     logic [11:0] a0, a1, b0, b1, c0, c1;   // Operands.
     logic [11:0] r00, r11;                 // BMUL partial products.
     logic [11:0] h1;
-    logic [11:0] zeta_r;
-    logic [23:0] wa, wb;                   // Results to write.
+    // Registered zeta ROM output: keep it in LUTs, not a RAMB18.
+    (* rom_style = "distributed" *) logic [11:0] zeta_r;
+    logic [23:0] wa, wb;                  // Results to write.
 
     logic [6:0]  zeta_idx;
     logic [11:0] zeta_val, gamma_val;

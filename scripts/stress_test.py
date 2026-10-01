@@ -3,7 +3,7 @@
 
 Runs `pqc-testkit fpga` N times. Every run uses fresh random seeds and
 compares KeyGen / Encaps / Decaps / implicit-reject outputs of each --levels
-parameter set (default ML-KEM-768, the FIXED_LEVEL of the bitstream)
+parameter set (default ML-KEM-768, the only level the core implements)
 byte-for-byte against the software reference, so N runs are 4*N*len(levels)
 independent known-answer tests on the hardware.
 

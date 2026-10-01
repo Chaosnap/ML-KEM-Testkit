@@ -49,9 +49,9 @@ export PORT=/dev/ttyUSB1                    # Linux
 
 ### 1.4 安全等级：固定为 ML-KEM-768
 当前 bitstream 只支持 **ML-KEM-768**，不支持 ML-KEM-512。
-- `pqc_mlkem_top` 的参数 `FIXED_LEVEL = 768`，微码 ROM 用 `make ucode MLKEM_LEVELS=768` 生成，两者必须一致。
+- 核心只实现 ML-KEM-768（512 和 1024 都已去掉），微码 ROM 用 `make ucode` 生成。
 - `SEC_LEVEL` 复位值为 768。写入其他值后再 start，核心会报 `ERROR_CODE = 1`。
-- 所有测试工具默认只测 768。如果重新综合了 1024 的版本（`FIXED_LEVEL = 1024`，`make ucode MLKEM_LEVELS=1024`），给工具加 `--levels 1024`（Python 的 `run` 命令用 `--level 1024`）。
+- 所有测试工具默认只测 768。
 
 ---
 
@@ -340,7 +340,7 @@ link.close()
 
 ### 5.3 通用测试流程
 1. `WriteData(DATA_IN_ADDR, 输入)`：输入格式见 6.4。
-2. 写 `SEC_LEVEL`（必须等于 bitstream 的 `FIXED_LEVEL`，当前为 768）和 `OP_MODE`（0/1/2）。
+2. 写 `SEC_LEVEL`（必须为 768）和 `OP_MODE`（0/1/2）。
 3. 写 `CTRL = 1`（start）。
 4. 轮询 `STATUS`：bit1 = done 表示成功，bit2 = error 时读 `ERROR_CODE`。
 5. 读 `DATA_OUT_LEN`，再 `ReadData(DATA_OUT_ADDR, DATA_OUT_LEN)`。
@@ -373,7 +373,7 @@ CRC 使用 CRC-32/IEEE，与 Go 的 `crc32.ChecksumIEEE` 和 Python 的 `zlib.cr
 | 0x00 | CTRL | 只写 | bit0 = start，bit1 = reset（均为脉冲，读回 0） |
 | 0x04 | STATUS | 只读 | bit0 busy，bit1 done，bit2 error（done/error 保持到下次 start/reset） |
 | 0x08 | ALG_ID | 只读 | 1 = ML-KEM |
-| 0x0C | SEC_LEVEL | 读写 | 必须为 768（= `FIXED_LEVEL`，复位值 768），其他值 start 时报错误码 1 |
+| 0x0C | SEC_LEVEL | 读写 | 必须为 768（复位值 768），其他值 start 时报错误码 1 |
 | 0x10 | OP_MODE | 读写 | 0 KeyGen，1 Encaps，2 Decaps |
 | 0x14 | CYCLE_COUNT | 只读 | 上次运算的时钟周期数 |
 | 0x18 | VERSION | 只读 | 0x020000 = v2.0.0 |

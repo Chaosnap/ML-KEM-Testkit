@@ -1,6 +1,6 @@
 .PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog sim-acvp profile regress simulate clean
 
-# ML-KEM levels in the microcode ROM; must include FIXED_LEVEL of pqc_mlkem_top.
+# ML-KEM levels in the microcode ROM (the core supports 768 only).
 MLKEM_LEVELS ?= 768
 
 # Build the CLI binary.

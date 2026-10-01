@@ -13,16 +13,12 @@
 //   NTT/INTT/BMUL/ADD/SUB      mlkem_poly_alu on poly RAM
 //
 // Error codes (ERROR_CODE register):
-//   1 = unsupported SEC_LEVEL or OP_MODE (SEC_LEVEL must be FIXED_LEVEL when
-//       that parameter is set, and must have programs in the microcode ROM)
+//   1 = unsupported SEC_LEVEL or OP_MODE (the core implements ML-KEM-768
+//       only: SEC_LEVEL must be 768)
 //   2 = encapsulation key failed the FIPS 203 modulus check
 //   3 = illegal microcode instruction
 
-module mlkem_ctrl #(
-    // Non-zero: the core is built for this ML-KEM level only (768/1024).
-    // The level decode becomes constant so synthesis drops the others.
-    parameter int FIXED_LEVEL = 0
-) (
+module mlkem_ctrl (
     input  logic        clk,
     input  logic        rst_n,
 
@@ -134,8 +130,10 @@ module mlkem_ctrl #(
         C_NEXT       // Advance pc.
     } state_t;
 
+    localparam int PC_W = 9;            // Program counter (mlkem_ucode_rom ADDR_W).
+
     state_t      state;
-    logic [10:0] pc;
+    logic [PC_W-1:0] pc;
     logic [7:0]  i_op;
     logic [7:0]  i_p;
     logic [13:0] ptr_a, ptr_b, ptr_c;   // Effective byte addresses.
@@ -145,7 +143,7 @@ module mlkem_ctrl #(
     logic        flag;                  // CMP mismatch (sticky per run).
     logic        ek_bad;                // Modulus-check failure (sticky per run).
     logic [13:0] in_base, out_base;
-    logic [1:0]  lvl_idx, op_idx;
+    logic [1:0]  op_idx;
     logic        unit_src_sponge;       // Unpacker fed from sponge.
     logic        hold_v, rd_pend;       // DECODE byte feeder.
     logic [15:0] imm;
@@ -153,20 +151,17 @@ module mlkem_ctrl #(
     // ---------------------------------------------------------------------
     // Microcode ROM.
     // ---------------------------------------------------------------------
-    logic [95:0] rom_data;
-    logic [10:0] rom_entry;
-    logic [2:0]  rom_level_mask;
+    logic [95:0]     rom_data;
+    logic [PC_W-1:0] rom_entry;
 
     mlkem_ucode_rom #(
-        .ADDR_W (11)
+        .ADDR_W (PC_W)
     ) u_rom (
-        .clk        (clk),
-        .addr       (pc),
-        .data       (rom_data),
-        .level_idx  (lvl_idx),
-        .op         (op_idx),
-        .entry      (rom_entry),
-        .level_mask (rom_level_mask)
+        .clk   (clk),
+        .addr  (pc),
+        .data  (rom_data),
+        .op    (op_idx),
+        .entry (rom_entry)
     );
 
     logic [7:0]  f_op, f_p;
@@ -191,21 +186,9 @@ module mlkem_ctrl #(
     // ---------------------------------------------------------------------
     // Parameter decode.
     // ---------------------------------------------------------------------
-    logic [31:0] lvl_sel;
-    logic [1:0]  lvl_req;
-    logic        lvl_ok, op_ok;
-    assign lvl_sel = (FIXED_LEVEL != 0) ? 32'(FIXED_LEVEL) : sec_level;
-    always_comb begin
-        lvl_ok = 1'b1;
-        case (lvl_sel)
-            32'd768:  lvl_req = 2'd1;
-            32'd1024: lvl_req = 2'd2;
-            default: begin lvl_req = 2'd0; lvl_ok = 1'b0; end
-        endcase
-        if (sec_level != lvl_sel || !rom_level_mask[lvl_req])
-            lvl_ok = 1'b0;
-        op_ok = (op_mode < 32'd3);
-    end
+    logic lvl_ok, op_ok;
+    assign lvl_ok = (sec_level == 32'd768);
+    assign op_ok  = (op_mode < 32'd3);
 
     // ---------------------------------------------------------------------
     // Buffer port B.
@@ -308,7 +291,6 @@ module mlkem_ctrl #(
             ek_bad          <= 1'b0;
             in_base         <= '0;
             out_base        <= '0;
-            lvl_idx         <= '0;
             op_idx          <= '0;
             unit_src_sponge <= 1'b0;
             hold_v          <= 1'b0;
@@ -368,7 +350,6 @@ module mlkem_ctrl #(
                                 status_error <= 1'b1;
                                 error_code   <= ERR_PARAM;
                             end else begin
-                                lvl_idx     <= lvl_req;
                                 op_idx      <= op_mode[1:0];
                                 in_base     <= data_in_addr[13:0];
                                 out_base    <= data_out_addr[13:0];
@@ -382,7 +363,7 @@ module mlkem_ctrl #(
                     end
 
                     C_NEXT: begin
-                        pc    <= (pc == '1) ? rom_entry : pc + 11'd1;
+                        pc    <= (pc == '1) ? rom_entry : pc + 1'b1;
                         state <= C_FETCH;
                     end
 

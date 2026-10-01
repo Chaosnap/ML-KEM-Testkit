@@ -2,13 +2,9 @@
 //
 // Synthesizable top-level of the ML-KEM hardware accelerator used by the
 // pqc-testkit host tool. Implements KeyGen_internal, Encaps_internal and
-// Decaps_internal (with implicit rejection) for ML-KEM-768/1024.
-//
-// FIXED_LEVEL (default 768) builds the core for one parameter set: the
-// level decode and output sizes become constants, and SEC_LEVEL must hold
-// that value or START fails with ERROR_CODE 1. Set it to 0 for a core that
-// selects the level at run time. The microcode ROM must contain the level:
-//   python3 scripts/gen_mlkem_ucode.py --levels 768
+// Decaps_internal (with implicit rejection) for ML-KEM-768 only: SEC_LEVEL
+// must be 768 (its reset value), any other value fails START with
+// ERROR_CODE 1. Microcode: python3 scripts/gen_mlkem_ucode.py
 //
 // Data path:
 //
@@ -34,8 +30,7 @@
 //   OP_MODE 2 Decaps: in = dk || c         out = K
 
 module pqc_mlkem_top #(
-    parameter int AXI_ADDR_WIDTH = 16,     // Address width for AXI-Lite.
-    parameter int FIXED_LEVEL    = 768     // 768/1024, or 0 = run-time SEC_LEVEL.
+    parameter int AXI_ADDR_WIDTH = 16      // Address width for AXI-Lite.
 ) (
     input  logic                        clk,
     input  logic                        rst_n,
@@ -90,7 +85,7 @@ module pqc_mlkem_top #(
         .VERSION_PAT (0),
         .ADDR_WIDTH  (AXI_ADDR_WIDTH),
         .BUF_AW      (12),
-        .DEFAULT_SEC_LEVEL ((FIXED_LEVEL != 0) ? 32'(FIXED_LEVEL) : 32'd768)
+        .DEFAULT_SEC_LEVEL (32'd768)
     ) u_csr (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -174,9 +169,7 @@ module pqc_mlkem_top #(
     logic [7:0]  pk_out_byte;
     logic [1:0]  pr_sel;
 
-    mlkem_ctrl #(
-        .FIXED_LEVEL (FIXED_LEVEL)
-    ) u_ctrl (
+    mlkem_ctrl u_ctrl (
         .clk             (clk),
         .rst_n           (rst_n),
         .ctrl_start      (ctrl_start),
@@ -370,16 +363,11 @@ module pqc_mlkem_top #(
     // Output length and status
     // =========================================================================
 
-    // FIPS 203 sizes: ek = 384k+32, dk = 768k+96, c = 32(du*k+dv).
+    // FIPS 203 ML-KEM-768 sizes: ek = 1184, dk = 2400, c = 1088.
     always_comb begin
-        logic [31:0] ek, dk, ct;
-        case ((FIXED_LEVEL != 0) ? 32'(FIXED_LEVEL) : sec_level)
-            32'd1024: begin ek = 32'd1568; dk = 32'd3168; ct = 32'd1568; end
-            default:  begin ek = 32'd1184; dk = 32'd2400; ct = 32'd1088; end
-        endcase
         case (op_mode)
-            32'd0:   data_out_len = ek + dk;
-            32'd1:   data_out_len = ct + 32'd32;
+            32'd0:   data_out_len = 32'd1184 + 32'd2400;
+            32'd1:   data_out_len = 32'd1088 + 32'd32;
             32'd2:   data_out_len = 32'd32;
             default: data_out_len = 32'd0;
         endcase

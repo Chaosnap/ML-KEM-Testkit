@@ -43,8 +43,8 @@ The command will:
   3. Check register read/write and a data-buffer write/read loopback
   4. Run an operation start/done cycle
   5. For ML-KEM cores, run KeyGen/Encaps/Decaps (and implicit rejection)
-     at each --levels parameter set (default 768, matching the FIXED_LEVEL
-     of the bitstream) and compare byte-for-byte against the software
+     at each --levels parameter set (default 768, the only level
+     the core implements) and compare byte-for-byte against the software
      reference (skip with --skip-kat)
   6. Report hardware cycle counts from the performance counter`,
 	RunE: runFPGA,
