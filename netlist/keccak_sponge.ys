@@ -1,0 +1,4 @@
+read_verilog -sv -formal -overwrite {workspace}/hdl/core/keccak_f1600.sv
+read_verilog -sv -formal -overwrite {workspace}/hdl/core/keccak_sponge.sv
+design -reset-vlog; proc;
+write_json {workspace}/netlist/keccak_sponge.json
