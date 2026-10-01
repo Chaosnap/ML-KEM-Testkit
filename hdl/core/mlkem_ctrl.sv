@@ -6,11 +6,19 @@
 // polynomial units:
 //
 //   HINIT/HABS/HABI/HFIN/HSQZ  buffer <-> keccak_sponge (G, H, J, PRF, XOF)
-//   COPY / CMP / CSEL          buffer byte moves, FO re-encryption check,
+//   COPY / CMP / CSEL          buffer word moves, FO re-encryption check,
 //                              constant-time implicit-rejection select
 //   SAMPLE / CBD / DECODE      sponge or buffer -> mlkem_unpack -> poly RAM
 //   ENCODE                     poly RAM -> mlkem_pack -> buffer
 //   NTT/INTT/BMUL/ADD/SUB      mlkem_poly_alu on poly RAM
+//
+// Buffer operands of HABS / HSQZ / COPY / CMP / CSEL / DECODE are 32-bit
+// word aligned with lengths that are multiples of 4 (gen_mlkem_ucode.py
+// asserts this), so the buffer is accessed one word per cycle:
+//   HABS, DECODE  prefetch words into a 2-entry FIFO, one read per cycle,
+//                 bytes handed to the sponge / unpacker at 1 byte per cycle
+//   CMP           a, b word reads interleaved: 2 cycles per word
+//   COPY, CSEL    read word, write word: 2 cycles per word
 //
 // Error codes (ERROR_CODE register):
 //   1 = unsupported SEC_LEVEL or OP_MODE (the core implements ML-KEM-768
@@ -122,10 +130,10 @@ module mlkem_ctrl (
         C_HABI,      // Absorb immediate byte(s).
         C_HFIN,      // Finalize.
         C_HSQZ,      // Squeeze to buffer.
-        C_RD,        // Issue buffer read at rd_ptr.
-        C_RD_WAIT,   // Buffer data valid.
-        C_ABS,       // Absorb byte_x.
-        C_CMP_B,     // CMP: second operand valid.
+        C_HABS,      // Stream buffer words into the sponge.
+        C_CMP,       // Interleaved a / b word reads and compare.
+        C_CP_RD,     // COPY / CSEL: read source word.
+        C_CP_WR,     // COPY / CSEL: write it.
         C_UNIT,      // Wait for poly unit.
         C_NEXT       // Advance pc.
     } state_t;
@@ -137,15 +145,13 @@ module mlkem_ctrl (
     logic [7:0]  i_op;
     logic [7:0]  i_p;
     logic [13:0] ptr_a, ptr_b, ptr_c;   // Effective byte addresses.
-    logic [15:0] len;
-    logic [7:0]  byte_x;
+    logic [15:0] len;                   // Bytes (HABS, HSQZ) or words (CMP, COPY, CSEL).
     logic        imm_idx;
     logic        flag;                  // CMP mismatch (sticky per run).
     logic        ek_bad;                // Modulus-check failure (sticky per run).
     logic [13:0] in_base, out_base;
     logic [1:0]  op_idx;
     logic        unit_src_sponge;       // Unpacker fed from sponge.
-    logic        hold_v, rd_pend;       // DECODE byte feeder.
     logic [15:0] imm;
 
     // ---------------------------------------------------------------------
@@ -191,85 +197,101 @@ module mlkem_ctrl (
     assign op_ok  = (op_mode < 32'd3);
 
     // ---------------------------------------------------------------------
-    // Buffer port B.
+    // Buffer port B: word prefetch FIFO (HABS, DECODE).
     // ---------------------------------------------------------------------
-    // Byte selected from the word read in the previous cycle.
-    logic [13:0] rd_ptr;
-    logic [7:0]  rd_byte;
-    assign rd_byte = buf_dout[{rd_ptr[1:0], 3'b000} +: 8];
+    // Up to two words buffered plus one read in flight; a read is issued
+    // whenever the words already buffered or in flight leave room for it,
+    // so the stream runs at one word per cycle while the consumer keeps up
+    // and stalls cleanly when it does not (e.g. during a permutation).
+    logic [31:0] fq0, fq1;              // FIFO entries, fq0 = head.
+    logic [1:0]  fcnt;                  // Valid entries.
+    logic        finfl;                 // Read issued last cycle.
+    logic [1:0]  fbyte;                 // Next byte of the head word.
+    logic [15:0] rd_left;               // Words still to be read.
+    logic        fstream, f_take, f_pop, f_issue;
+    logic [7:0]  f_byte;
+
+    assign fstream = (state == C_HABS) || (state == C_UNIT && i_op == OP_DECODE);
+    assign f_byte  = fq0[{fbyte, 3'b000} +: 8];
+    assign f_take  = (state == C_HABS) ? (fcnt != 2'd0 && h_absorb_ready)
+                   : (state == C_UNIT && i_op == OP_DECODE && up_src_take);
+    assign f_pop   = f_take && (fbyte == 2'd3);
+    assign f_issue = fstream && (rd_left != 16'd0) &&
+                     (3'(fcnt) + 3'(finfl) - 3'(f_pop) < 3'd2);
+
+    // CMP: which operand the read of the previous cycle fetched.
+    logic        cmp_b_next;            // Next read is operand b.
+    logic        cmp_got_a, cmp_got_b;  // buf_dout holds a / b this cycle.
+    logic [31:0] cmp_a;
+    logic        cmp_issue;
+    assign cmp_issue = (state == C_CMP) && (rd_left != 16'd0);
+
+    logic        rd_req, wr_req;
+    logic [13:0] rd_ptr, wr_ptr;
+    logic [3:0]  wr_be;
+    logic [31:0] wr_word;
 
     always_comb begin
-        // Which pointer the current read uses.
-        case (i_op)
-            OP_CMP:  rd_ptr = (state == C_CMP_B) ? ptr_b : ptr_a;
-            OP_CSEL: rd_ptr = flag ? ptr_b : ptr_a;
-            default: rd_ptr = ptr_a;
-        endcase
-    end
-
-    logic        wr_req;
-    logic [13:0] wr_ptr;
-    logic [7:0]  wr_byte;
-
-    always_comb begin
+        rd_req  = 1'b0;
+        rd_ptr  = ptr_a;
         wr_req  = 1'b0;
         wr_ptr  = ptr_b;
-        wr_byte = rd_byte;
+        wr_be   = 4'b1111;
+        wr_word = buf_dout;
         case (state)
+            C_HABS: rd_req = f_issue;
+            C_CMP: begin
+                rd_req = cmp_issue;
+                rd_ptr = cmp_b_next ? ptr_b : ptr_a;
+            end
+            C_CP_RD: begin
+                rd_req = 1'b1;
+                rd_ptr = (i_op == OP_CSEL && flag) ? ptr_b : ptr_a;
+            end
+            C_CP_WR: begin
+                wr_req = 1'b1;
+                wr_ptr = (i_op == OP_CSEL) ? ptr_c : ptr_b;
+            end
             C_HSQZ: begin
                 wr_req  = h_squeeze_valid;
                 wr_ptr  = ptr_a;
-                wr_byte = h_squeeze_byte;
-            end
-            C_RD_WAIT: begin
-                if (i_op == OP_COPY) begin
-                    wr_req = 1'b1;
-                    wr_ptr = ptr_b;
-                end else if (i_op == OP_CSEL) begin
-                    wr_req = 1'b1;
-                    wr_ptr = ptr_c;
-                end
+                wr_be   = 4'b0001 << ptr_a[1:0];
+                wr_word = {4{h_squeeze_byte}};
             end
             C_UNIT: begin
+                if (i_op == OP_DECODE)
+                    rd_req = f_issue;
                 if (i_op == OP_ENCODE) begin
                     wr_req  = pk_out_valid;
-                    wr_ptr  = ptr_b;
-                    wr_byte = pk_out_byte;
+                    wr_be   = 4'b0001 << ptr_b[1:0];
+                    wr_word = {4{pk_out_byte}};
                 end
             end
             default: ;
         endcase
-    end
-
-    logic rd_req;
-    assign rd_req = (state == C_RD) || (state == C_RD_WAIT && i_op == OP_CMP) ||
-                    (state == C_UNIT && i_op == OP_DECODE && !hold_v && !rd_pend);
-
-    always_comb begin
         buf_en   = rd_req || wr_req;
-        buf_we   = wr_req ? (4'b0001 << wr_ptr[1:0]) : 4'b0000;
-        buf_din  = {4{wr_byte}};
-        if (wr_req)
-            buf_addr = wr_ptr[12:2];
-        else if (state == C_RD_WAIT && i_op == OP_CMP)
-            buf_addr = ptr_b[12:2];
-        else
-            buf_addr = rd_ptr[12:2];
+        buf_we   = wr_req ? wr_be : 4'b0000;
+        buf_din  = wr_word;
+        buf_addr = wr_req ? wr_ptr[12:2] : rd_ptr[12:2];
     end
+
+    // Profiling only (testbench/core_sim): sequencer overhead cycles.
+    logic seq_overhead;
+    assign seq_overhead = (state == C_NEXT) || (state == C_FETCH) || (state == C_DECODE);
 
     // ---------------------------------------------------------------------
     // Sponge, unit handshakes.
     // ---------------------------------------------------------------------
     assign h_init         = (state == C_HINIT) && h_idle;
     assign h_mode         = i_p[1:0];
-    assign h_absorb_valid = (state == C_ABS) || (state == C_HABI);
-    assign h_absorb_byte  = (state == C_HABI) ? (imm_idx ? imm[15:8] : imm[7:0]) : byte_x;
+    assign h_absorb_valid = (state == C_HABI) || (state == C_HABS && fcnt != 2'd0);
+    assign h_absorb_byte  = (state == C_HABI) ? (imm_idx ? imm[15:8] : imm[7:0]) : f_byte;
     assign h_finalize     = (state == C_HFIN) && h_absorb_ready;
     assign h_squeeze_take = (state == C_HSQZ && h_squeeze_valid) ||
                             (state == C_UNIT && unit_src_sponge && up_src_take);
 
-    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : hold_v;
-    assign up_src_byte  = unit_src_sponge ? h_squeeze_byte  : byte_x;
+    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt != 2'd0);
+    assign up_src_byte  = unit_src_sponge ? h_squeeze_byte  : f_byte;
 
     // ---------------------------------------------------------------------
     // Sequencer.
@@ -285,7 +307,16 @@ module mlkem_ctrl (
             ptr_b           <= '0;
             ptr_c           <= '0;
             len             <= '0;
-            byte_x          <= '0;
+            fq0             <= '0;
+            fq1             <= '0;
+            fcnt            <= '0;
+            finfl           <= 1'b0;
+            fbyte           <= '0;
+            rd_left         <= '0;
+            cmp_b_next      <= 1'b0;
+            cmp_got_a       <= 1'b0;
+            cmp_got_b       <= 1'b0;
+            cmp_a           <= '0;
             imm_idx         <= 1'b0;
             flag            <= 1'b0;
             ek_bad          <= 1'b0;
@@ -293,8 +324,6 @@ module mlkem_ctrl (
             out_base        <= '0;
             op_idx          <= '0;
             unit_src_sponge <= 1'b0;
-            hold_v          <= 1'b0;
-            rd_pend         <= 1'b0;
             status_busy     <= 1'b0;
             status_done     <= 1'b0;
             status_error    <= 1'b0;
@@ -335,10 +364,32 @@ module mlkem_ctrl (
                 status_error <= 1'b0;
                 error_code   <= '0;
                 cycle_count  <= '0;
-                hold_v       <= 1'b0;
-                rd_pend      <= 1'b0;
+                fcnt         <= '0;
+                finfl        <= 1'b0;
                 units_clr    <= 1'b1;
             end else begin
+                // Word prefetch FIFO (push after pop: the new word may land in fq0).
+                if (f_take)
+                    fbyte <= fbyte + 2'd1;
+                if (f_pop)
+                    fq0 <= fq1;
+                if (finfl) begin
+                    if (fcnt - 2'(f_pop) == 2'd0)
+                        fq0 <= buf_dout;
+                    else
+                        fq1 <= buf_dout;
+                end
+                fcnt  <= fcnt - 2'(f_pop) + 2'(finfl);
+                finfl <= f_issue;
+                if (f_issue) begin
+                    rd_left <= rd_left - 16'd1;
+                    ptr_a   <= ptr_a + 14'd4;
+                end
+
+                // CMP read pipeline.
+                cmp_got_a <= cmp_issue && !cmp_b_next;
+                cmp_got_b <= cmp_issue && cmp_b_next;
+
                 case (state)
                     C_IDLE: begin
                         if (ctrl_start) begin
@@ -373,7 +424,12 @@ module mlkem_ctrl (
                         i_op    <= f_op;
                         i_p     <= f_p;
                         imm     <= f_a;
-                        len     <= f_len;
+                        len     <= (f_op == OP_HABS || f_op == OP_HSQZ) ? f_len : {2'b00, f_len[15:2]};
+                        rd_left <= {2'b00, f_len[15:2]};
+                        fcnt    <= '0;
+                        finfl   <= 1'b0;
+                        fbyte   <= '0;
+                        cmp_b_next <= 1'b0;
                         imm_idx <= 1'b0;
                         ptr_a   <= eff(f_a, in_base, out_base);
                         ptr_b   <= eff(f_b, in_base, out_base);
@@ -392,8 +448,10 @@ module mlkem_ctrl (
                             OP_HABI:  state <= C_HABI;
                             OP_HFIN:  state <= C_HFIN;
                             OP_HSQZ:  state <= (f_len == 0) ? C_NEXT : C_HSQZ;
-                            OP_HABS, OP_COPY, OP_CMP, OP_CSEL:
-                                      state <= (f_len == 0) ? C_NEXT : C_RD;
+                            OP_HABS:  state <= (f_len == 0) ? C_NEXT : C_HABS;
+                            OP_CMP:   state <= (f_len == 0) ? C_NEXT : C_CMP;
+                            OP_COPY, OP_CSEL:
+                                      state <= (f_len == 0) ? C_NEXT : C_CP_RD;
                             OP_SAMPLE, OP_CBD, OP_DECODE: begin
                                 up_start        <= 1'b1;
                                 up_mode         <= (f_op == OP_SAMPLE) ? 2'd0 :
@@ -402,8 +460,6 @@ module mlkem_ctrl (
                                 up_check        <= f_p[4];
                                 up_slot         <= f_c[2:0];
                                 unit_src_sponge <= (f_op != OP_DECODE);
-                                hold_v          <= 1'b0;
-                                rd_pend         <= 1'b0;
                                 pr_sel          <= 2'd1;
                                 state           <= C_UNIT;
                             end
@@ -455,52 +511,44 @@ module mlkem_ctrl (
                             state <= C_NEXT;
                     end
 
-                    C_RD: state <= C_RD_WAIT;
+                    C_HABS: if (f_take) begin
+                        len <= len - 16'd1;
+                        if (len == 16'd1)
+                            state <= C_NEXT;
+                    end
 
-                    C_RD_WAIT: begin
-                        byte_x <= rd_byte;
-                        case (i_op)
-                            OP_HABS: state <= C_ABS;
-                            OP_CMP:  state <= C_CMP_B;  // ptr_b read issued.
-                            default: begin              // COPY / CSEL: byte written.
-                                ptr_a <= ptr_a + 14'd1;
-                                ptr_b <= ptr_b + 14'd1;
-                                ptr_c <= ptr_c + 14'd1;
-                                len   <= len - 16'd1;
-                                state <= (len == 16'd1) ? C_NEXT : C_RD;
+                    C_CMP: begin
+                        if (cmp_issue) begin
+                            cmp_b_next <= !cmp_b_next;
+                            if (cmp_b_next) begin
+                                ptr_b   <= ptr_b + 14'd4;
+                                rd_left <= rd_left - 16'd1;
+                            end else begin
+                                ptr_a   <= ptr_a + 14'd4;
                             end
-                        endcase
+                        end
+                        if (cmp_got_a)
+                            cmp_a <= buf_dout;
+                        if (cmp_got_b) begin
+                            if (buf_dout != cmp_a)
+                                flag <= 1'b1;
+                            len <= len - 16'd1;
+                            if (len == 16'd1)
+                                state <= C_NEXT;
+                        end
                     end
 
-                    C_CMP_B: begin
-                        if (rd_byte != byte_x)
-                            flag <= 1'b1;
-                        ptr_a <= ptr_a + 14'd1;
-                        ptr_b <= ptr_b + 14'd1;
-                        len   <= len - 16'd1;
-                        state <= (len == 16'd1) ? C_NEXT : C_RD;
-                    end
+                    C_CP_RD: state <= C_CP_WR;
 
-                    C_ABS: if (h_absorb_ready) begin
-                        ptr_a <= ptr_a + 14'd1;
+                    C_CP_WR: begin
+                        ptr_a <= ptr_a + 14'd4;
+                        ptr_b <= ptr_b + 14'd4;
+                        ptr_c <= ptr_c + 14'd4;
                         len   <= len - 16'd1;
-                        state <= (len == 16'd1) ? C_NEXT : C_RD;
+                        state <= (len == 16'd1) ? C_NEXT : C_CP_RD;
                     end
 
                     C_UNIT: begin
-                        // DECODE byte feeder: one-byte holding register.
-                        if (i_op == OP_DECODE) begin
-                            if (rd_req) begin
-                                rd_pend <= 1'b1;
-                            end else if (rd_pend) begin
-                                rd_pend <= 1'b0;
-                                hold_v  <= 1'b1;
-                                byte_x  <= rd_byte;
-                                ptr_a   <= ptr_a + 14'd1;
-                            end else if (hold_v && up_src_take) begin
-                                hold_v  <= 1'b0;
-                            end
-                        end
                         if (i_op == OP_ENCODE && pk_out_valid)
                             ptr_b <= ptr_b + 14'd1;
                         if (alu_done || up_done || pk_done)

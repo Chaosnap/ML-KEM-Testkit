@@ -392,7 +392,7 @@ CRC 使用 CRC-32/IEEE，与 Go 的 `crc32.ChecksumIEEE` 和 Python 的 `zlib.cr
 | 0x1D00 – 0x1FFF | 未使用 |
 
 buffer 只有 8 KB，但总线窗口仍是 0x4000–0x7FFF（16 KB）：偏移 0x2000–0x3FFF 是 0x0000–0x1FFF 的镜像。
-如果修改 DATA_IN_ADDR / DATA_OUT_ADDR，输入区要留 0xE00 字节、输出区要留 0xE00 字节，且不能和 scratch 重叠。
+如果修改 DATA_IN_ADDR / DATA_OUT_ADDR，它们必须是 4 的倍数（核心按 32 位字访问 buffer），输入区要留 0xE00 字节、输出区要留 0xE00 字节，且不能和 scratch 重叠。
 
 ### 6.4 各运算的输入与输出（字节）
 | OP_MODE | 输入（写到 DATA_IN_ADDR） | 输出（从 DATA_OUT_ADDR 读） |

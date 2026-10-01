@@ -16,6 +16,10 @@ small enough for distributed (LUT) ROM; it is marked rom_style = "distributed".
 Microcode word (96 bits), executed by hdl/core/mlkem_ctrl.sv:
   [95:88] op  [87:80] p  [79:64] a  [63:48] b  [47:32] c  [31:16] len  [15:0] 0
 
+Buffer operands (HABS, HSQZ, COPY, CMP, CSEL, DECODE) must be 32-bit word
+aligned with lengths that are multiples of 4: the sequencer moves one word
+per buffer access. DECODE carries its byte count (32 * d) in len.
+
 Buffer addresses are tagged: bits [15:14] select the base that the
 sequencer adds to the 14-bit offset (0 = absolute, 1 = DATA_IN_ADDR,
 2 = DATA_OUT_ADDR).
@@ -103,6 +107,9 @@ class Prog:
                "DECODE": [(a, 32 * (p & 0x0F))], "ENCODE": [(b, 32 * p)]}.get(op, [])
         for addr, size in acc:
             check_region(addr, size, "pc %d %s" % (n, text or op))
+            # mlkem_ctrl moves these operands one 32-bit word per access.
+            if (addr & 3) or (size & 3):
+                raise SystemExit("pc %d %s: operand not 32-bit word aligned" % (n, text or op))
 
     def slots(self, *ss):
         for x in ss:
@@ -147,7 +154,7 @@ class Prog:
 
     def decode(self, d, a, dst, check=False):
         self.slots(dst)
-        self.emit("DECODE", p=d | (CHECK if check else 0), a=a, c=dst,
+        self.emit("DECODE", p=d | (CHECK if check else 0), a=a, c=dst, ln=32 * d,
                   text="DECODE d=%d%s %s -> s%d" % (d, " chk" if check else "", astr(a), dst))
 
     def encode(self, d, src, a):

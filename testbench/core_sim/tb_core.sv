@@ -104,13 +104,11 @@ module tb_core;
     logic [7:0]  prof_op   [0:2047];
     bit          profiling = 1'b0;
 
-    // mlkem_ctrl state_t: C_NEXT = 12, C_FETCH = 1, C_DECODE = 2.
     always @(posedge clk) begin
         if (profiling && dut.u_ctrl.status_busy) begin
-            int s, p;
-            s = int'(dut.u_ctrl.state);
+            int p;
             p = int'(dut.u_ctrl.pc);
-            if (s == 1 || s == 2 || s == 12)
+            if (dut.u_ctrl.seq_overhead)
                 prof_ovh[p]++;
             else begin
                 prof_exec[p]++;

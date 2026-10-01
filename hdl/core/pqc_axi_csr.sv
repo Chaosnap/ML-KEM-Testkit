@@ -19,7 +19,8 @@
 //   0x14 CYCLE_COUNT   RO  cycle counter
 //   0x18 VERSION       RO  core version
 //   0x1C ERROR_CODE    RO  error code
-//   0x20 DATA_IN_ADDR  RW  input buffer byte offset  (reset 0x0000)
+//   0x20 DATA_IN_ADDR  RW  input buffer byte offset  (reset 0x0000; ML-KEM:
+//                          multiple of 4, like DATA_OUT_ADDR)
 //   0x24 DATA_IN_LEN   RW  input data length (informational)
 //   0x28 DATA_OUT_ADDR RW  output buffer byte offset (reset DEFAULT_OUT_ADDR)
 //   0x2C DATA_OUT_LEN  RO  output data length
