@@ -5,8 +5,8 @@
 #   vivado -mode batch -nolog -nojournal -source scripts/vivado_reports.tcl \
 #          -tclargs <out_dir> [clock_period_ns]
 #
-# Builds arty_a7_top for xc7a100tcsg324-1 with the default synthesis and
-# implementation directives (no bitstream) and writes to <out_dir>:
+# Builds arty_a7_top for xc7a100tcsg324-1 (timing-driven implementation
+# directives, no bitstream) and writes to <out_dir>:
 #   utilization_hier.rpt     report_utilization -hierarchical
 #   utilization_u_mlkem.rpt  report_utilization -cells [get_cells u_mlkem]
 #   timing_summary.rpt       report_timing_summary
@@ -37,10 +37,12 @@ synth_design -top arty_a7_top -part $part
 if {$period != 10.0} {
     create_clock -period $period -name sys_clk [get_ports clk_100mhz]
 }
-opt_design
-place_design
-phys_opt_design
-route_design
+# Timing-driven directives (the core runs at 206.25 MHz on a -1 part).
+opt_design      -directive Explore
+place_design    -directive ExtraTimingOpt
+phys_opt_design -directive AggressiveExplore
+route_design    -directive AggressiveExplore
+phys_opt_design -directive AggressiveExplore
 
 report_utilization -hierarchical -file $out_dir/utilization_hier.rpt
 report_utilization -cells [get_cells u_mlkem] -file $out_dir/utilization_u_mlkem.rpt

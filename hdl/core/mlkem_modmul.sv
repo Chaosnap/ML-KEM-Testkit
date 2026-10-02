@@ -19,8 +19,6 @@ module mlkem_modmul (
     output logic [11:0] r
 );
 
-    localparam logic [12:0] Q = 13'd3329;
-
     logic [11:0] a0, b0;          // Stage 1: operands (DSP A / B registers).
     logic [23:0] p1;              // Stage 2: product (DSP M register).
     logic [23:0] p2;              // Stage 3: product (DSP P register).
@@ -32,10 +30,22 @@ module mlkem_modmul (
     /* verilator lint_off UNUSEDSIGNAL */
     logic [36:0] pm;              // p * 5039 (only [36:24] used)
     /* verilator lint_on UNUSEDSIGNAL */
-    logic [12:0] t;
+    logic [12:0] t1, t2;
+
+    // t = pl - qq is in [0, 2q) (mod 2^13); r = t >= q ? t - q : t with both
+    // candidates computed in parallel: t - q = pl + ~qq + 1 - q (carry-save
+    // 3-input add), and t >= q <=> (t - q mod 2^13)[12] == 0.
+    function automatic logic [12:0] add3(input logic [12:0] a, input logic [12:0] b,
+                                         input logic [12:0] c);
+        logic [12:0] sm, cy;
+        sm = a ^ b ^ c;
+        cy = (a & b) | (a & c) | (b & c);
+        return sm + {cy[11:0], 1'b0};
+    endfunction
 
     assign pm = sa4 - sb4;
-    assign t  = pl6 - qq6;        // 0 <= t < 2q (fits in 13 bits).
+    assign t1 = pl6 - qq6;
+    assign t2 = add3(pl6, ~qq6, 13'd4864);   // 1 - q mod 2^13
 
     always_ff @(posedge clk) begin
         a0  <= a;
@@ -49,7 +59,7 @@ module mlkem_modmul (
         pl5 <= pl4;
         qq6 <= ((qh5 << 11) + (qh5 << 10)) + ((qh5 << 8) + qh5);
         pl6 <= pl5;
-        r   <= (t >= Q) ? 12'(t - Q) : t[11:0];
+        r   <= t2[12] ? t1[11:0] : t2[11:0];
     end
 
 endmodule

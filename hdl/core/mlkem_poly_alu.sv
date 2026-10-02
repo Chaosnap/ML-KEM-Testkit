@@ -70,16 +70,31 @@ module mlkem_poly_alu (
     // ---------------------------------------------------------------------
     // Modular add / sub helpers (inputs canonical).
     // ---------------------------------------------------------------------
+    // Both candidates are computed in parallel (the second as a carry-save
+    // 3-input add: one LUT level plus one carry chain) and one bit selects,
+    // instead of add -> compare -> subtract in series. Arithmetic mod 2^13:
+    //   madd: s = x + y,  t = x + y - q;   x + y >= q  <=>  t[12] == 0
+    //   msub: d = x - y,  e = x - y + q;   x <  y      <=>  d[12] == 1
+    function automatic logic [12:0] add3(input logic [12:0] a, input logic [12:0] b,
+                                         input logic [12:0] c);
+        logic [12:0] sm, cy;
+        sm = a ^ b ^ c;
+        cy = (a & b) | (a & c) | (b & c);
+        return sm + {cy[11:0], 1'b0};
+    endfunction
+
     function automatic logic [11:0] madd(input logic [11:0] x, input logic [11:0] y);
-        logic [12:0] s;
+        logic [12:0] s, t;
         s = {1'b0, x} + {1'b0, y};
-        return (s >= {1'b0, Q}) ? 12'(s - {1'b0, Q}) : s[11:0];
+        t = add3({1'b0, x}, {1'b0, y}, 13'd4863);        // 2^13 - q
+        return t[12] ? s[11:0] : t[11:0];
     endfunction
 
     function automatic logic [11:0] msub(input logic [11:0] x, input logic [11:0] y);
-        logic [12:0] d;
+        logic [12:0] d, e;
         d = {1'b0, x} - {1'b0, y};
-        return d[12] ? 12'(d + {1'b0, Q}) : d[11:0];
+        e = add3({1'b0, x}, ~{1'b0, y}, 13'd3330);       // x - y + q
+        return d[12] ? e[11:0] : d[11:0];
     endfunction
 
     function automatic logic [23:0] madd2(input logic [23:0] x, input logic [23:0] y);
@@ -115,6 +130,7 @@ module mlkem_poly_alu (
     logic [2:0]  lg_lenw;
     logic [6:0]  lenw, jw, jb, blk, it7;
     logic [6:0]  zeta_idx;
+    logic [6:0]  zi;            // Zeta index registered (during T).
     logic [11:0] zeta_val, gamma_val;
     always_comb begin
         it7     = item[6:0];
@@ -136,7 +152,7 @@ module mlkem_poly_alu (
     end
 
     mlkem_zetas u_zetas (
-        .zeta_idx  (zeta_idx),
+        .zeta_idx  (zi),
         .zeta      (zeta_val),
         .gamma_idx (it7),
         .gamma     (gamma_val)
@@ -149,7 +165,7 @@ module mlkem_poly_alu (
     logic [PD-1:0] pv;
     logic [6:0]    pjw [0:PD-1];
     logic [6:0]    pjb [0:PD-1];
-    (* rom_style = "distributed" *) logic [11:0] pz [0:3];    // zeta, pz[3] during T+3
+    (* rom_style = "distributed" *) logic [11:0] pz [0:2];    // zeta, pz[2] during T+3
     (* rom_style = "distributed" *) logic [11:0] pg [0:10];   // gamma, pg[10] during T+10
 
     always_ff @(posedge clk) begin
@@ -159,8 +175,9 @@ module mlkem_poly_alu (
             pjw[i] <= pjw[i - 1];
             pjb[i] <= pjb[i - 1];
         end
-        pz[0] <= zeta_val;
-        for (int i = 1; i < 4; i++)
+        zi    <= zeta_idx;
+        pz[0] <= zeta_val;                      // ROM read from zi (registered index)
+        for (int i = 1; i < 3; i++)
             pz[i] <= pz[i - 1];
         pg[0] <= gamma_val;
         for (int i = 1; i < 11; i++)
@@ -238,7 +255,7 @@ module mlkem_poly_alu (
         lb2 <= lb;
         ls  <= sub_r ? msub2(la, lb) : madd2(la, lb);
         ld  <= msub2(lb, la);
-        lz  <= pz[3];
+        lz  <= pz[2];
         ksa <= madd(la[11:0], la[23:12]);
         ksb <= madd(lb[11:0], lb[23:12]);
         cin <= acc_r ? ra_dout : 24'd0;         // C word read at T+1

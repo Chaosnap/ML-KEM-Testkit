@@ -212,6 +212,16 @@ if {[file exists $synth_log]} {
 # Run implementation through bitstream generation
 # -----------------------------------------------------------------------------
 puts "--- Running Implementation + Bitstream ---"
+# Timing-driven directives (the ML-KEM core runs at 206.25 MHz on a -1 part);
+# the same set as scripts/vivado_reports.tcl.
+set impl [get_runs impl_1]
+set_property STEPS.OPT_DESIGN.ARGS.DIRECTIVE                Explore           $impl
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE              ExtraTimingOpt    $impl
+set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED               true              $impl
+set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE           AggressiveExplore $impl
+set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE              AggressiveExplore $impl
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED    true              $impl
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore $impl
 launch_runs impl_1 -to_step write_bitstream -jobs 4
 
 if {[catch {wait_on_run impl_1} impl_err]} {

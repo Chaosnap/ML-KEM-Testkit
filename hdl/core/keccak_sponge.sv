@@ -55,7 +55,7 @@ module keccak_sponge (
     logic [1599:0] st;          // Sponge state; lane i = st[64*i +: 64].
     logic [1599:0] st_round;
     logic [4:0]    round;
-    logic          running;     // Permutation in progress.
+    (* max_fanout = 16 *) logic running;     // Permutation in progress.
 
     keccak_round u_round (
         .s_in  (st),
@@ -82,12 +82,14 @@ module keccak_sponge (
     logic [63:0] x_data;
     (* max_fanout = 64 *) logic [20:0] x_pad;  // Lanes whose top bit flips (pad 0x80).
     logic        x_go;          // Start the permutation after this XOR.
-    (* max_fanout = 64 *) logic init_q;
+    (* max_fanout = 16 *) logic init_q;
 
-    // Squeeze.
-    logic [4:0]  li, li_p1;     // Current lane, current lane + 1.
+    // Squeeze: squeeze_data holds lane li, nx1 / nx2 the next two lanes
+    // (lookahead, so a take never waits for the lane select).
+    logic [4:0]  li_p1, li_p3;  // Index of the lane in nx1; next lane to fetch.
     logic [4:0]  nlanes;        // rate / 8.
-    logic        sq_load;       // Load squeeze_data from lane li_p1 / 0.
+    logic        sq_load;       // Load lanes 0, 1, 2 after a permutation.
+    logic [63:0] nx1, nx2;
 
     // Ready / idle are registers.
     logic        ab_rdy;
@@ -113,13 +115,13 @@ module keccak_sponge (
         for (int i = 0; i < 21; i++)
             lane_oh[i] = (lane == 5'(i));
 
-    // Lane li_p1 of the state (next squeeze lane).
-    logic [63:0] nxt_lane;
+    // Lane li_p3 of the state (fetched into nx2).
+    logic [63:0] fetch_lane;
     always_comb begin
-        nxt_lane = '0;
+        fetch_lane = '0;
         for (int i = 0; i < 21; i++)
-            if (li_p1 == 5'(i))
-                nxt_lane = st[64 * i +: 64];
+            if (li_p3 == 5'(i))
+                fetch_lane = st[64 * i +: 64];
     end
 
     always_ff @(posedge clk) begin
@@ -137,8 +139,8 @@ module keccak_sponge (
             x_go          <= 1'b0;
             init_q        <= 1'b0;
             ab_rdy        <= 1'b0;
-            li            <= '0;
             li_p1         <= 5'd1;
+            li_p3         <= 5'd3;
             nlanes        <= 5'd17;
             sq_load       <= 1'b0;
             squeeze_valid <= 1'b0;
@@ -155,9 +157,7 @@ module keccak_sponge (
                 if (round == 5'd23) begin
                     running <= 1'b0;
                     if (squeezing) begin
-                        sq_load <= 1'b1;        // Load lane 0 next cycle.
-                        li      <= '0;
-                        li_p1   <= '0;
+                        sq_load <= 1'b1;        // Load lanes 0..2 next cycle.
                     end else begin
                         ab_rdy  <= 1'b1;
                     end
@@ -171,10 +171,13 @@ module keccak_sponge (
             // Squeeze output register.
             if (sq_load) begin
                 sq_load       <= 1'b0;
-                squeeze_data  <= nxt_lane;
+                squeeze_data  <= st[63:0];
+                nx1           <= st[127:64];
+                nx2           <= st[191:128];
                 squeeze_avail <= 4'd8;
                 squeeze_valid <= 1'b1;
-                li_p1         <= li + 5'd1;
+                li_p1         <= 5'd1;
+                li_p3         <= 5'd3;
             end else if (do_take) begin
                 if (squeeze_n == squeeze_avail) begin   // Lane used up.
                     if (li_p1 == nlanes) begin
@@ -182,10 +185,12 @@ module keccak_sponge (
                         running       <= 1'b1;          // Next block.
                         round         <= '0;
                     end else begin
-                        squeeze_data  <= nxt_lane;
+                        squeeze_data  <= nx1;
+                        nx1           <= nx2;
+                        nx2           <= fetch_lane;
                         squeeze_avail <= 4'd8;
-                        li            <= li_p1;
                         li_p1         <= li_p1 + 5'd1;
+                        li_p3         <= li_p3 + 5'd1;
                     end
                 end else begin                          // Low half taken.
                     squeeze_data  <= squeeze_data >> 32;

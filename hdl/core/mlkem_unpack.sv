@@ -22,9 +22,10 @@
 //   S1  3-slot chunk queue {q2,q1,q0} and bit pointer p into q0; p + w and
 //       p + 2w are kept in registers; fields are read from the registered
 //       window {q1,q0} at p and p + w
-//   S2  q * field for Decompress (shift-add)
-//   S3  field -> coefficient (SampleNTT accept, CBD, Decompress round/shift)
-//   S4  pair coefficients, count; S5 write the RAM word
+//   S2  q * field for Decompress (shift-add); SampleNTT accept, CBD, d=12
+//   S3  Decompress rounding add
+//   S4  Decompress shift, select the mode's result
+//   S5  pair coefficients, count; S6 write the RAM word
 
 module mlkem_unpack (
     input  logic        clk,
@@ -88,12 +89,18 @@ module mlkem_unpack (
     logic [63:0] q0, q1, q2;
     logic        v0, v1, v2;
     logic [6:0]  p, pw1, pw2;       // p (< 64), p + w, p + 2w.
+    logic [6:0]  lim1, lim2;        // 64 - w, 64 - 2w.
+    logic        ge1, gt1, ge2, gt2;   // p >= / > lim1, lim2 (registered with p).
     logic [11:0] f0, f1;            // S2 inputs.
     logic        fv0, fv1;
-    logic [11:0] g0, g1;            // S3 inputs: fields ...
-    (* use_dsp = "no" *) logic [23:0] qf0, qf1;   // ... and q * field.
+    (* use_dsp = "no" *) logic [23:0] qf0, qf1;   // S3 inputs: q * field ...
+    logic [13:0] alt0, alt1;        // ... and {accept, bad, coef} of non-Decompress modes.
     logic        gv0, gv1;
-    logic [13:0] rq0, rq1;          // S4 inputs: {accept, bad, coef}.
+    logic [23:0] rn0, rn1;          // S4 inputs: q * field + 2^(d-1) ...
+    logic [13:0] alt0b, alt1b;
+    logic        hv0, hv1;
+    logic        dcmp;              // DECODE with d < 12 (Decompress).
+    logic [13:0] rq0, rq1;          // S5 inputs: {accept, bad, coef}.
     logic        qv0, qv1;
     logic [11:0] lo;                // Accepted coefficient waiting for its pair.
     logic        have_lo;
@@ -108,9 +115,10 @@ module mlkem_unpack (
     logic       shift;              // q0 used up.
     always_comb begin
         logic e1, e2;
-        // A field ending at or before bit 64 lies in q0; otherwise q1 is needed.
-        e1 = v0 && (v1 || !pw1[6] || pw1 == 7'd64);
-        e2 = v0 && (v1 || !pw2[6] || pw2 == 7'd64);
+        // A field ending at or before bit 64 (p <= 64 - w) lies in q0;
+        // otherwise q1 is needed. Ending at bit 64 or later uses up q0.
+        e1 = v0 && (v1 || !gt1);
+        e2 = v0 && (v1 || !gt2);
         if (need_q == 2'd2 && e2)
             k = 2'd2;
         else if (need_q != 2'd0 && e1)
@@ -118,7 +126,7 @@ module mlkem_unpack (
         else
             k = 2'd0;
         p_next = (k == 2'd2) ? pw2 : (k == 2'd1) ? pw1 : p;
-        shift  = p_next[6];
+        shift  = (k == 2'd2) ? ge2 : (k == 2'd1) ? ge1 : 1'b0;
     end
 
     // Window {q1, q0} read at p and p + w (registered positions).
@@ -142,16 +150,10 @@ module mlkem_unpack (
         return ((24'(y) << 11) + (24'(y) << 10)) + ((24'(y) << 8) + 24'(y));
     endfunction
 
-    // Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d), from qy = q*y (S3).
-    function automatic logic [11:0] decompress(input logic [23:0] qy, input logic [3:0] d);
-        logic [23:0] t;
-        t = (qy + (24'd1 << (d - 4'd1))) >> d;
-        return t[11:0];
-    endfunction
-
-    // {accept, bad, coef} for one field.
-    function automatic logic [13:0] proc(input logic [11:0] f, input logic [23:0] qf,
-                                         input logic [1:0] m, input logic [3:0] pr);
+    // {accept, bad, coef} for one field in SAMPLE, CBD and DECODE d = 12
+    // (Decompress, d < 12, is done in S3 / S4 from q * field).
+    function automatic logic [13:0] proc(input logic [11:0] f, input logic [1:0] m,
+                                         input logic [3:0] pr);
         logic [2:0] x, y;
         case (m)
             MODE_SAMPLE: return {(f < Q), 1'b0, f};
@@ -165,17 +167,15 @@ module mlkem_unpack (
                 end
                 return {1'b1, 1'b0, (x >= y) ? {9'b0, x - y} : 12'(Q - {9'b0, y - x})};
             end
-            default: begin
-                if (pr == 4'd12)
-                    return {1'b1, (f >= Q), (f >= Q) ? 12'(f - Q) : f};
-                return {1'b1, 1'b0, decompress(qf, pr)};
-            end
+            default:
+                return {1'b1, (f >= Q), (f >= Q) ? 12'(f - Q) : f};
         endcase
     endfunction
 
-    (* use_dsp = "no" *) logic [13:0] r0, r1;
-    assign r0 = proc(g0, qf0, mode_r, param_r);
-    assign r1 = proc(g1, qf1, mode_r, param_r);
+    // S4: Decompress_d(y) = floor((q*y + 2^(d-1)) / 2^d) = rn >> d.
+    logic [13:0] r0, r1;
+    assign r0 = dcmp ? {2'b10, 12'(rn0 >> param_r)} : alt0b;
+    assign r1 = dcmp ? {2'b10, 12'(rn1 >> param_r)} : alt1b;
 
     // ---------------------------------------------------------------------
     // S4: accepted coefficients this cycle, limited to the 256 still needed.
@@ -217,6 +217,8 @@ module mlkem_unpack (
             fv1       <= 1'b0;
             gv0       <= 1'b0;
             gv1       <= 1'b0;
+            hv0       <= 1'b0;
+            hv1       <= 1'b0;
             qv0       <= 1'b0;
             qv1       <= 1'b0;
             wr_en     <= 1'b0;
@@ -238,6 +240,13 @@ module mlkem_unpack (
                 p           <= '0;
                 pw1         <= '0;
                 pw2         <= '0;
+                lim1        <= 7'd52;
+                lim2        <= 7'd40;
+                ge1         <= 1'b0;
+                gt1         <= 1'b0;
+                ge2         <= 1'b0;
+                gt2         <= 1'b0;
+                dcmp        <= 1'b0;
             end
         end else begin
             done      <= 1'b0;
@@ -253,6 +262,7 @@ module mlkem_unpack (
                 check_r     <= check;
                 slot_r      <= slot;
                 w           <= wn;
+                dcmp        <= (mode != MODE_SAMPLE) && (mode != MODE_CBD) && (param != 4'd12);
                 wmask       <= 12'((13'd1 << wn) - 13'd1);
                 need_chunks <= 7'({wn, 2'b00});
                 taken       <= '0;
@@ -268,10 +278,18 @@ module mlkem_unpack (
                 p           <= '0;
                 pw1         <= 7'(wn);
                 pw2         <= 7'({wn, 1'b0});
+                lim1        <= 7'd64 - 7'(wn);
+                lim2        <= 7'd64 - 7'({wn, 1'b0});
+                ge1         <= 1'b0;            // p = 0 < 64 - w
+                gt1         <= 1'b0;
+                ge2         <= 1'b0;
+                gt2         <= 1'b0;
                 fv0         <= 1'b0;
                 fv1         <= 1'b0;
                 gv0         <= 1'b0;
                 gv1         <= 1'b0;
+                hv0         <= 1'b0;
+                hv1         <= 1'b0;
                 qv0         <= 1'b0;
                 qv1         <= 1'b0;
             end else if (running) begin
@@ -306,6 +324,10 @@ module mlkem_unpack (
                 p   <= p_n;
                 pw1 <= p_n + 7'(w);
                 pw2 <= p_n + 7'({w, 1'b0});
+                ge1 <= (p_n >= lim1);
+                gt1 <= (p_n >  lim1);
+                ge2 <= (p_n >= lim2);
+                gt2 <= (p_n >  lim2);
                 ext_n = extracted + 9'(k);
                 extracted <= ext_n;
                 if (mode_r == MODE_SAMPLE)
@@ -314,13 +336,15 @@ module mlkem_unpack (
                     need_q <= (ext_n <= 9'd254) ? 2'd2 : (ext_n == 9'd255) ? 2'd1 : 2'd0;
                 fv0 <= (k != 2'd0);
                 fv1 <= (k == 2'd2);
-                // S2, S3.
+                // S2 .. S4.
                 gv0 <= fv0;
                 gv1 <= fv1;
-                qv0 <= gv0;
-                qv1 <= gv1;
+                hv0 <= gv0;
+                hv1 <= gv1;
+                qv0 <= hv0;
+                qv1 <= hv1;
                 if (check_r)
-                    range_err <= {gv1 && r1[12], gv0 && r0[12]};
+                    range_err <= {gv1 && alt1[12], gv0 && alt0[12]};
                 // S4 -> S5.
                 if (total >= 2'd2) begin
                     wr_en   <= 1'b1;
@@ -341,10 +365,17 @@ module mlkem_unpack (
 
     // Data registers (no reset needed).
     always_ff @(posedge clk) begin
-        g0  <= f0;
-        g1  <= f1;
-        qf0 <= q_times(f0);
-        qf1 <= q_times(f1);
+        // S2.
+        qf0  <= q_times(f0);
+        qf1  <= q_times(f1);
+        alt0 <= proc(f0, mode_r, param_r);
+        alt1 <= proc(f1, mode_r, param_r);
+        // S3.
+        rn0   <= qf0 + (24'd1 << (param_r - 4'd1));
+        rn1   <= qf1 + (24'd1 << (param_r - 4'd1));
+        alt0b <= alt0;
+        alt1b <= alt1;
+        // S4.
         rq0 <= r0;
         rq1 <= r1;
         lo  <= (total >= 2'd2) ? l2 : l0;
