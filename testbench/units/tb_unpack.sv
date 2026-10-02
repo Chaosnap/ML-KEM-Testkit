@@ -1,7 +1,7 @@
 // tb_unpack.sv - mlkem_unpack against FIPS 203 (DECODE, SAMPLE, CBD)
 //
 // Byte streams from gen_vectors.py are fed through the chunk source
-// interface with random chunk sizes (1..8 bytes) and random stalls; the
+// interface (8-byte chunks) with random stalls; the
 // poly RAM writes are captured and compared with the Python reference:
 //   DECODE d in {1,4,5,10,11,12}: Decompress_d(ByteDecode_d), every field
 //          value covered; d = 12 also counts range_err (modulus check)
@@ -39,7 +39,6 @@ module tb_unpack;
     logic [1:0]  range_err;
     logic        src_valid;
     logic [63:0] src_data;
-    logic [3:0]  src_n;
     logic [9:0]  wr_addr;
     logic [23:0] wr_data;
 
@@ -56,7 +55,6 @@ module tb_unpack;
         .range_err (range_err),
         .src_valid (src_valid),
         .src_data  (src_data),
-        .src_n     (src_n),
         .src_take  (src_take),
         .wr_en     (wr_en),
         .wr_addr   (wr_addr),
@@ -72,21 +70,16 @@ module tb_unpack;
     string       dir;
     int          errors = 0, checked = 0;
 
-    // Chunk source: random size, valid about 3/4 of the time, never past lim.
+    // Chunk source: 8 bytes, valid about 3/4 of the time, never past lim.
     always @(*) begin
-        int n;
-        n = 1 + int'(lfsr[6:4]);
-        if (n > lim - ptr) n = lim - ptr;
-        src_n     = 4'(n);
-        src_valid = (lfsr[1:0] != 2'b00) && (n > 0);
-        src_data  = '0;
+        src_valid = (lfsr[1:0] != 2'b00) && (ptr + 8 <= lim);
         for (int i = 0; i < 8; i++)
-            if (i < n) src_data[8 * i +: 8] = bytes[ptr + i];
+            src_data[8 * i +: 8] = bytes[ptr + i];
     end
 
     always @(posedge clk) begin
         lfsr <= {lfsr[30:0], lfsr[31] ^ lfsr[21] ^ lfsr[1] ^ lfsr[0]};
-        if (src_take) ptr <= ptr + int'(src_n);
+        if (src_take) ptr <= ptr + 8;
         if (wr_en) begin
             ram[wr_addr] <= wr_data;
             nwr <= nwr + 1;
@@ -109,7 +102,13 @@ module tb_unpack;
         start = 1'b1;
         @(negedge clk);
         start = 1'b0;
-        while (!done) @(negedge clk);
+        for (int t = 0; !done; t++) begin
+            if (t == 20000) begin
+                $display("TIMEOUT mode=%0d param=%0d slot=%0d: ptr=%0d lim=%0d", m, pr, s, ptr, lim);
+                $fatal(1);
+            end
+            @(negedge clk);
+        end
         repeat (2) @(negedge clk);
     endtask
 

@@ -81,6 +81,12 @@ module pqc_axi_csr #(
     input  logic [31:0]             mem_dout
 );
 
+    // Registered active-high synchronous reset, local to this module
+    // (replicated by fanout; no inverter on the high-fanout net).
+    (* max_fanout = 32 *) logic srst;
+    always_ff @(posedge clk)
+        srst <= !rst_n;
+
     localparam logic [31:0] ALG_ID_VAL  = ALG_ID;
     localparam logic [31:0] VERSION_VAL = (VERSION_MAJ << 16) | (VERSION_MIN << 8) | VERSION_PAT;
 
@@ -123,8 +129,8 @@ module pqc_axi_csr #(
     assign s_axi_bresp   = 2'b00;
     assign do_write      = aw_full && w_full && !s_axi_bvalid;
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk) begin                 // Synchronous reset.
+        if (srst) begin
             aw_full           <= 1'b0;
             w_full            <= 1'b0;
             aw_addr           <= '0;
@@ -178,10 +184,10 @@ module pqc_axi_csr #(
     end
 
     // =========================================================================
-    // Read channel. Buffer reads take one extra cycle (BRAM latency).
+    // Read channel. Buffer reads take two extra cycles (BRAM + output register).
     // =========================================================================
 
-    typedef enum logic [1:0] { R_IDLE, R_ISSUE, R_MEM, R_RESP } rstate_t;
+    typedef enum logic [2:0] { R_IDLE, R_ISSUE, R_MEM, R_MEM2, R_RESP } rstate_t;
     rstate_t               rstate;
     logic [ADDR_WIDTH-1:0] ar_addr;
 
@@ -211,8 +217,8 @@ module pqc_axi_csr #(
         end
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk) begin                 // Synchronous reset.
+        if (srst) begin
             rstate      <= R_IDLE;
             ar_addr     <= '0;
             s_axi_rdata <= '0;
@@ -231,7 +237,8 @@ module pqc_axi_csr #(
                         rstate      <= R_RESP;
                     end
                 end
-                R_MEM: begin
+                R_MEM:  rstate <= R_MEM2;
+                R_MEM2: begin
                     s_axi_rdata <= mem_dout;
                     rstate      <= R_RESP;
                 end

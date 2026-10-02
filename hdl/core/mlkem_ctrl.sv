@@ -13,14 +13,17 @@
 //   NTT/INTT/BMUL/ADD/SUB      mlkem_poly_alu on poly RAM
 //
 // Buffer operands of HABS / HSQZ / COPY / CMP / CSEL / DECODE are 32-bit
-// word aligned with lengths that are multiples of 4 (gen_mlkem_ucode.py
-// asserts this), so the buffer is accessed one word per cycle:
-//   HABS, DECODE  prefetch words into a 2-entry FIFO, one read per cycle,
-//                 one word (4 bytes) per cycle into the sponge / unpacker
+// word aligned with lengths that are multiples of 4 (DECODE: of 8)
+// (gen_mlkem_ucode.py asserts this), so the buffer is accessed one word per
+// cycle. Port B commands are registered and the buffer has output
+// registers, so read data arrives 3 cycles after the read is decided. A
+// read stream feeds a 6-entry word FIFO:
+//   HABS          one word (4 bytes) per cycle into the sponge
+//   DECODE        two words (one 64-bit chunk) per take into the unpacker
+//   CMP           a / b words interleaved, compared in pairs
+//   COPY, CSEL    one word written per FIFO word (writes win over reads)
 //   HSQZ          one squeezed word written per cycle
 //   ENCODE        mlkem_pack emits whole words
-//   CMP           a, b word reads interleaved: 2 cycles per word
-//   COPY, CSEL    read word, write word: 2 cycles per word
 //
 // Error codes (ERROR_CODE register):
 //   1 = unsupported SEC_LEVEL or OP_MODE (the core implements ML-KEM-768
@@ -45,7 +48,7 @@ module mlkem_ctrl (
     output logic [31:0] error_code,
     output logic [31:0] cycle_count,
 
-    // Data buffer port B (byte-addressed via word + lane).
+    // Data buffer port B (registered commands; read latency 2).
     output logic        buf_en,
     output logic [3:0]  buf_we,
     output logic [10:0] buf_addr,
@@ -85,8 +88,7 @@ module mlkem_ctrl (
     input  logic        up_done,
     input  logic [1:0]  up_range_err,
     output logic        up_src_valid,
-    output logic [63:0] up_src_data,
-    output logic [3:0]  up_src_n,
+    output logic [63:0] up_src_data,    // One 64-bit chunk.
     input  logic        up_src_take,
 
     // Packer.
@@ -103,6 +105,12 @@ module mlkem_ctrl (
     // Synchronous abort for all datapath units.
     output logic        units_clr
 );
+
+    // Registered active-high synchronous reset, local to this module
+    // (replicated by fanout; no inverter on the high-fanout net).
+    (* max_fanout = 32 *) logic srst;
+    always_ff @(posedge clk)
+        srst <= !rst_n;
 
     // Opcodes (see scripts/gen_mlkem_ucode.py).
     localparam logic [7:0] OP_END    = 8'h00;
@@ -137,27 +145,30 @@ module mlkem_ctrl (
         C_HFIN,      // Finalize.
         C_HSQZ,      // Squeeze to buffer.
         C_HABS,      // Stream buffer words into the sponge.
-        C_CMP,       // Interleaved a / b word reads and compare.
-        C_CP_RD,     // COPY / CSEL: read source word.
-        C_CP_WR,     // COPY / CSEL: write it.
+        C_CMP,       // Read a / b words, compare pairs.
+        C_COPY,      // COPY / CSEL: read and write words.
         C_UNIT,      // Wait for poly unit.
         C_NEXT       // Advance pc.
     } state_t;
 
-    localparam int PC_W = 9;            // Program counter (mlkem_ucode_rom ADDR_W).
+    localparam int PC_W   = 9;          // Program counter (mlkem_ucode_rom ADDR_W).
+    localparam int FDEPTH = 6;          // Read FIFO entries.
 
-    state_t      state;
+    (* fsm_encoding = "one_hot" *) state_t state;
     logic [PC_W-1:0] pc;
     logic [7:0]  i_op;
     logic [7:0]  i_p;
     logic [13:0] ptr_a, ptr_b, ptr_c;   // Effective byte addresses.
-    logic [15:0] len;                   // Words left (HABS, HSQZ, CMP, COPY, CSEL).
+    logic [15:0] len;                   // Words (HABS, HSQZ, COPY, CSEL) or pairs (CMP) left.
     logic        flag;                  // CMP mismatch (sticky per run).
     logic        ek_bad;                // Modulus-check failure (sticky per run).
     logic [13:0] in_base, out_base;
     logic [1:0]  op_idx;
     logic        unit_src_sponge;       // Unpacker fed from sponge.
+    logic        is_decode, is_encode, is_csel;
     logic [15:0] imm;
+    logic        lvl_ok, op_ok;         // Registered parameter checks.
+    logic        rst_q;                 // Registered ctrl_reset.
 
     // ---------------------------------------------------------------------
     // Microcode ROM.
@@ -195,85 +206,32 @@ module mlkem_ctrl (
     endfunction
 
     // ---------------------------------------------------------------------
-    // Parameter decode.
+    // Read stream: registered read commands, 6-entry word FIFO.
+    // A read decided in cycle D has its data in buf_dout during D+3.
     // ---------------------------------------------------------------------
-    logic lvl_ok, op_ok;
-    assign lvl_ok = (sec_level == 32'd768);
-    assign op_ok  = (op_mode < 32'd3);
+    logic [31:0] fq [0:FDEPTH-1];       // fq[0] = head.
+    logic [2:0]  fcnt;                  // Valid entries.
+    logic [2:0]  rp;                    // Reads in flight, rp[2]: data this cycle.
+    logic [15:0] rd_left;               // Reads still to issue.
+    logic        rd_b;                  // Next read uses ptr_b (CMP: alternate).
+    logic        rs_on;                 // State with a read stream.
 
-    // ---------------------------------------------------------------------
-    // Buffer port B: word prefetch FIFO (HABS, DECODE).
-    // ---------------------------------------------------------------------
-    // Up to two words buffered plus one read in flight; a read is issued
-    // whenever the words already buffered or in flight leave room for it,
-    // so the stream runs at one word per cycle while the consumer keeps up
-    // and stalls cleanly when it does not (e.g. during a permutation).
-    logic [31:0] fq0, fq1;              // FIFO entries, fq0 = head.
-    logic [1:0]  fcnt;                  // Valid entries.
-    logic        finfl;                 // Read issued last cycle.
-    logic [15:0] rd_left;               // Words still to be read.
-    logic        fstream, f_take, f_pop, f_issue;
+    logic [1:0]  inflight;
+    assign inflight = 2'(rp[0]) + 2'(rp[1]) + 2'(rp[2]);
 
-    assign fstream = (state == C_HABS) || (state == C_UNIT && i_op == OP_DECODE);
-    assign f_take  = (state == C_HABS) ? (fcnt != 2'd0 && h_absorb_ready)
-                   : (state == C_UNIT && i_op == OP_DECODE && up_src_take);
-    assign f_pop   = f_take;            // Consumers take a whole word.
-    assign f_issue = fstream && (rd_left != 16'd0) &&
-                     (3'(fcnt) + 3'(finfl) - 3'(f_pop) < 3'd2);
+    // FIFO consumers (pop 1 or 2 words).
+    logic pop1, pop2;
+    logic wr_copy, wr_sqz, wr_enc;      // Write commands this cycle.
+    assign wr_copy = (state == C_COPY) && (fcnt != 3'd0);
+    assign wr_sqz  = (state == C_HSQZ) && h_squeeze_valid;
+    assign wr_enc  = (state == C_UNIT) && is_encode && pk_out_valid;
+    assign pop1    = ((state == C_HABS) && (fcnt != 3'd0) && h_absorb_ready) || wr_copy;
+    assign pop2    = ((state == C_CMP) && (fcnt >= 3'd2)) ||
+                     ((state == C_UNIT) && is_decode && up_src_take);
 
-    // CMP: which operand the read of the previous cycle fetched.
-    logic        cmp_b_next;            // Next read is operand b.
-    logic        cmp_got_a, cmp_got_b;  // buf_dout holds a / b this cycle.
-    logic [31:0] cmp_a;
-    logic        cmp_issue;
-    assign cmp_issue = (state == C_CMP) && (rd_left != 16'd0);
-
-    logic        rd_req, wr_req;
-    logic [13:0] rd_ptr, wr_ptr;
-    logic [3:0]  wr_be;
-    logic [31:0] wr_word;
-
-    always_comb begin
-        rd_req  = 1'b0;
-        rd_ptr  = ptr_a;
-        wr_req  = 1'b0;
-        wr_ptr  = ptr_b;
-        wr_be   = 4'b1111;
-        wr_word = buf_dout;
-        case (state)
-            C_HABS: rd_req = f_issue;
-            C_CMP: begin
-                rd_req = cmp_issue;
-                rd_ptr = cmp_b_next ? ptr_b : ptr_a;
-            end
-            C_CP_RD: begin
-                rd_req = 1'b1;
-                rd_ptr = (i_op == OP_CSEL && flag) ? ptr_b : ptr_a;
-            end
-            C_CP_WR: begin
-                wr_req = 1'b1;
-                wr_ptr = (i_op == OP_CSEL) ? ptr_c : ptr_b;
-            end
-            C_HSQZ: begin
-                wr_req  = h_squeeze_valid;
-                wr_ptr  = ptr_a;
-                wr_word = h_squeeze_data[31:0];
-            end
-            C_UNIT: begin
-                if (i_op == OP_DECODE)
-                    rd_req = f_issue;
-                if (i_op == OP_ENCODE) begin
-                    wr_req  = pk_out_valid;
-                    wr_word = pk_out_word;
-                end
-            end
-            default: ;
-        endcase
-        buf_en   = rd_req || wr_req;
-        buf_we   = wr_req ? wr_be : 4'b0000;
-        buf_din  = wr_word;
-        buf_addr = wr_req ? wr_ptr[12:2] : rd_ptr[12:2];
-    end
+    logic rd_issue;
+    assign rd_issue = rs_on && (rd_left != 16'd0) && !wr_copy &&
+                      (3'(fcnt) + 3'(inflight) < 3'(FDEPTH));
 
     // Profiling only (testbench/core_sim): sequencer overhead cycles.
     logic seq_overhead;
@@ -287,24 +245,23 @@ module mlkem_ctrl (
     // HABI absorbs its 1-2 immediate bytes in one chunk (the generator keeps
     // them inside a lane); HABS one FIFO word. HSQZ squeezes a word (its
     // squeeze position is always a multiple of 4).
-    assign h_absorb_valid = (state == C_HABI) || (state == C_HABS && fcnt != 2'd0);
-    assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq0};
+    assign h_absorb_valid = (state == C_HABI) || ((state == C_HABS) && (fcnt != 3'd0));
+    assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq[0]};
     assign h_absorb_n     = (state == C_HABI) ? ((i_p == 8'd1) ? 4'd1 : 4'd2) : 4'd4;
     assign h_finalize     = (state == C_HFIN) && h_absorb_ready;
-    assign h_squeeze_take = (state == C_HSQZ && h_squeeze_valid) ||
-                            (state == C_UNIT && unit_src_sponge && up_src_take);
-    assign h_squeeze_n    = (state == C_HSQZ) ? 4'd4 : h_squeeze_avail;
+    assign h_squeeze_take = wr_sqz ||
+                            ((state == C_UNIT) && unit_src_sponge && up_src_take);
+    assign h_squeeze_n    = (state == C_HSQZ) ? 4'd4 : 4'd8;
 
-    // Unpacker source: whole sponge lane chunks, or FIFO words (DECODE).
-    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt != 2'd0);
-    assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {32'b0, fq0};
-    assign up_src_n     = unit_src_sponge ? h_squeeze_avail : 4'd4;
+    // Unpacker source: sponge lanes, or two FIFO words (DECODE).
+    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt >= 3'd2);
+    assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {fq[1], fq[0]};
 
     // ---------------------------------------------------------------------
     // Sequencer.
     // ---------------------------------------------------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk) begin                 // Synchronous reset.
+        if (srst) begin
             state           <= C_IDLE;
             pc              <= '0;
             i_op            <= '0;
@@ -314,21 +271,23 @@ module mlkem_ctrl (
             ptr_b           <= '0;
             ptr_c           <= '0;
             len             <= '0;
-            fq0             <= '0;
-            fq1             <= '0;
             fcnt            <= '0;
-            finfl           <= 1'b0;
+            rp              <= '0;
             rd_left         <= '0;
-            cmp_b_next      <= 1'b0;
-            cmp_got_a       <= 1'b0;
-            cmp_got_b       <= 1'b0;
-            cmp_a           <= '0;
+            rd_b            <= 1'b0;
+            rs_on           <= 1'b0;
             flag            <= 1'b0;
             ek_bad          <= 1'b0;
             in_base         <= '0;
             out_base        <= '0;
             op_idx          <= '0;
             unit_src_sponge <= 1'b0;
+            is_decode       <= 1'b0;
+            is_encode       <= 1'b0;
+            is_csel         <= 1'b0;
+            lvl_ok          <= 1'b0;
+            op_ok           <= 1'b0;
+            rst_q           <= 1'b0;
             status_busy     <= 1'b0;
             status_done     <= 1'b0;
             status_error    <= 1'b0;
@@ -350,11 +309,16 @@ module mlkem_ctrl (
             pk_slot         <= '0;
             pr_sel          <= '0;
             units_clr       <= 1'b0;
+            buf_en          <= 1'b0;
+            buf_we          <= '0;
         end else begin
             alu_start <= 1'b0;
             up_start  <= 1'b0;
             pk_start  <= 1'b0;
             units_clr <= 1'b0;
+            lvl_ok    <= (sec_level == 32'd768);
+            op_ok     <= (op_mode < 32'd3);
+            rst_q     <= ctrl_reset;
 
             if (status_busy)
                 cycle_count <= cycle_count + 32'd1;
@@ -362,7 +326,51 @@ module mlkem_ctrl (
             if (|up_range_err)
                 ek_bad <= 1'b1;
 
-            if (ctrl_reset) begin
+            // ---- Port B command for the next cycle ----
+            buf_en <= 1'b0;
+            buf_we <= 4'b0000;
+            if (wr_copy || wr_sqz || wr_enc) begin
+                buf_en <= 1'b1;
+                buf_we <= 4'b1111;
+                if (wr_copy) begin
+                    buf_addr <= is_csel ? ptr_c[12:2] : ptr_b[12:2];
+                    buf_din  <= fq[0];
+                end else if (wr_sqz) begin
+                    buf_addr <= ptr_a[12:2];
+                    buf_din  <= h_squeeze_data[31:0];
+                end else begin
+                    buf_addr <= ptr_b[12:2];
+                    buf_din  <= pk_out_word;
+                end
+            end else if (rd_issue) begin
+                buf_en   <= 1'b1;
+                buf_addr <= rd_b ? ptr_b[12:2] : ptr_a[12:2];
+            end
+
+            // ---- Read stream and FIFO ----
+            rp <= {rp[1:0], rd_issue && !rst_q};
+            if (rd_issue) begin
+                rd_left <= rd_left - 16'd1;
+                if (rd_b) ptr_b <= ptr_b + 14'd4;
+                else      ptr_a <= ptr_a + 14'd4;
+                if (state == C_CMP)
+                    rd_b <= !rd_b;
+            end
+            begin
+                logic [2:0] np;             // Entries left after the pop.
+                np = fcnt - (pop2 ? 3'd2 : pop1 ? 3'd1 : 3'd0);
+                for (int i = 0; i < FDEPTH; i++) begin
+                    if (pop2)
+                        fq[i] <= (i + 2 < FDEPTH) ? fq[i + 2] : fq[i];
+                    else if (pop1)
+                        fq[i] <= (i + 1 < FDEPTH) ? fq[i + 1] : fq[i];
+                end
+                if (rp[2])
+                    fq[np] <= buf_dout;
+                fcnt <= np + 3'(rp[2]);
+            end
+
+            if (rst_q) begin
                 state        <= C_IDLE;
                 status_busy  <= 1'b0;
                 status_done  <= 1'b0;
@@ -370,29 +378,10 @@ module mlkem_ctrl (
                 error_code   <= '0;
                 cycle_count  <= '0;
                 fcnt         <= '0;
-                finfl        <= 1'b0;
+                rp           <= '0;
+                rs_on        <= 1'b0;
                 units_clr    <= 1'b1;
             end else begin
-                // Word prefetch FIFO (push after pop: the new word may land in fq0).
-                if (f_pop)
-                    fq0 <= fq1;
-                if (finfl) begin
-                    if (fcnt - 2'(f_pop) == 2'd0)
-                        fq0 <= buf_dout;
-                    else
-                        fq1 <= buf_dout;
-                end
-                fcnt  <= fcnt - 2'(f_pop) + 2'(finfl);
-                finfl <= f_issue;
-                if (f_issue) begin
-                    rd_left <= rd_left - 16'd1;
-                    ptr_a   <= ptr_a + 14'd4;
-                end
-
-                // CMP read pipeline.
-                cmp_got_a <= cmp_issue && !cmp_b_next;
-                cmp_got_b <= cmp_issue && cmp_b_next;
-
                 case (state)
                     C_IDLE: begin
                         if (ctrl_start) begin
@@ -424,17 +413,22 @@ module mlkem_ctrl (
                     C_FETCH: state <= C_DECODE;
 
                     C_DECODE: begin
-                        i_op    <= f_op;
-                        i_p     <= f_p;
-                        imm     <= f_a;
-                        len     <= {2'b00, f_len[15:2]};
-                        rd_left <= {2'b00, f_len[15:2]};
-                        fcnt    <= '0;
-                        finfl   <= 1'b0;
-                        cmp_b_next <= 1'b0;
-                        ptr_a   <= eff(f_a, in_base, out_base);
-                        ptr_b   <= eff(f_b, in_base, out_base);
-                        ptr_c   <= eff(f_c, in_base, out_base);
+                        i_op      <= f_op;
+                        i_p       <= f_p;
+                        imm       <= f_a;
+                        is_decode <= (f_op == OP_DECODE);
+                        is_encode <= (f_op == OP_ENCODE);
+                        is_csel   <= (f_op == OP_CSEL);
+                        // CMP counts pairs and reads both operands.
+                        len       <= {2'b00, f_len[15:2]};
+                        rd_left   <= (f_op == OP_CMP) ? {1'b0, f_len[15:1]} : {2'b00, f_len[15:2]};
+                        rd_b      <= (f_op == OP_CSEL) && flag;
+                        rs_on     <= (f_op == OP_HABS || f_op == OP_CMP || f_op == OP_COPY ||
+                                      f_op == OP_CSEL || f_op == OP_DECODE);
+                        fcnt      <= '0;
+                        ptr_a     <= eff(f_a, in_base, out_base);
+                        ptr_b     <= eff(f_b, in_base, out_base);
+                        ptr_c     <= eff(f_c, in_base, out_base);
                         case (f_op)
                             OP_END: begin
                                 status_busy <= 1'b0;
@@ -452,7 +446,7 @@ module mlkem_ctrl (
                             OP_HABS:  state <= state_t'((f_len == 0) ? C_NEXT : C_HABS);
                             OP_CMP:   state <= state_t'((f_len == 0) ? C_NEXT : C_CMP);
                             OP_COPY, OP_CSEL:
-                                      state <= state_t'((f_len == 0) ? C_NEXT : C_CP_RD);
+                                      state <= state_t'((f_len == 0) ? C_NEXT : C_COPY);
                             OP_SAMPLE, OP_CBD, OP_DECODE: begin
                                 up_start        <= 1'b1;
                                 up_mode         <= (f_op == OP_SAMPLE) ? 2'd0 :
@@ -501,55 +495,48 @@ module mlkem_ctrl (
 
                     C_HFIN: if (h_absorb_ready) state <= C_NEXT;
 
-                    C_HSQZ: if (h_squeeze_valid) begin
+                    C_HSQZ: if (wr_sqz) begin
                         ptr_a <= ptr_a + 14'd4;
                         len   <= len - 16'd1;
                         if (len == 16'd1)
                             state <= C_NEXT;
                     end
 
-                    C_HABS: if (f_take) begin
+                    C_HABS: if (pop1) begin
                         len <= len - 16'd1;
-                        if (len == 16'd1)
+                        if (len == 16'd1) begin
+                            rs_on <= 1'b0;
                             state <= C_NEXT;
-                    end
-
-                    C_CMP: begin
-                        if (cmp_issue) begin
-                            cmp_b_next <= !cmp_b_next;
-                            if (cmp_b_next) begin
-                                ptr_b   <= ptr_b + 14'd4;
-                                rd_left <= rd_left - 16'd1;
-                            end else begin
-                                ptr_a   <= ptr_a + 14'd4;
-                            end
-                        end
-                        if (cmp_got_a)
-                            cmp_a <= buf_dout;
-                        if (cmp_got_b) begin
-                            if (buf_dout != cmp_a)
-                                flag <= 1'b1;
-                            len <= len - 16'd1;
-                            if (len == 16'd1)
-                                state <= C_NEXT;
                         end
                     end
 
-                    C_CP_RD: state <= C_CP_WR;
+                    C_CMP: if (pop2) begin
+                        if (fq[0] != fq[1])
+                            flag <= 1'b1;
+                        len <= len - 16'd1;
+                        if (len == 16'd1) begin
+                            rs_on <= 1'b0;
+                            state <= C_NEXT;
+                        end
+                    end
 
-                    C_CP_WR: begin
-                        ptr_a <= ptr_a + 14'd4;
-                        ptr_b <= ptr_b + 14'd4;
-                        ptr_c <= ptr_c + 14'd4;
-                        len   <= len - 16'd1;
-                        state <= state_t'((len == 16'd1) ? C_NEXT : C_CP_RD);
+                    C_COPY: if (wr_copy) begin
+                        if (is_csel) ptr_c <= ptr_c + 14'd4;
+                        else         ptr_b <= ptr_b + 14'd4;
+                        len <= len - 16'd1;
+                        if (len == 16'd1) begin
+                            rs_on <= 1'b0;
+                            state <= C_NEXT;
+                        end
                     end
 
                     C_UNIT: begin
-                        if (i_op == OP_ENCODE && pk_out_valid)
+                        if (wr_enc)
                             ptr_b <= ptr_b + 14'd4;
-                        if (alu_done || up_done || pk_done)
+                        if (alu_done || up_done || pk_done) begin
+                            rs_on <= 1'b0;
                             state <= C_NEXT;
+                        end
                     end
 
                     default: state <= C_IDLE;

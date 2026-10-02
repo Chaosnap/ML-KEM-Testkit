@@ -1,0 +1,374 @@
+[
+ {
+  "op": "keygen",
+  "vectors": 25,
+  "total": 15590.12,
+  "cycles_min": 15569,
+  "cycles_max": 15617,
+  "cycles_mean": 15590.12,
+  "classes": {
+   "HINIT": {
+    "n": 17,
+    "exec": 17.0,
+    "ovh": 51.0,
+    "bytes": 0
+   },
+   "HABS": {
+    "n": 17,
+    "exec": 692.0,
+    "ovh": 51.0,
+    "bytes": 1696
+   },
+   "HABI": {
+    "n": 16,
+    "exec": 16.0,
+    "ovh": 48.0,
+    "bytes": 0
+   },
+   "HFIN": {
+    "n": 17,
+    "exec": 17.0,
+    "ovh": 51.0,
+    "bytes": 0
+   },
+   "HSQZ": {
+    "n": 2,
+    "exec": 70.0,
+    "ovh": 6.0,
+    "bytes": 96
+   },
+   "COPY": {
+    "n": 3,
+    "exec": 624.0,
+    "ovh": 9.0,
+    "bytes": 1248
+   },
+   "CMP": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "CSEL": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "SAMPLE": {
+    "n": 9,
+    "exec": 2016.1200000000001,
+    "ovh": 27.0,
+    "bytes": 0
+   },
+   "CBD": {
+    "n": 6,
+    "exec": 936.0,
+    "ovh": 18.0,
+    "bytes": 0
+   },
+   "DECODE": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "ENCODE": {
+    "n": 6,
+    "exec": 1602.0,
+    "ovh": 18.0,
+    "bytes": 0
+   },
+   "NTT": {
+    "n": 6,
+    "exec": 5976.0,
+    "ovh": 18.0,
+    "bytes": 0
+   },
+   "INTT": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "BMUL": {
+    "n": 9,
+    "exec": 2502.0,
+    "ovh": 27.0,
+    "bytes": 0
+   },
+   "ADD": {
+    "n": 3,
+    "exec": 786.0,
+    "ovh": 9.0,
+    "bytes": 0
+   },
+   "SUB": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "END": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 2.0,
+    "bytes": 0
+   },
+   "startup": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 1.0,
+    "bytes": 0
+   }
+  }
+ },
+ {
+  "op": "encaps",
+  "vectors": 25,
+  "total": 18144.68,
+  "cycles_min": 18109,
+  "cycles_max": 18179,
+  "cycles_mean": 18144.68,
+  "classes": {
+   "HINIT": {
+    "n": 18,
+    "exec": 18.0,
+    "ovh": 54.0,
+    "bytes": 0
+   },
+   "HABS": {
+    "n": 19,
+    "exec": 716.0,
+    "ovh": 57.0,
+    "bytes": 1760
+   },
+   "HABI": {
+    "n": 16,
+    "exec": 16.0,
+    "ovh": 48.0,
+    "bytes": 0
+   },
+   "HFIN": {
+    "n": 18,
+    "exec": 18.0,
+    "ovh": 54.0,
+    "bytes": 0
+   },
+   "HSQZ": {
+    "n": 2,
+    "exec": 70.0,
+    "ovh": 6.0,
+    "bytes": 96
+   },
+   "COPY": {
+    "n": 1,
+    "exec": 16.0,
+    "ovh": 3.0,
+    "bytes": 32
+   },
+   "CMP": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "CSEL": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "SAMPLE": {
+    "n": 9,
+    "exec": 2019.68,
+    "ovh": 27.0,
+    "bytes": 0
+   },
+   "CBD": {
+    "n": 7,
+    "exec": 1092.0,
+    "ovh": 21.0,
+    "bytes": 0
+   },
+   "DECODE": {
+    "n": 4,
+    "exec": 552.0,
+    "ovh": 12.0,
+    "bytes": 0
+   },
+   "ENCODE": {
+    "n": 4,
+    "exec": 1068.0,
+    "ovh": 12.0,
+    "bytes": 0
+   },
+   "NTT": {
+    "n": 3,
+    "exec": 2988.0,
+    "ovh": 9.0,
+    "bytes": 0
+   },
+   "INTT": {
+    "n": 4,
+    "exec": 4556.0,
+    "ovh": 12.0,
+    "bytes": 0
+   },
+   "BMUL": {
+    "n": 12,
+    "exec": 3336.0,
+    "ovh": 36.0,
+    "bytes": 0
+   },
+   "ADD": {
+    "n": 5,
+    "exec": 1310.0,
+    "ovh": 15.0,
+    "bytes": 0
+   },
+   "SUB": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "END": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 2.0,
+    "bytes": 0
+   },
+   "startup": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 1.0,
+    "bytes": 0
+   }
+  }
+ },
+ {
+  "op": "decaps",
+  "vectors": 10,
+  "total": 25191.9,
+  "cycles_min": 25160,
+  "cycles_max": 25229,
+  "cycles_mean": 25191.9,
+  "classes": {
+   "HINIT": {
+    "n": 18,
+    "exec": 18.0,
+    "ovh": 54.0,
+    "bytes": 0
+   },
+   "HABS": {
+    "n": 20,
+    "exec": 704.0,
+    "ovh": 60.0,
+    "bytes": 1696
+   },
+   "HABI": {
+    "n": 16,
+    "exec": 16.0,
+    "ovh": 48.0,
+    "bytes": 0
+   },
+   "HFIN": {
+    "n": 18,
+    "exec": 18.0,
+    "ovh": 54.0,
+    "bytes": 0
+   },
+   "HSQZ": {
+    "n": 2,
+    "exec": 70.0,
+    "ovh": 6.0,
+    "bytes": 96
+   },
+   "COPY": {
+    "n": 0,
+    "exec": 0.0,
+    "ovh": 0.0,
+    "bytes": 0
+   },
+   "CMP": {
+    "n": 1,
+    "exec": 548.0,
+    "ovh": 3.0,
+    "bytes": 1088
+   },
+   "CSEL": {
+    "n": 1,
+    "exec": 16.0,
+    "ovh": 3.0,
+    "bytes": 32
+   },
+   "SAMPLE": {
+    "n": 9,
+    "exec": 2020.8999999999999,
+    "ovh": 27.0,
+    "bytes": 0
+   },
+   "CBD": {
+    "n": 7,
+    "exec": 1092.0,
+    "ovh": 21.0,
+    "bytes": 0
+   },
+   "DECODE": {
+    "n": 11,
+    "exec": 1518.0,
+    "ovh": 33.0,
+    "bytes": 0
+   },
+   "ENCODE": {
+    "n": 5,
+    "exec": 1335.0,
+    "ovh": 15.0,
+    "bytes": 0
+   },
+   "NTT": {
+    "n": 6,
+    "exec": 5976.0,
+    "ovh": 18.0,
+    "bytes": 0
+   },
+   "INTT": {
+    "n": 5,
+    "exec": 5695.0,
+    "ovh": 15.0,
+    "bytes": 0
+   },
+   "BMUL": {
+    "n": 15,
+    "exec": 4170.0,
+    "ovh": 45.0,
+    "bytes": 0
+   },
+   "ADD": {
+    "n": 5,
+    "exec": 1310.0,
+    "ovh": 15.0,
+    "bytes": 0
+   },
+   "SUB": {
+    "n": 1,
+    "exec": 262.0,
+    "ovh": 3.0,
+    "bytes": 0
+   },
+   "END": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 2.0,
+    "bytes": 0
+   },
+   "startup": {
+    "n": 1,
+    "exec": 0.0,
+    "ovh": 1.0,
+    "bytes": 0
+   }
+  }
+ }
+]

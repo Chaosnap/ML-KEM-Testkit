@@ -1,8 +1,8 @@
 // tb_modmul.sv - Exhaustive test of mlkem_modmul (all a, b in [0, q))
 //
 // Streams all q^2 = 11,082,241 operand pairs through the pipeline, one per
-// cycle, and checks r = a * b mod q LATENCY = 5 cycles later. Also checks
-// that the latency is exactly 5 (r must not be valid one cycle earlier for
+// cycle, and checks r = a * b mod q LATENCY = 7 cycles later. Also checks
+// that the latency is exactly 7 (r must not be valid one cycle earlier for
 // the first pair). Prints "TB_MODMUL PASS" on success.
 
 `timescale 1ns/1ps
@@ -10,7 +10,7 @@
 module tb_modmul;
 
     localparam int Q   = 3329;
-    localparam int LAT = 5;
+    localparam int LAT = 7;
 
     logic        clk = 1'b0;
     logic [11:0] a = '0, b = '0;

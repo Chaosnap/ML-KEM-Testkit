@@ -166,6 +166,10 @@ module axil_cdc #(
     // Domain M
     // =====================================================================
 
+    (* max_fanout = 32 *) logic m_srst;     // Registered synchronous reset (M).
+    always_ff @(posedge m_clk)
+        m_srst <= !m_rst_n;
+
     (* ASYNC_REG = "TRUE" *) logic [1:0] m_wreq_sync, m_rreq_sync;
     logic m_wreq_seen, m_rreq_seen;
     logic m_wbusy, m_rbusy;
@@ -173,8 +177,8 @@ module axil_cdc #(
     assign m_axi_bready = m_wbusy && !m_axi_awvalid && !m_axi_wvalid;
     assign m_axi_rready = m_rbusy && !m_axi_arvalid;
 
-    always_ff @(posedge m_clk or negedge m_rst_n) begin
-        if (!m_rst_n) begin
+    always_ff @(posedge m_clk) begin               // Synchronous reset.
+        if (m_srst) begin
             m_wreq_sync   <= '0;
             m_rreq_sync   <= '0;
             m_wreq_seen   <= 1'b0;

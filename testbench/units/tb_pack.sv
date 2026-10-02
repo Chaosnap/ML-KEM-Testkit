@@ -1,7 +1,7 @@
 // tb_pack.sv - mlkem_pack against FIPS 203 ByteEncode_d(Compress_d(f))
 //
 // Polys from gen_vectors.py cover every x in [0, q). For each d the TB loads
-// each poly into a behavioural poly RAM (1-cycle read latency, like
+// each poly into a behavioural poly RAM (2-cycle read latency, like
 // mlkem_polyram), runs mlkem_pack and compares the emitted stream (32-bit
 // little-endian words) with the Python reference. Prints "TB_PACK PASS" on success.
 //
@@ -49,8 +49,11 @@ module tb_pack;
     );
 
     logic [23:0] ram [0:1023];
-    always_ff @(posedge clk)
-        if (rd_en) rd_data <= ram[rd_addr];
+    logic [23:0] rd_q;
+    always_ff @(posedge clk) begin                  // Like mlkem_polyram: latency 2.
+        if (rd_en) rd_q <= ram[rd_addr];
+        rd_data <= rd_q;
+    end
 
     logic [11:0] coefs [0:NP*256-1];
     logic [7:0]  exp_b [0:NP*32*12-1];

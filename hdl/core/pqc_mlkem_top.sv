@@ -64,6 +64,17 @@ module pqc_mlkem_top #(
 );
 
     // =========================================================================
+    // Reset: registered, then used as a synchronous reset everywhere in the
+    // core (an asynchronous reset fanning out to every flip-flop does not
+    // meet recovery timing above 200 MHz). Vivado replicates the register
+    // to respect max_fanout.
+    // =========================================================================
+
+    (* max_fanout = 64 *) logic core_rst_n;
+    always_ff @(posedge clk)
+        core_rst_n <= rst_n;
+
+    // =========================================================================
     // CSR <-> sequencer
     // =========================================================================
 
@@ -90,7 +101,7 @@ module pqc_mlkem_top #(
         .DEFAULT_OUT_ADDR  (32'h0E00)      // = OUT_BASE in gen_mlkem_ucode.py
     ) u_csr (
         .clk            (clk),
-        .rst_n          (rst_n),
+        .rst_n          (core_rst_n),
         .s_axi_awaddr   (s_axi_awaddr),
         .s_axi_awvalid  (s_axi_awvalid),
         .s_axi_awready  (s_axi_awready),
@@ -169,7 +180,6 @@ module pqc_mlkem_top #(
     logic [3:0]  up_param;
     logic [2:0]  up_slot;
     logic [63:0] up_src_data;
-    logic [3:0]  up_src_n;
     logic        pk_start, pk_done, pk_out_valid;
     logic [3:0]  pk_d;
     logic [2:0]  pk_slot;
@@ -178,7 +188,7 @@ module pqc_mlkem_top #(
 
     mlkem_ctrl u_ctrl (
         .clk             (clk),
-        .rst_n           (rst_n),
+        .rst_n           (core_rst_n),
         .ctrl_start      (ctrl_start),
         .ctrl_reset      (ctrl_reset),
         .sec_level       (sec_level),
@@ -224,7 +234,6 @@ module pqc_mlkem_top #(
         .up_range_err    (up_range_err),
         .up_src_valid    (up_src_valid),
         .up_src_data     (up_src_data),
-        .up_src_n        (up_src_n),
         .up_src_take     (up_src_take),
         .pk_start        (pk_start),
         .pk_d            (pk_d),
@@ -242,7 +251,7 @@ module pqc_mlkem_top #(
 
     keccak_sponge u_sponge (
         .clk           (clk),
-        .rst_n         (rst_n),
+        .rst_n         (core_rst_n),
         .init          (h_init),
         .mode          (h_mode),
         .idle          (h_idle),
@@ -277,7 +286,7 @@ module pqc_mlkem_top #(
 
     mlkem_poly_alu u_alu (
         .clk     (clk),
-        .rst_n   (rst_n),
+        .rst_n   (core_rst_n),
         .clr     (units_clr),
         .start   (alu_start),
         .op      (alu_op),
@@ -300,7 +309,7 @@ module pqc_mlkem_top #(
 
     mlkem_unpack u_unpack (
         .clk       (clk),
-        .rst_n     (rst_n),
+        .rst_n     (core_rst_n),
         .clr       (units_clr),
         .start     (up_start),
         .mode      (up_mode),
@@ -311,7 +320,6 @@ module pqc_mlkem_top #(
         .range_err (up_range_err),
         .src_valid (up_src_valid),
         .src_data  (up_src_data),
-        .src_n     (up_src_n),
         .src_take  (up_src_take),
         .wr_en     (up_wr_en),
         .wr_addr   (up_wr_addr),
@@ -320,7 +328,7 @@ module pqc_mlkem_top #(
 
     mlkem_pack u_pack (
         .clk       (clk),
-        .rst_n     (rst_n),
+        .rst_n     (core_rst_n),
         .clr       (units_clr),
         .start     (pk_start),
         .d         (pk_d),

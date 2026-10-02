@@ -13,10 +13,12 @@
 // x * 161271 is a constant multiply done with shifts and adds in LUTs (CSD
 // 161271 = 2^17 + 2^15 - 2^11 - 2^9 - 2^3 - 1), so no DSP is used.
 //
-// Pipeline, one coefficient per cycle (c = coefficient issued at cycle t):
-//   t    read word c/2 (even c only)     t+3  Compress_d -> val
-//   t+1  register the RAM word           t+4  append d bits, emit a word
-//   t+2  x * 161271                           when 32 bits are available
+// Pipeline, one coefficient per cycle, at most one adder per stage
+// (c = coefficient whose word is read at cycle t; RAM read latency 2):
+//   t-1  read command registered (even c only)   t+5  (x * 161271) << d
+//   t+2  RAM word registered                     t+6  + 1664 * 161271, Compress_d
+//   t+3  x, CSD partial sums                     t+7  value << bit position
+//   t+4  x * 161271                              t+8  merge, emit a full word
 
 module mlkem_pack (
     input  logic        clk,
@@ -28,7 +30,7 @@ module mlkem_pack (
     input  logic [2:0]  slot,
     output logic        done,       // One-cycle pulse (with the last word).
 
-    // Poly RAM read port.
+    // Poly RAM read port (registered).
     output logic        rd_en,
     output logic [9:0]  rd_addr,
     input  logic [23:0] rd_data,
@@ -38,92 +40,104 @@ module mlkem_pack (
     output logic [31:0] out_word
 );
 
-    localparam logic [40:0] RECIP_1664 = 41'd268354944;   // 1664 * 161271
+    // Registered active-high synchronous reset, local to this module
+    // (replicated by fanout; no inverter on the high-fanout net).
+    (* max_fanout = 32 *) logic srst;
+    always_ff @(posedge clk)
+        srst <= !rst_n;
 
-    // x * 161271 for x < q (< 2^30).
-    function automatic logic [29:0] mul_recip(input logic [11:0] v);
-        logic [29:0] e;
-        e = 30'(v);
-        return ((e << 17) + (e << 15)) - ((e << 11) + (e << 9)) - ((e << 3) + e);
-    endfunction
+    localparam logic [40:0] RECIP_1664 = 41'd268354944;   // 1664 * 161271
 
     logic        running;
     logic [3:0]  d_r;
     logic [2:0]  slot_r;
     logic [8:0]  ic;                // Next coefficient to issue (0..256).
     logic        issue;
-    assign issue   = running && !ic[8];
-    assign rd_en   = issue && !ic[0];
-    assign rd_addr = {slot_r, ic[7:1]};
+    assign issue = running && !ic[8];
 
-    // Pipeline valid / half bits: [0] = t+1, [1] = t+2, [2] = t+3, [3] = t+4.
-    logic [3:0]  pv;
-    logic [1:0]  ph;                // Coefficient half (odd c) at t+1, t+2.
-    logic [23:0] rw;                // t+2: RAM word.
-    logic [11:0] x3;                // t+3: coefficient.
-    (* use_dsp = "no" *) logic [29:0] xr3;   // t+3: x * 161271.
-    logic [11:0] val4;              // t+4: compressed value.
+    // Pipeline valid / half bits: pv[i] during t+i.
+    logic [8:0]  pv;
+    logic [3:0]  ph;                // Coefficient half (odd c), ph[i] during t+i.
+
+    logic [23:0] rw;                // t+3: RAM word.
+    logic [11:0] x4, x5, x6;        // Coefficient (d = 12 passes it through).
+    (* use_dsp = "no" *) logic [29:0] sa4, sb4, sc4;   // t+4: CSD partial sums.
+    (* use_dsp = "no" *) logic [29:0] xr5;             // t+5: x * 161271.
+    logic [40:0] shl6;              // t+6: (x * 161271) << d.
+    logic [11:0] val7;              // t+7: compressed value.
+    logic [43:0] sh8;               // t+8: value at its bit position.
+    logic        em8;               // t+8: this value completes a word.
     logic [43:0] acc;               // Pending bits.
-    logic [5:0]  nb;                // Number of pending bits (< 32).
-    logic [8:0]  cnt;               // Coefficients appended.
+    logic [5:0]  nb;                // Pending bit count (< 32), at stage t+7.
+    logic [8:0]  cnt;               // Coefficients merged.
 
-    // Compress_d at t+3.
+    logic [11:0] x3;
+    logic [29:0] e3;
     logic [40:0] prod;
-    logic [11:0] comp;
-    always_comb begin
-        prod = (41'(xr3) << d_r) + RECIP_1664;
-        comp = (d_r == 4'd12) ? x3 : 12'((prod >> 29) & ((41'd1 << d_r) - 41'd1));
-    end
-
-    // Bit accumulator at t+4.
-    logic [43:0] merged;
     logic [6:0]  nb_next;
-    assign merged  = acc | (44'(val4) << nb);
+    assign x3      = ph[3] ? rw[23:12] : rw[11:0];
+    assign e3      = 30'(x3);
+    assign prod    = shl6 + RECIP_1664;
     assign nb_next = 7'(nb) + 7'(d_r);
 
+    logic [43:0] merged;
+    assign merged = acc | sh8;
+
     always_ff @(posedge clk) begin
-        rw   <= rd_data;
-        x3   <= ph[1] ? rw[23:12] : rw[11:0];
-        xr3  <= mul_recip(ph[1] ? rw[23:12] : rw[11:0]);
-        val4 <= comp;
-        if (pv[3] && nb_next >= 7'd32)
+        // Registered read command for the next cycle.
+        rd_en   <= issue && !ic[0];
+        rd_addr <= {slot_r, ic[7:1]};
+        // Datapath.
+        rw   <= rd_data;                                     // end of t+2
+        x4   <= x3;                                          // end of t+3
+        sa4  <= (e3 << 17) + (e3 << 15);
+        sb4  <= (e3 << 11) + (e3 << 9);
+        sc4  <= (e3 << 3) + e3;
+        x5   <= x4;                                          // end of t+4
+        xr5  <= (sa4 - sb4) - sc4;
+        x6   <= x5;                                          // end of t+5
+        shl6 <= 41'(xr5) << d_r;
+        val7 <= (d_r == 4'd12) ? x6                          // end of t+6
+                               : 12'((prod >> 29) & ((41'd1 << d_r) - 41'd1));
+        sh8  <= 44'(val7) << nb;                             // end of t+7
+        em8  <= pv[7] && (nb_next >= 7'd32);
+        if (pv[8] && em8)                                    // end of t+8
             out_word <= merged[31:0];
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            running   <= 1'b0;
-            d_r       <= '0;
-            slot_r    <= '0;
-            ic        <= '0;
-            pv        <= '0;
-            ph        <= '0;
-            acc       <= '0;
-            nb        <= '0;
-            cnt       <= '0;
-            out_valid <= 1'b0;
-            done      <= 1'b0;
-        end else if (clr) begin
+    always_ff @(posedge clk) begin
+        if (srst || clr) begin
             running   <= 1'b0;
             pv        <= '0;
             out_valid <= 1'b0;
             done      <= 1'b0;
+            if (srst) begin
+                d_r    <= '0;
+                slot_r <= '0;
+                ic     <= '0;
+                ph     <= '0;
+                acc    <= '0;
+                nb     <= '0;
+                cnt    <= '0;
+            end
         end else begin
             done      <= 1'b0;
             out_valid <= 1'b0;
-            pv        <= {pv[2:0], issue};
-            ph        <= {ph[0], ic[0]};
+            pv        <= {pv[7:0], issue};
+            ph        <= {ph[2:0], ic[0]};
             if (issue)
                 ic <= ic + 9'd1;
-            if (pv[3]) begin
+            // t+7: bit position of the value entering t+8.
+            if (pv[7])
+                nb <= (nb_next >= 7'd32) ? 6'(nb_next - 7'd32) : nb_next[5:0];
+            // t+8: merge.
+            if (pv[8]) begin
                 cnt <= cnt + 9'd1;
-                if (nb_next >= 7'd32) begin
+                if (em8) begin
                     out_valid <= 1'b1;
                     acc       <= merged >> 32;
-                    nb        <= 6'(nb_next - 7'd32);
                 end else begin
                     acc <= merged;
-                    nb  <= nb_next[5:0];
                 end
                 if (cnt == 9'd255) begin
                     running <= 1'b0;

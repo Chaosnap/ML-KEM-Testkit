@@ -189,6 +189,9 @@ module tb_ntt;
         for (int w = 0; w < 128; w++) begin
             @(negedge clk);
             tb_en = 1'b1; tb_we = 1'b0; tb_addr = {s, 7'(w)};
+            @(posedge clk); #1;             // Read latency 2 (output register).
+            @(negedge clk);
+            tb_en = 1'b0;
             @(posedge clk); #1;
             f_out[2*w]   = a_dout[11:0];
             f_out[2*w+1] = a_dout[23:12];

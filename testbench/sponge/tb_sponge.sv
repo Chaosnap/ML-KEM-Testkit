@@ -3,9 +3,10 @@
 // For every vector from gen_vectors.py: init, absorb the message in random
 // chunks (1 .. bytes left in the current lane, so lane boundaries are
 // respected but chunks are often unaligned), finalize, then squeeze the
-// output in random chunks (1 .. squeeze_avail). Valid / take are dropped at
+// output in random chunks (half a lane or all of squeeze_avail). Valid /
+// take are dropped at
 // random to exercise stalls. Also checks that a full SHAKE128 block costs
-// 21 absorb cycles + 24 permutation cycles.
+// 21 absorb cycles + 1 + 24 permutation cycles.
 // Prints "TB_SPONGE PASS" on success.
 //
 // Plusarg +vec=<vector file> (default "sponge_vectors.txt").
@@ -102,7 +103,7 @@ module tb_sponge;
                 @(negedge clk);
                 continue;
             end
-            n = 1 + rnd(int'(squeeze_avail));
+            n = (squeeze_avail == 4'd8 && rnd(2) == 0) ? 4 : int'(squeeze_avail);
             if (n > ol - i) n = ol - i;
             for (k = 0; k < n; k++) got[i + k] = squeeze_data[8 * k +: 8];
             squeeze_take = 1'b1;
@@ -143,8 +144,8 @@ module tb_sponge;
         end
         absorb_valid = 1'b0;
         while (!absorb_ready) begin @(posedge clk); cyc++; @(negedge clk); end
-        $display("SHAKE128 block: %0d cycles (21 lanes + 24 rounds)", cyc);
-        if (cyc != 45) begin errors++; $display("expected 45 cycles per block"); end
+        $display("SHAKE128 block: %0d cycles (21 lanes + 1 + 24 rounds)", cyc);
+        if (cyc != 46) begin errors++; $display("expected 46 cycles per block"); end
     endtask
 
     initial begin

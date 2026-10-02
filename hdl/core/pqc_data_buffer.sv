@@ -13,6 +13,7 @@
 //
 // 8 KB = 2048 x 32-bit words with per-byte write enables; infers a true
 // dual-port block RAM (byte-write mode, 2 x RAMB36) on Xilinx devices.
+// Read latency is 2 cycles on both ports (output registers).
 
 module pqc_data_buffer #(
     parameter int DEPTH      = 2048,        // Number of 32-bit words.
@@ -36,14 +37,17 @@ module pqc_data_buffer #(
 );
 
     logic [31:0] mem [0:DEPTH-1];
+    logic [31:0] a_q, b_q;
 
+    // Read latency 2 on both ports (BRAM output registers, DOA/DOB_REG).
     always_ff @(posedge clk) begin
         if (a_en) begin
             for (int i = 0; i < 4; i++)
                 if (a_we[i])
                     mem[a_addr][8*i +: 8] <= a_din[8*i +: 8];
-            a_dout <= mem[a_addr];
+            a_q <= mem[a_addr];
         end
+        a_dout <= a_q;
     end
 
     always_ff @(posedge clk) begin
@@ -51,8 +55,9 @@ module pqc_data_buffer #(
             for (int i = 0; i < 4; i++)
                 if (b_we[i])
                     mem[b_addr][8*i +: 8] <= b_din[8*i +: 8];
-            b_dout <= mem[b_addr];
+            b_q <= mem[b_addr];
         end
+        b_dout <= b_q;
     end
 
 endmodule

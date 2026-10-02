@@ -1,0 +1,82 @@
+5000 failing endpoints in 234 groups
+   slack     n   delay  levels                   source -> destination
+  -4.993    26   9.777  9 (CARRY4=7 LUT4=1 LUT6= u_mlkem/u_ctrl/unit_src_sponge -> u_mlkem/u_unpack/cr_d[*]
+  -4.694    12   9.501  16 (CARRY4=6 LUT2=2 LUT3 u_mlkem/u_alu/p00[*][*]_srl3_srlopt -> u_mlkem/u_alu/wb[*]
+  -3.984  2103   8.541  9 (CARRY4=3 LUT3=1 LUT4= u_mlkem/u_ctrl/FSM_sequential_state[*] -> u_mlkem/u_sponge/st[*]
+  -3.688    24   8.400  9 (CARRY4=3 LUT2=1 LUT4= u_mlkem/u_polyram/mem -> u_mlkem/u_alu/ls[*]
+  -3.591     7   7.804  8 (CARRY4=1 LUT3=1 LUT5= u_mlkem/u_alu/layer[*] -> u_mlkem/u_polyram/mem
+  -3.324    31   7.858  6 (LUT5=4 LUT6=2)        u_mlkem/u_sponge/pos[*] -> u_mlkem/u_dbuf/mem
+  -3.323     1   7.559  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/up_param[*]
+  -3.319     6   7.555  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/extracted[*]
+  -3.306     5   7.543  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/nbits[*]
+  -3.176     1   7.414  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/up_check
+  -3.158    12   7.992  16 (CARRY4=12 LUT2=4)    u_mlkem/u_alu/u_mul0/r[*] -> u_mlkem/u_alu/h1[*][*]
+  -3.077     2   7.430  8 (CARRY4=1 LUT4=3 LUT5= u_mlkem/u_unpack/param_r[*] -> u_mlkem/u_dbuf/mem
+  -3.070    17   7.285  7 (LUT5=1 LUT6=6)        u_mlkem/u_alu/cur_op[*] -> u_mlkem/u_polyram/mem
+  -3.065     5   6.065  2 (LUT5=1 LUT6=1)        u_mlkem/u_alu/pv[*] -> u_mlkem/u_alu/u_mul1/p2
+  -3.031     1   7.270  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/cr_v
+  -3.022    36   7.256  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/acc[*]
+  -3.021    63   7.755  7 (LUT3=1 LUT5=1 LUT6=5) u_mlkem/u_unpack/nbits[*] -> u_mlkem/u_unpack/bitbuf[*]
+  -2.966    33   7.724  7 (LUT3=1 LUT5=2 LUT6=4) u_mlkem/u_unpack/cr_d[*] -> u_mlkem/u_unpack/bitbuf[*]
+  -2.961  1008   7.512  4 (LUT3=1 LUT5=1 LUT6=1  u_mlkem/u_sponge/pos[*] -> u_mlkem/u_sponge/st[*]
+  -2.939     3   7.190  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_sponge/running
+  -2.933     1   7.177  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/unit_src_sponge
+  -2.910    13   7.150  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/pv[*]
+  -2.896     9   7.135  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/ic[*]
+  -2.893     8   7.195  7 (CARRY4=1 LUT4=4 LUT6= u_mlkem/u_unpack/param_r[*] -> u_mlkem/u_sponge/pos[*]
+  -2.884     1   7.509  6 (LUT5=4 LUT6=2)        u_mlkem/u_sponge/st[*] -> u_mlkem/u_dbuf/mem
+  -2.872    19   5.952  2 (LUT4=1 LUT6=1)        u_mlkem/u_alu/cur_op[*] -> u_mlkem/u_alu/u_mul0/p2
+  -2.867     9   7.483  7 (LUT4=4 LUT5=1 LUT6=2) u_mlkem/u_csr/sec_level[*] -> u_mlkem/u_ctrl/pc[*]
+  -2.857     5   7.101  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/outst[*]
+  -2.856    13   7.104  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/imm[*]
+  -2.856     1   7.182  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/done
+  -2.841     2   7.075  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/widx[*]
+  -2.820     1   7.146  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/ph
+  -2.788     4   7.021  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/pk_d[*]
+  -2.788     3   7.021  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/pk_slot[*]
+  -2.784     5   7.017  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/nb[*]
+  -2.758    32   7.004  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/fq0[*]
+  -2.753    26   6.999  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/fq1[*]
+  -2.753     2   7.070  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/alu_op[*]
+  -2.725    13   5.807  2 (LUT4=1 LUT6=1)        u_mlkem/u_alu/cur_op[*] -> u_mlkem/u_alu/u_mul1/p2
+  -2.698     3   6.932  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/sa[*]
+  -2.640     8   7.045  7 (CARRY4=2 LUT4=2 LUT5= u_mlkem/u_ctrl/FSM_sequential_state[*] -> u_mlkem/u_sponge/pos[*]
+  -2.614     6   6.847  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/count[*]
+  -2.612     2   6.932  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/sb[*]
+  -2.612     3   6.932  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/sc[*]
+  -2.577    12   7.094  3 (LUT5=2 LUT6=1)        u_mlkem/u_ctrl/FSM_sequential_state[*] -> u_mlkem/u_ctrl/ptr_a[*]
+  -2.559     1   6.792  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/alu_start
+  -2.559     1   6.792  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/wr_en
+  -2.526     6   7.019  7 (CARRY4=1 LUT4=4 LUT6= u_mlkem/u_unpack/param_r[*] -> u_mlkem/u_sponge/pos[*]_rep
+  -2.522    16   7.091  8 (CARRY4=1 LUT4=3 LUT6= u_mlkem/u_unpack/param_r[*] -> u_mlkem/u_ctrl/rd_left[*]
+  -2.507     2   5.319  2 (LUT6=2)               u_mlkem/u_alu/scale -> u_mlkem/u_alu/u_mul0/p2
+  -2.491     1   6.727  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/up_start
+  -2.491     1   6.727  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/ph[*]
+  -2.490     1   6.732  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/fcnt[*]
+  -2.473     1   6.792  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_alu/acc_r
+  -2.450     1   6.692  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/finfl
+  -2.447    37   7.212  7 (LUT2=1 LUT3=1 LUT5=3  u_mlkem/u_sponge/pos[*] -> u_mlkem/u_unpack/cr_d[*]
+  -2.433     4   7.010  7 (LUT2=1 LUT4=3 LUT5=1  u_mlkem/u_csr/sec_level[*] -> u_mlkem/u_ctrl/FSM_sequential_state[*]
+  -2.430     3   6.674  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_sponge/pos[*]
+  -2.419    12   6.934  2 (LUT5=1 LUT6=1)        u_mlkem/u_ctrl/FSM_sequential_state[*] -> u_mlkem/u_ctrl/ptr_b[*]
+  -2.407    16   6.687  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/rd_left[*]
+  -2.406     3   6.651  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_sponge/pos[*]_rep
+  -2.406     1   6.651  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_sponge/pos[*]_rep_replica_1
+  -2.370    23   6.983  3 (LUT5=1 LUT6=1 MUXF7=1 u_mlkem/u_sponge/pos[*]_rep -> u_mlkem/u_sponge/st[*]
+  -2.363     4   6.599  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/d_r[*]
+  -2.363     1   6.599  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/slot_r[*]
+  -2.342     1   6.576  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/alu_acc
+  -2.339     1   6.581  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/cmp_got_b
+  -2.323     1   6.559  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/out_valid
+  -2.323     1   6.559  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/running
+  -2.297     1   6.572  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/running
+  -2.290     6   5.104  2 (LUT6=2)               u_mlkem/u_alu/scale -> u_mlkem/u_alu/u_mul1/p2
+  -2.255     1   6.572  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_unpack/done
+  -2.233    26   6.437  4 (LUT2=1 LUT5=1 LUT6=2) u_mlkem/u_ctrl/FSM_sequential_state[*] -> u_mlkem/u_dbuf/mem
+  -2.232    24   7.029  9 (CARRY4=7 LUT2=2)      u_mlkem/u_polyram/mem -> u_mlkem/u_alu/ld[*]
+  -2.189     6   6.430  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/i_op[*]
+  -2.188     1   6.425  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/done
+  -2.177    12   6.857  11 (CARRY4=6 LUT3=1 LUT5 u_mlkem/u_unpack/param_r[*] -> u_mlkem/u_unpack/q0[*]
+  -2.162     1   6.396  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_ctrl/units_clr
+  -2.153     5   6.392  1 (LUT1=1)               core_rst_sync[*] -> u_mlkem/u_pack/cnt[*]
+  -2.143    57   6.377  1 (LUT2=1)               u_mlkem/u_unpack/running -> u_mlkem/u_unpack/bitbuf[*]

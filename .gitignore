@@ -52,3 +52,6 @@ obj_dir/
 sim_build/
 results.xml
 __pycache__/
+
+# Full failing-path dumps (tens of MB); timing_groups.txt summarises them
+reports/*/timing_failing.rpt
