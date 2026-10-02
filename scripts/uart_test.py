@@ -61,6 +61,7 @@ ERRORS = {0: "none", 1: "unsupported SEC_LEVEL/OP_MODE",
 # FIPS 203 sizes: level -> (ek, dk, ct)
 SIZES = {768: (1184, 2400, 1088), 1024: (1568, 3168, 1568)}   # ML-KEM-512 not supported.
 DEFAULT_LEVEL = 768      # The only level the core implements.
+CORE_MHZ = 206.25        # ML-KEM core clock on the Arty A7 (MMCM); CYCLE_COUNT counts it.
 
 
 class ProtocolError(Exception):
@@ -201,8 +202,8 @@ def cmd_run(link, args):
     if len(inp) != need:
         sys.exit("input is %d bytes, ML-KEM-%d %s needs %d" % (len(inp), args.level, args.op, need))
     out, cycles = link.run(args.level, op, inp)
-    print("ML-KEM-%d %s: %d output bytes, %d cycles (%.3f ms @100 MHz)"
-          % (args.level, args.op, len(out), cycles, cycles / 1e5))
+    print("ML-KEM-%d %s: %d output bytes, %d cycles (%.3f ms @%.2f MHz core clock)"
+          % (args.level, args.op, len(out), cycles, cycles / (CORE_MHZ * 1e3), CORE_MHZ))
     print("  first 32 bytes: %s" % out[:32].hex())
     if args.out:
         with open(args.out, "wb") as f:

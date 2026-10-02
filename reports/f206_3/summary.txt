@@ -1,0 +1,7 @@
+period_ns 10
+wns_ns 0.012
+whs_ns 0.034
+fmax_mhz 100.1
+core_period_ns 4.848
+core_wns_ns 0.012
+core_fmax_mhz 206.8

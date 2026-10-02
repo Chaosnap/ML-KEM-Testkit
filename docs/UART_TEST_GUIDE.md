@@ -107,7 +107,7 @@ ML-KEM KAT: PASS
 - 整个过程在 115200 波特下大约需要 10 秒，主要时间花在传输密钥上。
 - 只想测试连通性、不跑 KAT：加 `--skip-kat`。
 - 周期数每次会有几十个周期的差别，这是正常的。SampleNTT 是拒绝采样，消耗的 SHAKE128 字节数取决于公开的种子 ρ。
-- 100 MHz 下运算时间：KeyGen-768 约 0.66 ms，Encaps-768 约 0.78 ms，Decaps-768 约 1.1 ms。
+- 核心时钟 206.25 MHz（MMCM 产生；UART 桥仍在 100 MHz），`CYCLE_COUNT` 按核心时钟计数：KeyGen-768 约 15.6k 周期（0.076 ms），Encaps-768 约 18.2k（0.088 ms），Decaps-768 约 25.2k（0.122 ms）。
 
 出现 `MISMATCH` 时，会打印第一个不一致字节的位置。
 

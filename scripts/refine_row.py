@@ -8,7 +8,7 @@ Reads (all written by scripts/vivado_reports.tcl / profile_ucode.py):
   fmax_5ns/summary.txt      optional: Fmax from the 5 ns run
 
 ENS = Slice + 100 * DSP + 200 * BRAM  (BRAM in RAMB36 equivalents)
-ATP = ENS * cycles / f   (f = 100 MHz, ATP in ENS * ms)
+ATP = ENS * cycles / f   (f = core clock, default 206.25 MHz; ATP in ENS * ms)
 
 Usage:
   python3 scripts/refine_row.py reports/step0 --step 0 --acvp 60/60
@@ -41,7 +41,7 @@ def main():
     ap.add_argument("dir")
     ap.add_argument("--step", required=True)
     ap.add_argument("--acvp", default="60/60")
-    ap.add_argument("--mhz", type=float, default=100.0)
+    ap.add_argument("--mhz", type=float, default=206.25, help="core clock (MHz)")
     args = ap.parse_args()
 
     u = util(os.path.join(args.dir, "utilization_u_mlkem.rpt"))
@@ -49,7 +49,7 @@ def main():
     slc, dsp = int(u["Slice"]), int(u["DSPs"])
     bram = u["Block RAM Tile"]
     s = kv(os.path.join(args.dir, "summary.txt"))
-    wns = float(s["wns_ns"])
+    wns = float(s.get("core_wns_ns", s["wns_ns"]))
     with open(os.path.join(args.dir, "profile_ucode.json")) as f:
         prof = {p["op"]: p for p in json.load(f)}
     cyc = prof["decaps"]["cycles_mean"]
@@ -57,11 +57,13 @@ def main():
     atp = ens * cyc / (args.mhz * 1e3)
     fmax = ""
     fp = os.path.join(args.dir, "fmax_5ns", "summary.txt")
-    if os.path.exists(fp):
+    if "core_fmax_mhz" in s:
+        fmax = s["core_fmax_mhz"].strip()
+    elif os.path.exists(fp):
         fmax = kv(fp)["fmax_mhz"].strip()
 
     bram_s = ("%g" % bram)
-    print("| Step | LUT | FF | Slice | DSP | BRAM | ENS | Decaps cycles | WNS @100 MHz | ACVP | ATP (ENS*ms) | Fmax (MHz) |")
+    print("| Step | LUT | FF | Slice | DSP | BRAM | ENS | Decaps cycles | WNS (core clk) | ACVP | ATP (ENS*ms) | Fmax (MHz) |")
     print("| ---- | --: | -: | ----: | --: | ---: | --: | ------------: | -----------: | ---- | -----------: | ---------: |")
     print("| %s | %d | %d | %d | %d | %s | %.0f | %.0f | %+.3f ns | %s | %.0f | %s |"
           % (args.step, lut, ff, slc, dsp, bram_s, ens, cyc, wns, args.acvp, atp, fmax))

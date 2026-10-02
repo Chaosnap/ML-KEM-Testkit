@@ -1,0 +1,2 @@
+0 failing endpoints in 0 groups
+   slack     n   delay  levels                   source -> destination
