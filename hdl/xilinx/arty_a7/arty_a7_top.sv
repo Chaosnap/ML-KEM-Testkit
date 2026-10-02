@@ -1,7 +1,12 @@
 // arty_a7_top.sv - Board-level wrapper for Arty A7-35T / A7-100T
 //
-// UART RX -> uart_axi_bridge -> AXI-Lite -> pqc_mlkem_top
+// UART RX -> uart_axi_bridge -> AXI-Lite -> axil_cdc -> pqc_mlkem_top
 //   (CSR registers + 8 KB data buffer + ML-KEM datapath) -> UART TX
+//
+// Clocks:
+//   clk     100 MHz board oscillator: UART, bridge, LEDs
+//   clk_core 206.25 MHz from an MMCM (100 MHz / 2 * 20.625 / 5): the whole
+//            ML-KEM core; axil_cdc crosses the AXI-Lite bus between them.
 //
 // Pin assignments:
 //   - UART TX/RX via the on-board USB-UART bridge (115200 8N1)
@@ -41,6 +46,41 @@ module arty_a7_top #(
     logic [3:0] rst_sync;
 
     assign clk = clk_100mhz;
+
+    // Core clock: VCO = 100 MHz / 2 * 20.625 = 1031.25 MHz, / 5 = 206.25 MHz.
+    logic clk_core, clk_core_mmcm, mmcm_fb, mmcm_locked;
+
+    MMCME2_BASE #(
+        .CLKIN1_PERIOD    (10.0),
+        .DIVCLK_DIVIDE    (2),
+        .CLKFBOUT_MULT_F  (20.625),
+        .CLKOUT0_DIVIDE_F (5.0)
+    ) u_mmcm (
+        .CLKIN1   (clk_100mhz),
+        .CLKFBIN  (mmcm_fb),
+        .CLKFBOUT (mmcm_fb),
+        .CLKOUT0  (clk_core_mmcm),
+        .LOCKED   (mmcm_locked),
+        .RST      (btn0),
+        .PWRDWN   (1'b0),
+        .CLKFBOUTB (), .CLKOUT0B (), .CLKOUT1 (), .CLKOUT1B (), .CLKOUT2 (),
+        .CLKOUT2B (), .CLKOUT3 (), .CLKOUT3B (), .CLKOUT4 (), .CLKOUT5 (), .CLKOUT6 ()
+    );
+
+    BUFG u_bufg_core (.I(clk_core_mmcm), .O(clk_core));
+
+    // Core reset: asserted asynchronously by BTN0 or while the MMCM is
+    // unlocked, released synchronously to clk_core.
+    logic       core_rst_n, core_arst;
+    logic [3:0] core_rst_sync;
+    assign core_arst = btn0 || !mmcm_locked;
+    always_ff @(posedge clk_core or posedge core_arst) begin
+        if (core_arst)
+            core_rst_sync <= '0;
+        else
+            core_rst_sync <= {core_rst_sync[2:0], 1'b1};
+    end
+    assign core_rst_n = core_rst_sync[3];
 
     // BTN0 asserts reset asynchronously; release is synchronised to clk
     // through a 4-stage shift register. The registers power up at 0, so the
@@ -128,28 +168,79 @@ module arty_a7_top #(
 
     logic status_busy, status_done, status_error;
 
+    // AXI-Lite in the core clock domain.
+    logic [15:0] c_awaddr, c_araddr;
+    logic        c_awvalid, c_awready, c_wvalid, c_wready, c_bvalid, c_bready;
+    logic        c_arvalid, c_arready, c_rvalid, c_rready;
+    logic [31:0] c_wdata, c_rdata;
+    logic [3:0]  c_wstrb;
+    logic [1:0]  c_bresp, c_rresp;
+
+    axil_cdc #(
+        .ADDR_WIDTH (16)
+    ) u_cdc (
+        .s_clk         (clk),
+        .s_rst_n       (rst_n),
+        .s_axi_awaddr  (axi_awaddr),
+        .s_axi_awvalid (axi_awvalid),
+        .s_axi_awready (axi_awready),
+        .s_axi_wdata   (axi_wdata),
+        .s_axi_wstrb   (axi_wstrb),
+        .s_axi_wvalid  (axi_wvalid),
+        .s_axi_wready  (axi_wready),
+        .s_axi_bresp   (axi_bresp),
+        .s_axi_bvalid  (axi_bvalid),
+        .s_axi_bready  (axi_bready),
+        .s_axi_araddr  (axi_araddr),
+        .s_axi_arvalid (axi_arvalid),
+        .s_axi_arready (axi_arready),
+        .s_axi_rdata   (axi_rdata),
+        .s_axi_rresp   (axi_rresp),
+        .s_axi_rvalid  (axi_rvalid),
+        .s_axi_rready  (axi_rready),
+        .m_clk         (clk_core),
+        .m_rst_n       (core_rst_n),
+        .m_axi_awaddr  (c_awaddr),
+        .m_axi_awvalid (c_awvalid),
+        .m_axi_awready (c_awready),
+        .m_axi_wdata   (c_wdata),
+        .m_axi_wstrb   (c_wstrb),
+        .m_axi_wvalid  (c_wvalid),
+        .m_axi_wready  (c_wready),
+        .m_axi_bresp   (c_bresp),
+        .m_axi_bvalid  (c_bvalid),
+        .m_axi_bready  (c_bready),
+        .m_axi_araddr  (c_araddr),
+        .m_axi_arvalid (c_arvalid),
+        .m_axi_arready (c_arready),
+        .m_axi_rdata   (c_rdata),
+        .m_axi_rresp   (c_rresp),
+        .m_axi_rvalid  (c_rvalid),
+        .m_axi_rready  (c_rready)
+    );
+
     pqc_mlkem_top #(
         .AXI_ADDR_WIDTH (16)
     ) u_mlkem (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .s_axi_awaddr   (axi_awaddr),
-        .s_axi_awvalid  (axi_awvalid),
-        .s_axi_awready  (axi_awready),
-        .s_axi_wdata    (axi_wdata),
-        .s_axi_wstrb    (axi_wstrb),
-        .s_axi_wvalid   (axi_wvalid),
-        .s_axi_wready   (axi_wready),
-        .s_axi_bresp    (axi_bresp),
-        .s_axi_bvalid   (axi_bvalid),
-        .s_axi_bready   (axi_bready),
-        .s_axi_araddr   (axi_araddr),
-        .s_axi_arvalid  (axi_arvalid),
-        .s_axi_arready  (axi_arready),
-        .s_axi_rdata    (axi_rdata),
-        .s_axi_rresp    (axi_rresp),
-        .s_axi_rvalid   (axi_rvalid),
-        .s_axi_rready   (axi_rready),
+        .clk            (clk_core),
+        .rst_n          (core_rst_n),
+        .s_axi_awaddr   (c_awaddr),
+        .s_axi_awvalid  (c_awvalid),
+        .s_axi_awready  (c_awready),
+        .s_axi_wdata    (c_wdata),
+        .s_axi_wstrb    (c_wstrb),
+        .s_axi_wvalid   (c_wvalid),
+        .s_axi_wready   (c_wready),
+        .s_axi_bresp    (c_bresp),
+        .s_axi_bvalid   (c_bvalid),
+        .s_axi_bready   (c_bready),
+        .s_axi_araddr   (c_araddr),
+        .s_axi_arvalid  (c_arvalid),
+        .s_axi_arready  (c_arready),
+        .s_axi_rdata    (c_rdata),
+        .s_axi_rresp    (c_rresp),
+        .s_axi_rvalid   (c_rvalid),
+        .s_axi_rready   (c_rready),
         .irq            (),  // Not used on Arty.
         .o_busy         (status_busy),
         .o_done         (status_done),

@@ -448,11 +448,11 @@ module mlkem_ctrl (
                             OP_HINIT: state <= C_HINIT;
                             OP_HABI:  state <= C_HABI;
                             OP_HFIN:  state <= C_HFIN;
-                            OP_HSQZ:  state <= (f_len == 0) ? C_NEXT : C_HSQZ;
-                            OP_HABS:  state <= (f_len == 0) ? C_NEXT : C_HABS;
-                            OP_CMP:   state <= (f_len == 0) ? C_NEXT : C_CMP;
+                            OP_HSQZ:  state <= state_t'((f_len == 0) ? C_NEXT : C_HSQZ);
+                            OP_HABS:  state <= state_t'((f_len == 0) ? C_NEXT : C_HABS);
+                            OP_CMP:   state <= state_t'((f_len == 0) ? C_NEXT : C_CMP);
                             OP_COPY, OP_CSEL:
-                                      state <= (f_len == 0) ? C_NEXT : C_CP_RD;
+                                      state <= state_t'((f_len == 0) ? C_NEXT : C_CP_RD);
                             OP_SAMPLE, OP_CBD, OP_DECODE: begin
                                 up_start        <= 1'b1;
                                 up_mode         <= (f_op == OP_SAMPLE) ? 2'd0 :
@@ -542,7 +542,7 @@ module mlkem_ctrl (
                         ptr_b <= ptr_b + 14'd4;
                         ptr_c <= ptr_c + 14'd4;
                         len   <= len - 16'd1;
-                        state <= (len == 16'd1) ? C_NEXT : C_CP_RD;
+                        state <= state_t'((len == 16'd1) ? C_NEXT : C_CP_RD);
                     end
 
                     C_UNIT: begin

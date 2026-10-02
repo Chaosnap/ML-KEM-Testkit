@@ -5,6 +5,13 @@
 set_property -dict {PACKAGE_PIN E3 IOSTANDARD LVCMOS33} [get_ports clk_100mhz]
 create_clock -period 10.000 -name sys_clk [get_ports clk_100mhz]
 
+## Core clock: MMCM CLKOUT0 (206.25 MHz) is derived automatically from sys_clk.
+## The bridge (sys_clk) and the core (clk_core) only talk through axil_cdc,
+## whose crossing values are held stable around toggle handshakes.
+set_clock_groups -asynchronous \
+    -group [get_clocks sys_clk] \
+    -group [get_clocks -of_objects [get_pins u_mmcm/CLKOUT0]]
+
 ## Reset: push button BTN0, active-high (pressed = 1)
 set_property -dict {PACKAGE_PIN D9 IOSTANDARD LVCMOS33} [get_ports btn0]
 

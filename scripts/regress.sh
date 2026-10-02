@@ -40,6 +40,10 @@ fi
 step "tvla_sim: Verilator model builds"
 make -s -C testbench/tvla_sim >/dev/null && echo "TVLA_SIM BUILD PASS"
 
+step "axil_cdc system test: 100 MHz master -> 206.25 MHz core (Verilator)"
+make -s -C testbench/cdc 2>&1 | grep -E "^TB_CDC|cycles"
+grep -q PASS build/cdc/tb_cdc.log
+
 step "ACVP ML-KEM-768 on the core (Verilator)"
 python3 scripts/sim_acvp.py
 
