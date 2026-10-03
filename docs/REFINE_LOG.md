@@ -427,3 +427,23 @@ f206_3：建立时间 WNS +0.012 ns，保持时间 WHS +0.034 ns，脉宽满足�
 - 周期数（核心时钟 206.25 MHz，ACVP 向量平均）：KeyGen 15,605，Encaps 18,165，Decaps 25,219。
   Decaps 分布见 `reports/f206_3/profile_ucode.md`。要进一步接近 10k，需要 3c 的 Keccak / ALU 并行
   和每周期 2 个蝶形（见前文评估）。
+
+
+## 2026-10-03 — 核心 206.00 MHz RTL 优化（未运行实现）
+
+本次以 49a144c 为基线拆分 sponge 的 Keccak 轮函数、复用 Theta 暂存寄存器、用 banked LUTRAM 改写控制器读 FIFO，并收窄压缩通路及共享地址加法器。UART RTL 保持原样，核心 MMCM 输出调整为精确 206 MHz。
+
+Icarus/Verilator 功能回归通过，包括 ACVP 60/60、额外 20 项有效性/参数检查、sponge、所有压缩位宽、FIFO、独立 Keccak 和 CDC。Decaps 平均周期由 25218.9 增至 26277.3（+4.20%）。保留未加功耗侧信道防护的实现及标准隐式拒绝功能。
+
+**以上 f206_3 的 +0.012 ns 和资源数字是历史结果，不代表本次 RTL。** 按用户要求未运行 Vivado、未安装工具，因此本次物理时序及净资源变化未测量。完整修改、权衡及复现方法见 [CORE_206MHZ_REVIEW.md](CORE_206MHZ_REVIEW.md)，验证日志见 `reports/core206_rtl/`。
+
+
+## 2026-10-03 — Docker Vivado 第二轮实现交付
+
+用户授权使用现有 vivado-container，Vivado 2024.1，未修改镜像；两轮实现串行运行，sys_clk 约束均为 10 ns，派生核心时钟 206 MHz。截图对应 WNS −0.068 ns / 9 个失败端点，路径位于解包器和 FIFO 读出的比较逻辑。
+
+解包字段提取增加字节选择寄存级，密文比较改为四段寄存比较后归并；第一轮 WNS +0.002 ns、WHS +0.014 ns。第二轮将 sponge 预取索引改为寄存 one-hot，最终 WNS +0.093 ns、WHS +0.036 ns、WPWS +1.177 ns，所有失败端点为 0，路由错误为 0。核心 LUT 7248、FF 4623、RAMB36 3、DSP 2。
+
+ACVP 60/60、额外 20 项检查、16 项隐式拒绝边界检查、解包 15872 个系数及已有 sponge/pack/FIFO/Keccak/CDC 测试通过。UART RTL 与最初基线一致；无新增侧信道防护。平均核心周期为 KeyGen 16653.08、Encaps 19245.48、Decaps 26304.30。按用户最新要求交付第二轮代码，不再继续优化。
+
+详见 [CORE_206MHZ_ROUND2.md](CORE_206MHZ_ROUND2.md)，最终检查点和报告位于 `reports/core206_debug2/`。上述“未运行实现”的段落是较早阶段记录。

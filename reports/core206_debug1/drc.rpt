@@ -1,0 +1,47 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.1 (lin64) Build 5076996 Wed May 22 18:36:09 MDT 2024
+| Date         : Sat Oct  3 06:28:28 2026
+| Host         : orbstack running 64-bit unknown
+| Command      : report_drc -file /home/vivadouser/project/ML_KEM_Test/ML-KEM-Testkit/reports/core206_debug1/drc.rpt
+| Design       : arty_a7_top
+| Device       : xc7a100tcsg324-1
+| Speed File   : -1
+| Design State : Fully Routed
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+Report DRC
+
+Table of Contents
+-----------------
+1. REPORT SUMMARY
+2. REPORT DETAILS
+
+1. REPORT SUMMARY
+-----------------
+            Netlist: arty_a7_top
+          Floorplan: design_1
+      Design limits: <entire design considered>
+           Ruledeck: default
+             Max violations: <unlimited>
+             Violations found: 2
++-------------+----------+---------------------------------+------------+
+| Rule        | Severity | Description                     | Violations |
++-------------+----------+---------------------------------+------------+
+| DPIP-1      | Warning  | Input pipelining                | 1          |
+| PLBUFGOPT-1 | Warning  | Non-Optimal connections to BUFG | 1          |
++-------------+----------+---------------------------------+------------+
+
+2. REPORT DETAILS
+-----------------
+DPIP-1#1 Warning
+Input pipelining  
+DSP u_mlkem/u_alu/u_mul1/p2_reg input u_mlkem/u_alu/u_mul1/p2_reg/A[29:0] is not pipelined. Pipelining DSP48 input will improve performance.
+Related violations: <none>
+
+PLBUFGOPT-1#1 Warning
+Non-Optimal connections to BUFG  
+A non-muxed BUFG u_bufg_core is driven by another global buffer u_bufg_core_replica. Remove non-muxed BUFG if it is not desired
+Related violations: <none>
+
+

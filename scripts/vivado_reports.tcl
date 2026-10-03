@@ -14,8 +14,9 @@
 #   timing_failing.rpt       every failing endpoint (scripts/timing_groups.py)
 #   summary.txt              period / WNS / WHS one-liners
 #
-# clock_period_ns (default 10.000) overrides the XDC sys_clk period; use 5
-# only to measure Fmax = 1 / (5 - WNS). The XDC itself is never changed.
+# clock_period_ns (default 10.000) is the input oscillator constraint.
+# Keep 10 ns for the 100 MHz UART / 206 MHz MMCM core. A 5 ns input would
+# also double the generated clock target and is not a 200 MHz core test.
 
 if {$argc < 1} {
     puts "usage: -tclargs <out_dir> \[clock_period_ns\]"
@@ -37,13 +38,16 @@ synth_design -top arty_a7_top -part $part
 if {$period != 10.0} {
     create_clock -period $period -name sys_clk [get_ports clk_100mhz]
 }
-# Timing-driven directives (the core runs at 206.25 MHz on a -1 part).
+# Timing-driven directives (the core targets 206.00 MHz on a -1 part).
 opt_design      -directive Explore
 place_design    -directive ExtraTimingOpt
 phys_opt_design -directive AggressiveExplore
 route_design    -directive AggressiveExplore
 phys_opt_design -directive AggressiveExplore
 
+write_checkpoint -force $out_dir/implemented.dcp
+report_route_status -file $out_dir/route_status.rpt
+report_drc -file $out_dir/drc.rpt
 report_utilization -hierarchical -file $out_dir/utilization_hier.rpt
 report_utilization -cells [get_cells u_mlkem] -file $out_dir/utilization_u_mlkem.rpt
 report_timing_summary -max_paths 10 -file $out_dir/timing_summary.rpt
@@ -59,7 +63,11 @@ set f [open $out_dir/summary.txt w]
 puts $f "period_ns $period"
 puts $f "wns_ns $wns"
 puts $f "whs_ns $whs"
-puts $f "fmax_mhz [format %.1f [expr {1000.0 / ($period - $wns)}]]"
+# WNS can belong to the generated core clock; do not combine global WNS
+# with the input period to claim an input-domain Fmax.
+set swns [get_property SLACK [get_timing_paths -group sys_clk -setup -max_paths 1]]
+puts $f "sys_wns_ns $swns"
+puts $f "sys_fmax_estimate_mhz [format %.1f [expr {1000.0 / ($period - $swns)}]]"
 # Core clock (MMCM CLKOUT0), when present.
 set mmcm [get_pins -quiet u_mmcm/CLKOUT0]
 if {[llength $mmcm]} {
@@ -68,7 +76,7 @@ if {[llength $mmcm]} {
     set cwns [get_property SLACK [get_timing_paths -group $cclk -setup -max_paths 1]]
     puts $f "core_period_ns $cper"
     puts $f "core_wns_ns $cwns"
-    puts $f "core_fmax_mhz [format %.1f [expr {1000.0 / ($cper - $cwns)}]]"
+    puts $f "core_fmax_estimate_mhz [format %.1f [expr {1000.0 / ($cper - $cwns)}]]"
 }
 close $f
 puts "=== period $period ns  WNS $wns ns  WHS $whs ns ==="

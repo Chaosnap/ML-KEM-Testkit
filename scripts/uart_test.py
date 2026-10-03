@@ -61,7 +61,7 @@ ERRORS = {0: "none", 1: "unsupported SEC_LEVEL/OP_MODE",
 # FIPS 203 sizes: level -> (ek, dk, ct)
 SIZES = {768: (1184, 2400, 1088), 1024: (1568, 3168, 1568)}   # ML-KEM-512 not supported.
 DEFAULT_LEVEL = 768      # The only level the core implements.
-CORE_MHZ = 206.25        # ML-KEM core clock on the Arty A7 (MMCM); CYCLE_COUNT counts it.
+CORE_MHZ = 206.0        # ML-KEM core clock on the Arty A7 (MMCM); CYCLE_COUNT counts it.
 
 
 class ProtocolError(Exception):

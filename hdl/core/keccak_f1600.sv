@@ -42,7 +42,9 @@ module keccak_f1600 (
     keccak_round u_round (
         .s_in  (state),
         .round (round_cnt),
-        .s_out (state_next)
+        .s_out (state_next),
+        .theta_saved (320'b0),
+        .theta_delta ()
     );
 
     typedef enum logic [1:0] {

@@ -12,13 +12,10 @@
 module tb_pack;
 
     localparam int NP = 14;                 // ceil(q / 256) polys.
-    localparam int ND = 6;
+    localparam int ND = 12;
     // d values under test (function: Icarus has no unpacked array parameters).
     function automatic int ds(input int i);
-        case (i)
-            0: return 1;   1: return 4;   2: return 5;
-            3: return 10;  4: return 11;  default: return 12;
-        endcase
+        return i + 1;
     endfunction
 
     logic        clk = 1'b0;

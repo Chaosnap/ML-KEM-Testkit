@@ -6,7 +6,7 @@
 // output in random chunks (half a lane or all of squeeze_avail). Valid /
 // take are dropped at
 // random to exercise stalls. Also checks that a full SHAKE128 block costs
-// 21 absorb cycles + 1 + 24 permutation cycles.
+// 21 absorb cycles + 1 + 48 permutation cycles.
 // Prints "TB_SPONGE PASS" on success.
 //
 // Plusarg +vec=<vector file> (default "sponge_vectors.txt").
@@ -144,8 +144,25 @@ module tb_sponge;
         end
         absorb_valid = 1'b0;
         while (!absorb_ready) begin @(posedge clk); cyc++; @(negedge clk); end
-        $display("SHAKE128 block: %0d cycles (21 lanes + 1 + 24 rounds)", cyc);
-        if (cyc != 46) begin errors++; $display("expected 46 cycles per block"); end
+        $display("SHAKE128 block: %0d cycles (21 lanes + 1 + 48 permutation cycles)", cyc);
+        if (cyc != 70) begin errors++; $display("expected 70 cycles per block"); end
+    endtask
+
+    task automatic reset_during_permutation(input int phase_delay);
+        @(negedge clk);
+        while (!idle) @(negedge clk);
+        init = 1'b1;
+        @(negedge clk); init = 1'b0; finalize = 1'b1;
+        do @(posedge clk); while (!absorb_ready);
+        @(negedge clk); finalize = 1'b0;
+        while (!dut.running) @(negedge clk);
+        repeat (phase_delay) @(negedge clk);
+        rst_n = 1'b0;
+        repeat (4) @(negedge clk);
+        rst_n = 1'b1;
+        repeat (4) @(negedge clk);
+        if (!idle || squeeze_valid) $fatal(1, "sponge reset did not abort permutation");
+        run_one(); // Retained last hashlib vector must still match after reset.
     endtask
 
     initial begin
@@ -161,6 +178,8 @@ module tb_sponge;
             for (int i = 0; i < ol; i++) begin r = $fscanf(fd, "%h", w); exp_o[i] = w[7:0]; end
             run_one();
         end
+        reset_during_permutation(1);
+        reset_during_permutation(2);
         check_block_timing();
         $display("tb_sponge: %0d vectors, %0d output bytes checked, %0d errors", nt, checked, errors);
         if (errors == 0 && checked > 0) $display("TB_SPONGE PASS");

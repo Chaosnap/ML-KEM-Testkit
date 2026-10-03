@@ -7,16 +7,19 @@
 //
 // Compress_d(x) = round(2^d * x / q) mod 2^d
 //               = floor(((x << d) + 1664) / 3329) mod 2^d
-// The division is an exact multiply-shift: floor(n / 3329) = (n * 161271) >> 29
-// for every n < 2^23 (all x < q, d <= 11). With n = (x << d) + 1664:
-//   n * 161271 = ((x * 161271) << d) + 1664 * 161271
-// x * 161271 is a constant multiply done with shifts and adds in LUTs (CSD
-// 161271 = 2^17 + 2^15 - 2^11 - 2^9 - 2^3 - 1), so no DSP is used.
+// For n=(x<<d)+1664, floor(n/q)=(n*161271)>>29 in the supported
+// domain x<3329, 1<=d<=11. Move the d-dependent scaling to the bias:
+//   floor((x*161271*2^d+C)/2^29)
+//     = floor((x*161271+floor(C/2^d))/2^(29-d)), C=1664*161271.
+// Compression keeps only the low d bits, so only sum bits [28:29-d]
+// matter. A 29-bit add and fixed output slices replace the old 41-bit
+// variable left shifter plus 41-bit add. d=12 still bypasses compression.
+// The constant multiply uses the same shift/add network, no extra DSP.
 //
 // Pipeline, one coefficient per cycle, at most one adder per stage
 // (c = coefficient whose word is read at cycle t; RAM read latency 2):
-//   t-1  read command registered (even c only)   t+5  (x * 161271) << d
-//   t+2  RAM word registered                     t+6  + 1664 * 161271, Compress_d
+//   t-1  read command registered (even c only)   t+5  x * 161271 + predecoded bias
+//   t+2  RAM word registered                     t+6  fixed slice, Compress_d
 //   t+3  x, CSD partial sums                     t+7  value << bit position
 //   t+4  x * 161271                              t+8  merge, emit a full word
 
@@ -46,7 +49,7 @@ module mlkem_pack (
     always_ff @(posedge clk)
         srst <= !rst_n;
 
-    localparam logic [40:0] RECIP_1664 = 41'd268354944;   // 1664 * 161271
+    localparam logic [28:0] RECIP_1664 = 29'd268354944;   // 1664 * 161271
 
     logic        running;
     logic [3:0]  d_r;
@@ -63,7 +66,8 @@ module mlkem_pack (
     logic [11:0] x4, x5, x6;        // Coefficient (d = 12 passes it through).
     (* use_dsp = "no" *) logic [29:0] sa4, sb4, sc4;   // t+4: CSD partial sums.
     (* use_dsp = "no" *) logic [29:0] xr5;             // t+5: x * 161271.
-    logic [40:0] shl6;              // t+6: (x * 161271) << d.
+    logic [26:0] bias_r;            // floor(1664 * 161271 / 2^d), set at start.
+    logic [28:0] scaled6;           // t+6: low 29 bits of x*161271 + bias.
     logic [11:0] val7;              // t+7: compressed value.
     logic [43:0] sh8;               // t+8: value at its bit position.
     logic        em8;               // t+8: this value completes a word.
@@ -73,11 +77,9 @@ module mlkem_pack (
 
     logic [11:0] x3;
     logic [29:0] e3;
-    logic [40:0] prod;
     logic [6:0]  nb_next;
     assign x3      = ph[3] ? rw[23:12] : rw[11:0];
     assign e3      = 30'(x3);
-    assign prod    = shl6 + RECIP_1664;
     assign nb_next = 7'(nb) + 7'(d_r);
 
     logic [43:0] merged;
@@ -96,9 +98,22 @@ module mlkem_pack (
         x5   <= x4;                                          // end of t+4
         xr5  <= (sa4 - sb4) - sc4;
         x6   <= x5;                                          // end of t+5
-        shl6 <= 41'(xr5) << d_r;
-        val7 <= (d_r == 4'd12) ? x6                          // end of t+6
-                               : 12'((prod >> 29) & ((41'd1 << d_r) - 41'd1));
+        scaled6 <= xr5[28:0] + {2'b0, bias_r};                // end of t+5
+        case (d_r)                                          // end of t+6
+            4'd1: val7 <= 12'(scaled6[28:28]);
+            4'd2: val7 <= 12'(scaled6[28:27]);
+            4'd3: val7 <= 12'(scaled6[28:26]);
+            4'd4: val7 <= 12'(scaled6[28:25]);
+            4'd5: val7 <= 12'(scaled6[28:24]);
+            4'd6: val7 <= 12'(scaled6[28:23]);
+            4'd7: val7 <= 12'(scaled6[28:22]);
+            4'd8: val7 <= 12'(scaled6[28:21]);
+            4'd9: val7 <= 12'(scaled6[28:20]);
+            4'd10: val7 <= 12'(scaled6[28:19]);
+            4'd11: val7 <= 12'(scaled6[28:18]);
+            4'd12: val7 <= x6;
+            default: val7 <= '0;
+        endcase
         sh8  <= 44'(val7) << nb;                             // end of t+7
         em8  <= pv[7] && (nb_next >= 7'd32);
         if (pv[8] && em8)                                    // end of t+8
@@ -113,6 +128,7 @@ module mlkem_pack (
             done      <= 1'b0;
             if (srst) begin
                 d_r    <= '0;
+                bias_r <= '0;
                 slot_r <= '0;
                 ic     <= '0;
                 ph     <= '0;
@@ -147,6 +163,7 @@ module mlkem_pack (
             if (start && !running) begin
                 running <= 1'b1;
                 d_r     <= d;
+                bias_r  <= 27'(RECIP_1664 >> d);
                 slot_r  <= slot;
                 ic      <= '0;
                 pv      <= '0;

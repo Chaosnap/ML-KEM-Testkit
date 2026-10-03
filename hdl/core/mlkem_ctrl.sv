@@ -198,18 +198,21 @@ module mlkem_ctrl (
     function automatic logic [13:0] eff(input logic [15:0] t,
                                         input logic [13:0] ib,
                                         input logic [13:0] ob);
+        logic [13:0] base;
+        // Share one address adder instead of adding both candidate bases.
         case (t[15:14])
-            2'd1:    return ib + t[13:0];
-            2'd2:    return ob + t[13:0];
-            default: return t[13:0];
+            2'd1:    base = ib;
+            2'd2:    base = ob;
+            default: base = '0;
         endcase
+        return base + t[13:0];
     endfunction
 
     // ---------------------------------------------------------------------
     // Read stream: registered read commands, 6-entry word FIFO.
     // A read decided in cycle D has its data in buf_dout during D+3.
     // ---------------------------------------------------------------------
-    logic [31:0] fq [0:FDEPTH-1];       // fq[0] = head.
+    logic [31:0] fq0, fq1;              // Banked FIFO heads (no word shifting).
     logic [2:0]  fcnt;                  // Valid entries.
     logic [2:0]  rp;                    // Reads in flight, rp[2]: data this cycle.
     logic [15:0] rd_left;               // Reads still to issue.
@@ -233,6 +236,15 @@ module mlkem_ctrl (
     assign rd_issue = rs_on && (rd_left != 16'd0) && !wr_copy &&
                       (3'(fcnt) + 3'(inflight) < 3'(FDEPTH));
 
+    mlkem_word_fifo u_read_fifo (
+        .clk (clk),
+        .clr (srst || rst_q || state == C_DECODE),
+        .push (rp[2]),
+        .din (buf_dout),
+        .pop_count (pop2 ? 2'd2 : pop1 ? 2'd1 : 2'd0),
+        .head0 (fq0), .head1 (fq1), .count (fcnt)
+    );
+
     // Profiling only (testbench/core_sim): sequencer overhead cycles.
     logic seq_overhead;
     assign seq_overhead = (state == C_NEXT) || (state == C_FETCH) || (state == C_DECODE);
@@ -246,7 +258,7 @@ module mlkem_ctrl (
     // them inside a lane); HABS one FIFO word. HSQZ squeezes a word (its
     // squeeze position is always a multiple of 4).
     assign h_absorb_valid = (state == C_HABI) || ((state == C_HABS) && (fcnt != 3'd0));
-    assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq[0]};
+    assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq0};
     assign h_absorb_n     = (state == C_HABI) ? ((i_p == 8'd1) ? 4'd1 : 4'd2) : 4'd4;
     assign h_finalize     = (state == C_HFIN) && h_absorb_ready;
     assign h_squeeze_take = wr_sqz ||
@@ -255,11 +267,22 @@ module mlkem_ctrl (
 
     // Unpacker source: sponge lanes, or two FIFO words (DECODE).
     assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt >= 3'd2);
-    assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {fq[1], fq[0]};
+    assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {fq1, fq0};
 
     // ---------------------------------------------------------------------
     // Sequencer.
     // ---------------------------------------------------------------------
+    // Separate FIFO RAM read / small comparisons from the sticky reduction.
+    // C_NEXT and instruction fetch drain this stage before a following CSEL.
+    logic [3:0] cmp_diff;
+    logic cmp_valid;
+    always_ff @(posedge clk) begin
+        if (srst || rst_q) cmp_valid <= 1'b0;
+        else cmp_valid <= (state == C_CMP) && pop2;
+        for (int b = 0; b < 4; b++)
+            cmp_diff[b] <= (fq0[8*b +: 8] != fq1[8*b +: 8]);
+    end
+
     always_ff @(posedge clk) begin                 // Synchronous reset.
         if (srst) begin
             state           <= C_IDLE;
@@ -271,7 +294,6 @@ module mlkem_ctrl (
             ptr_b           <= '0;
             ptr_c           <= '0;
             len             <= '0;
-            fcnt            <= '0;
             rp              <= '0;
             rd_left         <= '0;
             rd_b            <= 1'b0;
@@ -312,6 +334,7 @@ module mlkem_ctrl (
             buf_en          <= 1'b0;
             buf_we          <= '0;
         end else begin
+            if (cmp_valid && |cmp_diff) flag <= 1'b1;
             alu_start <= 1'b0;
             up_start  <= 1'b0;
             pk_start  <= 1'b0;
@@ -334,7 +357,7 @@ module mlkem_ctrl (
                 buf_we <= 4'b1111;
                 if (wr_copy) begin
                     buf_addr <= is_csel ? ptr_c[12:2] : ptr_b[12:2];
-                    buf_din  <= fq[0];
+                    buf_din  <= fq0;
                 end else if (wr_sqz) begin
                     buf_addr <= ptr_a[12:2];
                     buf_din  <= h_squeeze_data[31:0];
@@ -356,19 +379,6 @@ module mlkem_ctrl (
                 if (state == C_CMP)
                     rd_b <= !rd_b;
             end
-            begin
-                logic [2:0] np;             // Entries left after the pop.
-                np = fcnt - (pop2 ? 3'd2 : pop1 ? 3'd1 : 3'd0);
-                for (int i = 0; i < FDEPTH; i++) begin
-                    if (pop2)
-                        fq[i] <= (i + 2 < FDEPTH) ? fq[i + 2] : fq[i];
-                    else if (pop1)
-                        fq[i] <= (i + 1 < FDEPTH) ? fq[i + 1] : fq[i];
-                end
-                if (rp[2])
-                    fq[np] <= buf_dout;
-                fcnt <= np + 3'(rp[2]);
-            end
 
             if (rst_q) begin
                 state        <= C_IDLE;
@@ -377,7 +387,6 @@ module mlkem_ctrl (
                 status_error <= 1'b0;
                 error_code   <= '0;
                 cycle_count  <= '0;
-                fcnt         <= '0;
                 rp           <= '0;
                 rs_on        <= 1'b0;
                 units_clr    <= 1'b1;
@@ -425,7 +434,6 @@ module mlkem_ctrl (
                         rd_b      <= (f_op == OP_CSEL) && flag;
                         rs_on     <= (f_op == OP_HABS || f_op == OP_CMP || f_op == OP_COPY ||
                                       f_op == OP_CSEL || f_op == OP_DECODE);
-                        fcnt      <= '0;
                         ptr_a     <= eff(f_a, in_base, out_base);
                         ptr_b     <= eff(f_b, in_base, out_base);
                         ptr_c     <= eff(f_c, in_base, out_base);
@@ -511,8 +519,6 @@ module mlkem_ctrl (
                     end
 
                     C_CMP: if (pop2) begin
-                        if (fq[0] != fq[1])
-                            flag <= 1'b1;
                         len <= len - 16'd1;
                         if (len == 16'd1) begin
                             rs_on <= 1'b0;

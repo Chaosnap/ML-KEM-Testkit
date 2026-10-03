@@ -1,0 +1,8 @@
+period_ns 10
+wns_ns 0.093
+whs_ns 0.036
+sys_wns_ns 1.478
+sys_fmax_estimate_mhz 117.3
+core_period_ns 4.854
+core_wns_ns 0.093
+core_fmax_estimate_mhz 210.0

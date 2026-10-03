@@ -1,0 +1,25 @@
+SHAKE128 block: 70 cycles (21 lanes + 1 + 48 permutation cycles)
+tb_sponge: 104 vectors, 11803 output bytes checked, 0 errors
+TB_SPONGE PASS
+tb_pack: 34944 bytes checked, 0 errors
+TB_PACK PASS
+TB_UNPACK PASS
+TB_WORD_FIFO PASS cycles=12000 push=5866 pop2=676 simultaneous=2559 full=44 clear=124
+TB_KECCAK_COMPAT PASS 5 known answers, 24 cycles each
+  ML-KEM-768 decapsulation            10/10  PASS (cycles min 26270 max 26363)
+  ML-KEM-768 encapsulation            25/25  PASS
+  ML-KEM-768 encapsulationKeyCheck    10/10  PASS
+  ML-KEM-768 keyGen                   25/25  PASS
+  OP_MODE 3 -> error 1                 1/1   PASS
+  SEC_LEVEL 1024 -> error 1            3/3   PASS
+  SEC_LEVEL 512 -> error 1             3/3   PASS
+  SEC_LEVEL 999 -> error 1             3/3   PASS
+
+ACVP ML-KEM-768 60/60 PASS
+SIM_ACVP PASS
+IMPLICIT_REJECTION_BOUNDARY PASS 16/16
+KeyGen: 16655 core cycles
+Decaps: 26363 core cycles
+TB_CDC PASS
+TVLA model build PASS
+CORE206 RTL CHECKS PASS (physical timing/resource use not measured)

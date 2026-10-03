@@ -1,5 +1,5 @@
 # System test of axil_cdc: 100 MHz AXI-Lite master -> axil_cdc ->
-# pqc_mlkem_top on a 206.25 MHz clock (registers, byte strobes, ACVP KeyGen
+# pqc_mlkem_top on a 206 MHz clock (registers, byte strobes, ACVP KeyGen
 # and Decaps through the crossing). Verilator: the whole core is too slow
 # for Icarus.
 #

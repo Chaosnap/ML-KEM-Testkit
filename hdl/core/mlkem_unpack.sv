@@ -22,6 +22,8 @@
 //   S1  3-slot chunk queue {q2,q1,q0} and bit pointer p into q0; p + w and
 //       p + 2w are kept in registers; fields are read from the registered
 //       window {q1,q0} at p and p + w
+//   S1b byte selection is registered before the remaining 0..7 bit shift;
+//       one extra cycle of latency, still up to two fields per cycle
 //   S2  q * field for Decompress (shift-add); SampleNTT accept, CBD, d=12
 //   S3  Decompress rounding add
 //   S4  Decompress shift, select the mode's result
@@ -91,6 +93,9 @@ module mlkem_unpack (
     logic [6:0]  p, pw1, pw2;       // p (< 64), p + w, p + 2w.
     logic [6:0]  lim1, lim2;        // 64 - w, 64 - 2w.
     logic        ge1, gt1, ge2, gt2;   // p >= / > lim1, lim2 (registered with p).
+    logic [18:0] bytewin0, bytewin1; // 12 field bits + up to 7 alignment bits.
+    logic [2:0] bitpos0, bitpos1;
+    logic bv0, bv1;
     logic [11:0] f0, f1;            // S2 inputs.
     logic        fv0, fv1;
     (* use_dsp = "no" *) logic [23:0] qf0, qf1;   // S3 inputs: q * field ...
@@ -134,8 +139,13 @@ module mlkem_unpack (
     assign win = {q1, q0};
 
     always_ff @(posedge clk) begin
-        f0 <= 12'(win >> p) & wmask;
-        f1 <= 12'(win >> pw1) & wmask;
+        // Split the wide barrel selector from fine alignment and masking.
+        bytewin0 <= 19'(win >> {p[6:3], 3'b000});
+        bytewin1 <= 19'(win >> {pw1[6:3], 3'b000});
+        bitpos0 <= p[2:0];
+        bitpos1 <= pw1[2:0];
+        f0 <= 12'(bytewin0 >> bitpos0) & wmask;
+        f1 <= 12'(bytewin1 >> bitpos1) & wmask;
     end
 
     // ---------------------------------------------------------------------
@@ -213,6 +223,8 @@ module mlkem_unpack (
             v2        <= 1'b0;
             want_q    <= 1'b0;
             need_q    <= 2'd0;
+            bv0       <= 1'b0;
+            bv1       <= 1'b0;
             fv0       <= 1'b0;
             fv1       <= 1'b0;
             gv0       <= 1'b0;
@@ -284,6 +296,8 @@ module mlkem_unpack (
                 gt1         <= 1'b0;
                 ge2         <= 1'b0;
                 gt2         <= 1'b0;
+                bv0         <= 1'b0;
+                bv1         <= 1'b0;
                 fv0         <= 1'b0;
                 fv1         <= 1'b0;
                 gv0         <= 1'b0;
@@ -334,8 +348,10 @@ module mlkem_unpack (
                     need_q <= (count < 9'd256) ? 2'd2 : 2'd0;
                 else
                     need_q <= (ext_n <= 9'd254) ? 2'd2 : (ext_n == 9'd255) ? 2'd1 : 2'd0;
-                fv0 <= (k != 2'd0);
-                fv1 <= (k == 2'd2);
+                bv0 <= (k != 2'd0);
+                bv1 <= (k == 2'd2);
+                fv0 <= bv0;
+                fv1 <= bv1;
                 // S2 .. S4.
                 gv0 <= fv0;
                 gv1 <= fv1;

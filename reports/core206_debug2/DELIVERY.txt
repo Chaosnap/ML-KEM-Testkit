@@ -1,0 +1,6 @@
+ROUND 2 FINAL: 206 MHz core / 100 MHz UART
+WNS +0.093 ns; WHS +0.036 ns; WPWS +1.177 ns; all failing endpoints 0.
+Core: 7248 LUT, 4623 FF, 3 RAMB36, 2 DSP.
+Source hashes verified against implementation inputs.
+No bitstream generated; implemented.dcp is the routed checkpoint.
+See ../../docs/CORE_206MHZ_ROUND2.md.

@@ -5,7 +5,7 @@
 //
 // Clocks:
 //   clk     100 MHz board oscillator: UART, bridge, LEDs
-//   clk_core 206.25 MHz from an MMCM (100 MHz / 2 * 20.625 / 5): the whole
+//   clk_core 206.00 MHz from an MMCM (100 MHz / 5 * 51.5 / 5): the whole
 //            ML-KEM core; axil_cdc crosses the AXI-Lite bus between them.
 //
 // Pin assignments:
@@ -47,13 +47,13 @@ module arty_a7_top #(
 
     assign clk = clk_100mhz;
 
-    // Core clock: VCO = 100 MHz / 2 * 20.625 = 1031.25 MHz, / 5 = 206.25 MHz.
+    // Core clock: VCO = 100 MHz / 5 * 51.5 = 1030 MHz, / 5 = 206.00 MHz.
     logic clk_core, clk_core_mmcm, mmcm_fb, mmcm_locked;
 
     MMCME2_BASE #(
         .CLKIN1_PERIOD    (10.0),
-        .DIVCLK_DIVIDE    (2),
-        .CLKFBOUT_MULT_F  (20.625),
+        .DIVCLK_DIVIDE    (5),
+        .CLKFBOUT_MULT_F  (51.5),
         .CLKOUT0_DIVIDE_F (5.0)
     ) u_mmcm (
         .CLKIN1   (clk_100mhz),

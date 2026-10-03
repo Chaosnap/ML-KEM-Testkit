@@ -4,6 +4,10 @@ An open-source toolkit for testing and validating post-quantum cryptography impl
 
 Brings together software PQC validation, FPGA-in-the-loop testing, HDL building blocks, side-channel analysis, and a curated research bibliography in one place. Built for hardware engineers, security researchers, and anyone working on PQC hardware adoption.
 
+## ML-KEM core: 206 MHz RTL update
+
+See [the core change and validation report](docs/CORE_206MHZ_REVIEW.md). UART remains at 100 MHz. Round 2 passes routed timing at 206 MHz (WNS +0.093 ns, WHS +0.036 ns); the core uses 7248 LUTs, 4623 FFs, 3 RAMB36s and 2 DSPs. See [the delivery notes](docs/CORE_206MHZ_ROUND2.md).
+
 ## What's in the box
 
 | Layer | What you get |

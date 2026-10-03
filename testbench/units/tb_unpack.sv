@@ -3,7 +3,7 @@
 // Byte streams from gen_vectors.py are fed through the chunk source
 // interface (8-byte chunks) with random stalls; the
 // poly RAM writes are captured and compared with the Python reference:
-//   DECODE d in {1,4,5,10,11,12}: Decompress_d(ByteDecode_d), every field
+//   DECODE d in {1..12}: Decompress_d(ByteDecode_d), every field
 //          value covered; d = 12 also counts range_err (modulus check)
 //   SAMPLE: SampleNTT (Algorithm 7) on random 672-byte strings
 //   CBD eta in {2,3}: SamplePolyCBD_eta (Algorithm 8)
@@ -20,10 +20,7 @@ module tb_unpack;
 
     // d values under test (function: Icarus has no unpacked array parameters).
     function automatic int ds(input int i);
-        case (i)
-            0: return 1;   1: return 4;   2: return 5;
-            3: return 10;  4: return 11;  default: return 12;
-        endcase
+        return i + 1;
     endfunction
 
     logic        clk = 1'b0;
@@ -135,7 +132,7 @@ module tb_unpack;
         rst_n = 1'b1;
 
         // DECODE.
-        for (int di = 0; di < 6; di++) begin
+        for (int di = 0; di < 12; di++) begin
             int dd, np;
             dd = ds(di);
             np = ((1 << dd) / 256 < 2) ? 2 : (1 << dd) / 256;

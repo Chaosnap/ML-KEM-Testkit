@@ -3,12 +3,16 @@
 // The hash engine for every ML-KEM function: G (SHA3-512), H (SHA3-256),
 // J / PRF (SHAKE256) and XOF (SHAKE128). Absorb and squeeze move up to one
 // 64-bit lane (8 bytes) per cycle. The sponge keeps a single 1600-bit
-// state and runs keccak_round on it in place, one round per cycle.
+// state and runs each Keccak round in two fixed cycles: register the
+// 320-bit theta correction, then apply theta/rho/pi/chi/iota in place.
+// During a permutation, the idle absorb/squeeze registers hold 256 of
+// those correction bits; only 64 extra data flip-flops are required.
 //
 // All handshake outputs (idle, absorb_ready, squeeze_valid / data / avail)
 // come straight from registers, and accepted commands are registered
 // before they touch the state, so the 1600 state flip-flops only see the
-// round function, a registered XOR term and registered control (> 200 MHz).
+// shortened round path, a registered XOR term and registered control.
+// This is ordinary timing pipelining, not a side-channel countermeasure.
 //
 // Usage:
 //   1. Pulse init with mode (0=SHA3-256, 1=SHA3-512, 2=SHAKE128, 3=SHAKE256)
@@ -23,7 +27,7 @@
 //      squeeze_avail, or 4 when squeeze_avail is 8. SHAKE output is unbounded.
 //
 // Timing: a full SHAKE128 block absorbed one lane per cycle takes
-// 21 + 1 + 24 = 46 cycles until absorb_ready returns.
+// 21 + 1 + 48 = 70 cycles until absorb_ready returns.
 
 module keccak_sponge (
     input  logic        clk,
@@ -57,10 +61,16 @@ module keccak_sponge (
     logic [4:0]    round;
     (* max_fanout = 16 *) logic running;     // Permutation in progress.
 
-    keccak_round u_round (
+    logic [319:0] theta_delta, theta_q;
+    logic [63:0] theta_hi;
+    (* max_fanout = 32 *) logic round_apply; // 0: capture D[x], 1: commit the round.
+
+    keccak_round #(.PRECOMPUTED_THETA(1'b1)) u_round (
         .s_in  (st),
         .round (round),
-        .s_out (st_round)
+        .s_out (st_round),
+        .theta_saved (theta_q),
+        .theta_delta (theta_delta)
     );
 
     // Mode.
@@ -86,10 +96,18 @@ module keccak_sponge (
 
     // Squeeze: squeeze_data holds lane li, nx1 / nx2 the next two lanes
     // (lookahead, so a take never waits for the lane select).
-    logic [4:0]  li_p1, li_p3;  // Index of the lane in nx1; next lane to fetch.
+    logic [4:0] li_p1; // Index of the lane in nx1.
+    // Registered one-hot prefetch index: avoids binary decode on the
+    // state -> nx2 feedback path. Shifts to zero beyond the rate lanes.
+    (* max_fanout = 32 *) logic [20:0] fetch_sel;
     logic [4:0]  nlanes;        // rate / 8.
     logic        sq_load;       // Load lanes 0, 1, 2 after a permutation.
     logic [63:0] nx1, nx2;
+
+    // These registers are never externally valid while running. Reuse them
+    // for D[x], which avoids a separate 320-bit pipeline bank. The state XOR
+    // command has already been consumed before the first theta capture.
+    assign theta_q = {theta_hi, nx2, nx1, squeeze_data, x_data};
 
     // Ready / idle are registers.
     logic        ab_rdy;
@@ -115,13 +133,13 @@ module keccak_sponge (
         for (int i = 0; i < 21; i++)
             lane_oh[i] = (lane == 5'(i));
 
-    // Lane li_p3 of the state (fetched into nx2).
+    // Parallel one-hot lane select, rather than a 21-arm priority chain.
+    // Unused indices return zero. The result is registered in nx2.
     logic [63:0] fetch_lane;
     always_comb begin
         fetch_lane = '0;
         for (int i = 0; i < 21; i++)
-            if (li_p3 == 5'(i))
-                fetch_lane = st[64 * i +: 64];
+            fetch_lane |= st[64 * i +: 64] & {64{fetch_sel[i]}};
     end
 
     always_ff @(posedge clk) begin
@@ -134,13 +152,14 @@ module keccak_sponge (
             rem           <= 8'd136;
             running       <= 1'b0;
             round         <= '0;
+            round_apply   <= 1'b0;
             x_en          <= '0;
             x_pad         <= '0;
             x_go          <= 1'b0;
             init_q        <= 1'b0;
             ab_rdy        <= 1'b0;
             li_p1         <= 5'd1;
-            li_p3         <= 5'd3;
+            fetch_sel     <= 21'b1000;
             nlanes        <= 5'd17;
             sq_load       <= 1'b0;
             squeeze_valid <= 1'b0;
@@ -151,21 +170,27 @@ module keccak_sponge (
             x_go   <= 1'b0;
             init_q <= 1'b0;
 
-            // Permutation.
+            // Two deterministic clocks per round; state is held during
+            // theta capture. Absorb/squeeze are inactive throughout.
+            if (running && !round_apply)
+                {theta_hi, nx2, nx1, squeeze_data, x_data} <= theta_delta;
             if (running) begin
-                round <= round + 5'd1;
-                if (round == 5'd23) begin
-                    running <= 1'b0;
-                    if (squeezing) begin
-                        sq_load <= 1'b1;        // Load lanes 0..2 next cycle.
-                    end else begin
-                        ab_rdy  <= 1'b1;
+                round_apply <= !round_apply;
+                if (round_apply) begin
+                    round <= round + 5'd1;
+                    if (round == 5'd23) begin
+                        running <= 1'b0;
+                        if (squeezing)
+                            sq_load <= 1'b1;    // Load lanes 0..2 next cycle.
+                        else
+                            ab_rdy <= 1'b1;
                     end
                 end
             end
             if (x_go) begin
-                running <= 1'b1;
-                round   <= '0;
+                running     <= 1'b1;
+                round       <= '0;
+                round_apply <= 1'b0;
             end
 
             // Squeeze output register.
@@ -177,20 +202,21 @@ module keccak_sponge (
                 squeeze_avail <= 4'd8;
                 squeeze_valid <= 1'b1;
                 li_p1         <= 5'd1;
-                li_p3         <= 5'd3;
+                fetch_sel     <= 21'b1000;
             end else if (do_take) begin
                 if (squeeze_n == squeeze_avail) begin   // Lane used up.
                     if (li_p1 == nlanes) begin
                         squeeze_valid <= 1'b0;
                         running       <= 1'b1;          // Next block.
                         round         <= '0;
+                        round_apply   <= 1'b0;
                     end else begin
                         squeeze_data  <= nx1;
                         nx1           <= nx2;
                         nx2           <= fetch_lane;
                         squeeze_avail <= 4'd8;
                         li_p1         <= li_p1 + 5'd1;
-                        li_p3         <= li_p3 + 5'd1;
+                        fetch_sel     <= {fetch_sel[19:0], 1'b0};
                     end
                 end else begin                          // Low half taken.
                     squeeze_data  <= squeeze_data >> 32;
@@ -241,18 +267,31 @@ module keccak_sponge (
         end
     end
 
-    // State (no reset: HINIT clears it before every use). Only registered
-    // controls and data reach these 1600 flip-flops.
-    always_ff @(posedge clk) begin
-        if (init_q)
-            st <= '0;
-        else if (running)
-            st <= st_round;
-        else
-            for (int i = 0; i < 21; i++)
-                st[64 * i +: 64] <= st[64 * i +: 64]
-                                  ^ (x_en[i] ? x_data : 64'h0)
-                                  ^ {x_pad[i], 63'h0};
+    // State (no reset: HINIT clears it before every use). Express lane
+    // enables explicitly, so inactive absorb lanes do not need a masked XOR
+    // feedback datapath. The 256 capacity bits only change on init/rounds.
+    for (genvar l = 0; l < 25; l++) begin : g_state
+        if (l < 21) begin : g_rate
+            always_ff @(posedge clk) begin
+                if (init_q)
+                    st[64*l +: 64] <= '0;
+                else if (running && round_apply)
+                    st[64*l +: 64] <= st_round[64*l +: 64];
+                else begin
+                    if (x_en[l])
+                        st[64*l +: 63] <= st[64*l +: 63] ^ x_data[62:0];
+                    if (x_en[l] || x_pad[l])
+                        st[64*l+63] <= st[64*l+63] ^ (x_en[l] && x_data[63]) ^ x_pad[l];
+                end
+            end
+        end else begin : g_capacity
+            always_ff @(posedge clk) begin
+                if (init_q)
+                    st[64*l +: 64] <= '0;
+                else if (running && round_apply)
+                    st[64*l +: 64] <= st_round[64*l +: 64];
+            end
+        end
     end
 
 endmodule

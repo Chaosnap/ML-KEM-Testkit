@@ -26,8 +26,8 @@ import random
 import sys
 
 Q = 3329
-PACK_DS = [1, 4, 5, 10, 11, 12]
-UNPACK_DS = [1, 4, 5, 10, 11, 12]
+PACK_DS = list(range(1, 13))
+UNPACK_DS = list(range(1, 13))
 NP_SAMPLE, SAMPLE_BYTES = 8, 672
 NP_CBD = 4
 

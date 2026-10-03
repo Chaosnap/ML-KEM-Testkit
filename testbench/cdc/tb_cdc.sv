@@ -1,7 +1,7 @@
 // tb_cdc.sv - System test of axil_cdc with pqc_mlkem_top on its own clock
 //
 // AXI-Lite master on s_clk (100 MHz) -> axil_cdc -> pqc_mlkem_top on m_clk
-// (206.25 MHz, unrelated phase). Checks register write/read-back, a
+// (206 MHz, unrelated phase). Checks register write/read-back, a
 // byte-strobe write into the data buffer, and full ML-KEM-768 KeyGen and
 // Decaps with the first ACVP vectors (gen_vectors.py), reading results
 // back through the crossing. Prints "TB_CDC PASS" on success.
@@ -17,7 +17,7 @@ module tb_cdc;
     always #5000 s_clk = ~s_clk;            // 100 MHz
     initial begin
         #1234;
-        forever #2424 m_clk = ~m_clk;       // ~206.3 MHz
+        forever #(500000.0/206.0) m_clk = ~m_clk; // 206 MHz, rounded to 1 ps
     end
 
     // Master side (s_clk).

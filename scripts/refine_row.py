@@ -8,7 +8,7 @@ Reads (all written by scripts/vivado_reports.tcl / profile_ucode.py):
   fmax_5ns/summary.txt      optional: Fmax from the 5 ns run
 
 ENS = Slice + 100 * DSP + 200 * BRAM  (BRAM in RAMB36 equivalents)
-ATP = ENS * cycles / f   (f = core clock, default 206.25 MHz; ATP in ENS * ms)
+ATP = ENS * cycles / f   (f = core clock, default 206.0 MHz; ATP in ENS * ms)
 
 Usage:
   python3 scripts/refine_row.py reports/step0 --step 0 --acvp 60/60
@@ -41,7 +41,7 @@ def main():
     ap.add_argument("dir")
     ap.add_argument("--step", required=True)
     ap.add_argument("--acvp", default="60/60")
-    ap.add_argument("--mhz", type=float, default=206.25, help="core clock (MHz)")
+    ap.add_argument("--mhz", type=float, default=206.0, help="core clock (MHz)")
     args = ap.parse_args()
 
     u = util(os.path.join(args.dir, "utilization_u_mlkem.rpt"))

@@ -14,9 +14,9 @@ IVERILOG ?= iverilog
 VVP      ?= vvp
 IVFLAGS  := -g2012 -Wall -Wno-timescale -Wno-implicit-dimensions -Wno-sensitivity-entire-array -Wno-sensitivity-entire-vector
 
-.PHONY: all modmul pack unpack vectors clean
+.PHONY: all modmul pack unpack fifo keccak vectors clean
 
-all: modmul pack unpack
+all: modmul pack unpack fifo keccak
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -41,3 +41,13 @@ unpack: vectors
 
 clean:
 	rm -rf $(OUT)
+
+fifo: | $(OUT)
+	$(IVERILOG) $(IVFLAGS) -s tb_word_fifo -o $(OUT)/tb_word_fifo.vvp $(TB)/tb_word_fifo.sv $(RTL)/mlkem_word_fifo.sv
+	cd $(OUT) && $(VVP) -n tb_word_fifo.vvp | tee tb_word_fifo.log
+	@grep -q "TB_WORD_FIFO PASS" $(OUT)/tb_word_fifo.log
+
+keccak: | $(OUT)
+	$(IVERILOG) $(IVFLAGS) -s tb_keccak_compat -o $(OUT)/tb_keccak_compat.vvp $(TB)/tb_keccak_compat.sv $(RTL)/keccak_f1600.sv $(RTL)/keccak_round.sv
+	cd $(OUT) && $(VVP) -n tb_keccak_compat.vvp | tee tb_keccak_compat.log
+	@grep -q "TB_KECCAK_COMPAT PASS" $(OUT)/tb_keccak_compat.log

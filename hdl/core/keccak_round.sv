@@ -7,10 +7,17 @@
 // State layout (FIPS 202): lane A[x][y] = s[64*(x + 5*y) +: 64]; byte i of
 // the byte-oriented state is s[8*i +: 8].
 
-module keccak_round (
+// PRECOMPUTED_THETA separates the column correction from the rest of the
+// round. The sponge registers only 5 x 64 correction bits, not another
+// 1600-bit state. The standalone permutation retains its one-cycle round.
+module keccak_round #(
+    parameter bit PRECOMPUTED_THETA = 1'b0
+) (
     input  logic [1599:0] s_in,
     input  logic [4:0]    round,      // 0..23, selects the iota constant.
-    output logic [1599:0] s_out
+    output logic [1599:0] s_out,
+    input  logic [319:0]  theta_saved,
+    output logic [319:0]  theta_delta
 );
 
     // Round constants (iota).
@@ -60,26 +67,32 @@ module keccak_round (
         return (amt == 0) ? v : ((v << amt) | (v >> (64 - amt)));
     endfunction
 
+    // Theta correction D[x] = C[x-1] xor ROT(C[x+1], 1).
+    function automatic logic [319:0] theta_fn(input logic [1599:0] si);
+        logic [63:0] c [0:4];
+        logic [319:0] delta;
+        for (int x = 0; x < 5; x++)
+            c[x] = si[64*x +: 64] ^ si[64*(x+5) +: 64]
+                 ^ si[64*(x+10) +: 64] ^ si[64*(x+15) +: 64]
+                 ^ si[64*(x+20) +: 64];
+        for (int x = 0; x < 5; x++)
+            delta[64*x +: 64] = c[(x+4)%5] ^ rot64(c[(x+1)%5], 1);
+        return delta;
+    endfunction
+
     // Whole round as a function with local temporaries (no module-level
     // intermediate signals that a simulator could re-trigger on).
-    function automatic logic [1599:0] round_fn(input logic [1599:0] si, input logic [63:0] k);
+    function automatic logic [1599:0] round_fn(input logic [1599:0] si, input logic [63:0] k, input logic [319:0] delta);
         logic [63:0]   a [0:4][0:4];
         logic [63:0]   b [0:4][0:4];     // After theta, rho, pi.
-        logic [63:0]   c [0:4];
-        logic [63:0]   d [0:4];
         logic [1599:0] so;
         for (int x = 0; x < 5; x++)
             for (int y = 0; y < 5; y++)
                 a[x][y] = si[64 * (x + 5 * y) +: 64];
-        // Theta.
-        for (int x = 0; x < 5; x++)
-            c[x] = a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4];
-        for (int x = 0; x < 5; x++)
-            d[x] = c[(x + 4) % 5] ^ rot64(c[(x + 1) % 5], 1);
         // Rho + pi: B[y][2x+3y] = ROT(A[x][y] ^ D[x], r[x][y]).
         for (int x = 0; x < 5; x++)
             for (int y = 0; y < 5; y++)
-                b[y][(2 * x + 3 * y) % 5] = rot64(a[x][y] ^ d[x], rot_off(x, y));
+                b[y][(2 * x + 3 * y) % 5] = rot64(a[x][y] ^ delta[64*x +: 64], rot_off(x, y));
         // Chi + iota.
         for (int x = 0; x < 5; x++)
             for (int y = 0; y < 5; y++)
@@ -88,6 +101,8 @@ module keccak_round (
         return so;
     endfunction
 
-    assign s_out = round_fn(s_in, rc);
+    assign theta_delta = theta_fn(s_in);
+    assign s_out = round_fn(s_in, rc,
+                           PRECOMPUTED_THETA ? theta_saved : theta_delta);
 
 endmodule

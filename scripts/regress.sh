@@ -24,9 +24,9 @@ step "iverilog: keccak_sponge vs hashlib"
 make -s -C testbench/sponge 2>&1 | grep -E "^TB_|^tb_|block"
 grep -q PASS build/sponge/tb_sponge.log
 
-step "iverilog units: modmul (exhaustive), pack, unpack"
+step "iverilog units: modmul (exhaustive), pack, unpack, banked FIFO"
 make -s -C testbench/units all 2>&1 | grep -E "^TB_|^tb_"
-grep -q PASS build/units/tb_modmul.log && grep -q PASS build/units/tb_pack.log && grep -q PASS build/units/tb_unpack.log
+grep -q PASS build/units/tb_modmul.log && grep -q PASS build/units/tb_pack.log && grep -q PASS build/units/tb_unpack.log && grep -q PASS build/units/tb_word_fifo.log
 
 if command -v cocotb-config >/dev/null; then
     step "cocotb: Barrett (icarus), Keccak-f1600 (verilator)"
@@ -40,7 +40,7 @@ fi
 step "tvla_sim: Verilator model builds"
 make -s -C testbench/tvla_sim >/dev/null && echo "TVLA_SIM BUILD PASS"
 
-step "axil_cdc system test: 100 MHz master -> 206.25 MHz core (Verilator)"
+step "axil_cdc system test: 100 MHz master -> 206 MHz core (Verilator)"
 make -s -C testbench/cdc 2>&1 | grep -E "^TB_CDC|cycles"
 grep -q PASS build/cdc/tb_cdc.log
 
