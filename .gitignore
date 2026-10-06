@@ -58,3 +58,6 @@ reports/*/timing_failing.rpt
 
 # Simulation results: keep reports and figures, not the VCD waveforms (~65 MB each)
 sim_result/**/vcd/
+# Captured side-channel traces: large binary data, not source.
+sim_result/traces/
+hostlab/**/__pycache__/

@@ -15,8 +15,9 @@ uses 7248 LUTs, 4623 FFs, 3 RAMB36s and 2 DSPs.
 | NIST ACVP vectors on the board (UART) | `uv run python scripts/acvp_test.py uart -p <port>` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
 | NIST ACVP vectors on the RTL (Verilator) | `uv run python scripts/acvp_test.py sim` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
 | Simulated TVLA (plots + report) | `uv run python scripts/tvla_sim.py` | [docs/TVLA_SIM.md](docs/TVLA_SIM.md) |
+| Measured side-channel traces (board + scope) | `uv run python hostlab/capture.py run -p <port> -r <visa>` | [hostlab/README.md](hostlab/README.md) |
 
-Results are written to `sim_result/acvp/` and `sim_result/tvla/`.
+Results are written to `sim_result/acvp/`, `sim_result/tvla/` and `sim_result/traces/`.
 
 ## What's in the box
 

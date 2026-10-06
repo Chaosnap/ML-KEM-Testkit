@@ -1,4 +1,5 @@
-.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog acvp-sim acvp-uart regress simulate clean
+.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog acvp-sim acvp-uart \
+	capture-check capture-dry capture regress simulate clean
 
 # ML-KEM levels in the microcode ROM (the core supports 768 only).
 MLKEM_LEVELS ?= 768
@@ -50,6 +51,23 @@ acvp-sim:
 acvp-uart:
 	@test -n "$(PORT)" || (echo "usage: make acvp-uart PORT=<serial port>"; exit 2)
 	$(PY) scripts/acvp_test.py uart -p $(PORT)
+
+# Side-channel trace acquisition on the board (hostlab/README.md):
+#   make capture-check PORT=/dev/cu.usbserial-XXXXB
+#   make capture-dry   PORT=...                     # no instrument needed
+#   make capture       PORT=... SCOPE=TCPIP0::192.168.1.50::INSTR N=5000
+capture-check:
+	@test -n "$(PORT)" || (echo "usage: make capture-check PORT=<serial port>"; exit 2)
+	$(PY) hostlab/capture.py check -p $(PORT)
+
+capture-dry:
+	@test -n "$(PORT)" || (echo "usage: make capture-dry PORT=<serial port>"; exit 2)
+	$(PY) hostlab/capture.py dry-run -p $(PORT) -n $(or $(N),200) --detection-curve
+
+capture:
+	@test -n "$(PORT)" || (echo "usage: make capture PORT=<serial port> SCOPE=<visa resource>"; exit 2)
+	@test -n "$(SCOPE)" || (echo "usage: make capture PORT=<serial port> SCOPE=<visa resource>"; exit 2)
+	$(PY) hostlab/capture.py run -p $(PORT) -r $(SCOPE) -n $(or $(N),5000) --detection-curve
 
 # All simulation tests: Go, Icarus benches, unit tests, sponge, CDC system
 # test, TVLA model build, ACVP on the core.

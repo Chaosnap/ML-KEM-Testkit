@@ -7,3 +7,11 @@ dependencies = [
     "numpy>=2.0.2",
     "pyserial==3.5",
 ]
+
+# Instrument control for hostlab/ (only needed with a real oscilloscope):
+#   uv sync --extra scope
+[project.optional-dependencies]
+scope = [
+    "pyvisa>=1.14",
+    "pyvisa-py>=0.7",
+]
