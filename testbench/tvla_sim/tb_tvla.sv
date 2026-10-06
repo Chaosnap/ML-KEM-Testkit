@@ -2,7 +2,7 @@
 //
 // Runs one ML-KEM operation on pqc_mlkem_top and dumps a VCD of the core
 // for exactly the duration of the operation. Driven once per trace by
-// `pqc-testkit sca sim`; see docs/SIM_TVLA_GUIDE.md.
+// `pqc-testkit sca sim` (driven by scripts/tvla_sim.py); see docs/TVLA_SIM.md.
 //
 // Plusargs:
 //   +in=<file>   input bytes, one hex byte per line ($readmemh)

@@ -55,7 +55,7 @@ Outputs in --out:
 flow, which must not report leakage beyond chance.
 
 Build the model first:  make -C testbench/tvla_sim
-Guide:                  docs/SIM_TVLA_GUIDE.md
+Guide:                  docs/TVLA_SIM.md (driver: scripts/tvla_sim.py)
 
 The core has no masking, so leakage is expected: the result shows where an
 unprotected implementation leaks, not that it is secure.`,
@@ -307,7 +307,7 @@ func simulateTrace(i int, input []byte, op int, keepPath, tmpDir string) simResu
 	return simResult{index: i, trace: tr, cycles: cycles}
 }
 
-var romLineRE = regexp.MustCompile(`ADDR_W'\((\d+)\): data <= [^;]*;\s*//\s*(.*)$`)
+var romLineRE = regexp.MustCompile(`ADDR_W'\((\d+)\): (?:data|rom_q) <= [^;]*;\s*//\s*(.*)$`)
 
 // readROMText maps microcode addresses to their instruction comments.
 func readROMText(path string) map[uint64]string {

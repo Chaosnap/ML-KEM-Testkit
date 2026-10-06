@@ -114,7 +114,7 @@ Plenty to do on the software side.
 - **New algorithm support**: Add ML-KEM-512 via circl, or add FALCON/BIKE/HQC wrappers.
 - **Benchmarking improvements**: Add memory profiling, CPU profile export, comparison reports.
 - **SCA tooling**: Add CPA (Correlation Power Analysis) support to `pkg/sca/`, or add trace file importers for ChipWhisperer/Riscure formats.
-- **Documentation**: Improve `docs/GUIDE.md`, add examples, fix typos.
+- **Documentation**: Improve `docs/ACVP_TEST.md` / `docs/TVLA_SIM.md`, add examples, fix typos.
 
 ### Development workflow
 

@@ -55,3 +55,6 @@ __pycache__/
 
 # Full failing-path dumps (tens of MB); timing_groups.txt summarises them
 reports/*/timing_failing.rpt
+
+# Simulation results: keep reports and figures, not the VCD waveforms (~65 MB each)
+sim_result/**/vcd/

@@ -4,9 +4,19 @@ An open-source toolkit for testing and validating post-quantum cryptography impl
 
 Brings together software PQC validation, FPGA-in-the-loop testing, HDL building blocks, side-channel analysis, and a curated research bibliography in one place. Built for hardware engineers, security researchers, and anyone working on PQC hardware adoption.
 
-## ML-KEM core: 206 MHz RTL update
+## ML-KEM-768 core on the Arty A7
 
-See [the core change and validation report](docs/CORE_206MHZ_REVIEW.md). UART remains at 100 MHz. Round 2 passes routed timing at 206 MHz (WNS +0.093 ns, WHS +0.036 ns); the core uses 7248 LUTs, 4623 FFs, 3 RAMB36s and 2 DSPs. See [the delivery notes](docs/CORE_206MHZ_ROUND2.md).
+The core runs at 206 MHz (MMCM); the UART bridge stays at 100 MHz. Round 2
+passes routed timing at 206 MHz (WNS +0.093 ns, WHS +0.036 ns); the core
+uses 7248 LUTs, 4623 FFs, 3 RAMB36s and 2 DSPs.
+
+| Test | Command | Guide |
+|------|---------|-------|
+| NIST ACVP vectors on the board (UART) | `uv run python scripts/acvp_test.py uart -p <port>` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
+| NIST ACVP vectors on the RTL (Verilator) | `uv run python scripts/acvp_test.py sim` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
+| Simulated TVLA (plots + report) | `uv run python scripts/tvla_sim.py` | [docs/TVLA_SIM.md](docs/TVLA_SIM.md) |
+
+Results are written to `sim_result/acvp/` and `sim_result/tvla/`.
 
 ## What's in the box
 
@@ -157,7 +167,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details. Issue templates for [board s
 
 ## Full documentation
 
-- **[docs/GUIDE.md](docs/GUIDE.md)** - end-to-end guide from `git clone` to validated hardware
+- **[docs/ACVP_TEST.md](docs/ACVP_TEST.md)** - board bring-up and NIST ACVP testing over UART (and on the RTL)
+- **[docs/TVLA_SIM.md](docs/TVLA_SIM.md)** - simulated TVLA of the RTL
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - how to add boards, cores, or software features
 - **[CLAUDE.md](CLAUDE.md)** - project context for AI-assisted development
 

@@ -1,7 +1,10 @@
-.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog sim-acvp profile regress simulate clean
+.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog acvp-sim acvp-uart regress simulate clean
 
 # ML-KEM levels in the microcode ROM (the core supports 768 only).
 MLKEM_LEVELS ?= 768
+
+# Python of the project environment (pyproject.toml: pyserial, matplotlib, numpy).
+PY ?= uv run python
 
 # Build the CLI binary.
 build:
@@ -30,27 +33,35 @@ twiddle:
 ucode:
 	python3 scripts/gen_mlkem_ucode.py --levels $(MLKEM_LEVELS)
 
-# Simulation-based TVLA on the RTL (docs/SIM_TVLA_GUIDE.md).
-tvla-sim: build
-	$(MAKE) -C testbench/tvla_sim
-	./pqc-testkit sca sim --op decaps -n 200 -o build/tvla_sim
+# Simulated TVLA of the RTL, plots and report in sim_result/tvla/ (docs/TVLA_SIM.md).
+tvla-sim:
+	$(PY) scripts/tvla_sim.py
 
-# Icarus Verilog testbenches for UART + NTT, VCDs in build/sim/
-# (docs/IVERILOG_SIM_GUIDE.md).
+# Icarus Verilog testbenches for UART + NTT, VCDs in build/sim/.
 sim-iverilog:
 	$(MAKE) -C testbench/iverilog
 
-# ML-KEM-768 ACVP vectors on the RTL core in Verilator (testbench/core_sim).
-sim-acvp:
-	python3 scripts/sim_acvp.py
+# NIST ACVP ML-KEM-768 vectors on the RTL in Verilator, report in
+# sim_result/acvp/ (docs/ACVP_TEST.md).
+acvp-sim:
+	$(PY) scripts/acvp_test.py sim
 
-# Per-instruction cycle profile of KeyGen/Encaps/Decaps-768 from RTL simulation.
-profile:
-	python3 scripts/profile_ucode.py --op all
+# The same vectors on the FPGA board over UART:  make acvp-uart PORT=/dev/cu.usbserial-XXXX1
+acvp-uart:
+	@test -n "$(PORT)" || (echo "usage: make acvp-uart PORT=<serial port>"; exit 2)
+	$(PY) scripts/acvp_test.py uart -p $(PORT)
 
-# All simulation tests (Go, Icarus, cocotb if installed, ACVP on the core).
+# All simulation tests: Go, Icarus benches, unit tests, sponge, CDC system
+# test, TVLA model build, ACVP on the core.
 regress:
-	scripts/regress.sh
+	go test ./... -count=1
+	$(MAKE) -C testbench/iverilog all
+	$(MAKE) -C testbench/iverilog uart-link BAUD=1000000
+	$(MAKE) -C testbench/sponge
+	$(MAKE) -C testbench/units all
+	$(MAKE) -C testbench/cdc
+	$(MAKE) -C testbench/tvla_sim
+	$(PY) scripts/acvp_test.py sim
 
 # Run FPGA validation in simulation mode (no hardware needed).
 simulate:

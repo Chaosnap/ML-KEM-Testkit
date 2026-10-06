@@ -12,7 +12,7 @@
 // decodes the TX line independently and checks every response frame.
 //
 // Run:   make -C testbench/iverilog uart-link
-// Wave:  build/sim/tb_uart_link.vcd   (see docs/IVERILOG_SIM_GUIDE.md)
+// Wave:  build/sim/tb_uart_link.vcd
 
 module tb_uart_link;
 

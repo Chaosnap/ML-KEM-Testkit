@@ -11,7 +11,7 @@
 // the RTL constant ROM.
 //
 // Run:   make -C testbench/iverilog ntt
-// Wave:  build/sim/tb_ntt.vcd   (see docs/IVERILOG_SIM_GUIDE.md)
+// Wave:  build/sim/tb_ntt.vcd
 
 module tb_ntt;
 

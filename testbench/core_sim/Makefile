@@ -3,8 +3,8 @@
 #   make            build obj_dir/Vtb_core
 #   make clean
 #
-# Normally driven by scripts/sim_acvp.py and scripts/profile_ucode.py,
-# which rebuild it as needed.
+# Normally driven by scripts/acvp_test.py (sim target), which rebuilds it
+# as needed.
 
 VERILATOR ?= verilator
 SRCS := tb_core.sv $(wildcard ../../hdl/core/*.sv)

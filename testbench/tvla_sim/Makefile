@@ -1,4 +1,4 @@
-# Verilator model for simulation-based TVLA (see docs/SIM_TVLA_GUIDE.md).
+# Verilator model for simulation-based TVLA (see docs/TVLA_SIM.md).
 #
 #   make            build obj_dir/Vtb_tvla
 #   make clean

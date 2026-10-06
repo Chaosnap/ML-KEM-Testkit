@@ -6,7 +6,7 @@
 // One frame is 10 bits x 8.68 us, so the whole run is about 90 us.
 //
 // Run:   make -C testbench/iverilog uart
-// Wave:  build/sim/tb_uart.vcd   (see docs/IVERILOG_SIM_GUIDE.md)
+// Wave:  build/sim/tb_uart.vcd
 
 module tb_uart;
 

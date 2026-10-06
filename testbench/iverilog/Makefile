@@ -7,7 +7,6 @@
 #                                         # (long: ~15 ms simulated, 77 MB VCD)
 #   make -C testbench/iverilog uart-link BAUD=1000000   # faster link run
 #
-# See docs/IVERILOG_SIM_GUIDE.md for how to read the waveforms.
 
 ROOT  := $(abspath ../..)
 RTL   := $(ROOT)/hdl/core
