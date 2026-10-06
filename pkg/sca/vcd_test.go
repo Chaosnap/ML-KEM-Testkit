@@ -91,11 +91,61 @@ func TestReadVCDToggles(t *testing.T) {
 	}
 }
 
+func TestReadVCDSignalGroups(t *testing.T) {
+	groups := []SignalGroup{
+		{Name: "regs", Signals: []string{"u_a.r", "u_b.*"}},
+		{Name: "st", Signals: []string{"state", "u_a.state_in"}}, // One net, two names.
+	}
+	for _, tc := range []struct {
+		model PowerModel
+		want  map[string][]float64
+	}{
+		// r 00->0f (4); r 0f->80 (5) and q 111->011 (1).
+		{HammingDistance, map[string][]float64{"total": {6, 6, 0}, "regs": {4, 6, 0}, "st": {2, 0, 0}}},
+		// End of each cycle: state 0011 (2), r 0f (4) / 80 (1), q 111 (3) / 011 (2).
+		{HammingWeight, map[string][]float64{"total": {9, 5, 5}, "regs": {7, 3, 3}, "st": {2, 2, 2}}},
+	} {
+		tr, err := ReadVCDToggles(strings.NewReader(testVCD), VCDConfig{
+			Root: "tb.dut", Clock: "clk", Groups: groups, Model: tc.model,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(tr.Groups, ","); got != "total,top,u_a,u_b,regs,st" {
+			t.Fatalf("groups %s", got)
+		}
+		bits := map[string]int{"total": 15, "regs": 11, "st": 4}
+		for g, name := range tr.Groups {
+			if b, ok := bits[name]; ok && tr.Bits[g] != b {
+				t.Errorf("%s: %d bits, want %d", name, tr.Bits[g], b)
+			}
+			for c, v := range tc.want[name] {
+				if tr.Toggles[g][c] != v {
+					t.Errorf("%s %s cycle %d: %v, want %v", tc.model, name, c, tr.Toggles[g][c], v)
+				}
+			}
+		}
+	}
+}
+
+func TestParsePowerModel(t *testing.T) {
+	for s, want := range map[string]PowerModel{"hd": HammingDistance, "HW": HammingWeight} {
+		if m, err := ParsePowerModel(s); err != nil || m != want || !strings.EqualFold(m.String(), s) {
+			t.Errorf("%q: %v %v", s, m, err)
+		}
+	}
+	if _, err := ParsePowerModel("cpa"); err == nil {
+		t.Error("cpa: expected error")
+	}
+}
+
 func TestReadVCDTogglesErrors(t *testing.T) {
 	for _, cfg := range []VCDConfig{
 		{Root: "tb.nope", Clock: "clk"},
 		{Root: "tb.dut", Clock: "clock"},
 		{Root: "tb.dut", Clock: "clk", Probes: []string{"u_a.missing"}},
+		{Root: "tb.dut", Clock: "clk", Groups: []SignalGroup{{Name: "u_a", Signals: []string{"state"}}}},
+		{Root: "tb.dut", Clock: "clk", Groups: []SignalGroup{{Name: "g", Signals: []string{"u_c.*"}}}},
 	} {
 		if _, err := ReadVCDToggles(strings.NewReader(testVCD), cfg); err == nil {
 			t.Errorf("%+v: expected error", cfg)
@@ -143,5 +193,9 @@ func TestTTestAccumulatorUnequalLengths(t *testing.T) {
 	// Sample 2 has one trace per class: not enough for a variance.
 	if res.TValues[2] != 0 {
 		t.Errorf("sample 2: t = %v, want 0", res.TValues[2])
+	}
+	// Fixed class: {1,1}, {2,4}, {9}.
+	if v := acc.Variance(0); v[0] != 0 || v[1] != 2 || v[2] != 0 {
+		t.Errorf("fixed variance %v, want [0 2 0]", v)
 	}
 }

@@ -45,6 +45,18 @@ func (a *TTestAccumulator) Mean(class int) []float64 {
 	return append([]float64(nil), a.mean[class]...)
 }
 
+// Variance returns the per-sample (unbiased) variance of a class. Samples
+// with fewer than two traces of that class get 0.
+func (a *TTestAccumulator) Variance(class int) []float64 {
+	v := make([]float64, len(a.n[class]))
+	for s := range v {
+		if n := a.n[class][s]; n >= 2 {
+			v[s] = a.m2[class][s] / (n - 1)
+		}
+	}
+	return v
+}
+
 // Result returns the t-statistic at every sample point. Samples with fewer
 // than two traces in either class get t = 0.
 func (a *TTestAccumulator) Result() TVLAResult {

@@ -30,25 +30,34 @@ var (
 	simScope     string
 	simROM       string
 	simSanity    bool
+	simGroups    []string
+	simModel     string
 )
 
 var scaSimCmd = &cobra.Command{
 	Use:   "sim",
-	Short: "Simulation-based TVLA: Hamming-distance traces from RTL VCD waveforms",
+	Short: "Simulation-based TVLA: Hamming-distance / -weight traces from RTL VCD waveforms",
 	Long: `Pre-silicon leakage assessment of the ML-KEM-768 RTL.
 
 For every shuffled fixed/random vector the Verilator model in
 testbench/tvla_sim is run once and dumps a VCD of the core. Each VCD is
 turned into a simulated power trace: the number of signal bits that toggle
-in every clock cycle (Hamming-distance model), for the whole core and for
-each top-level instance. Gaussian noise (--noise, in toggles) is added and
-Welch's t-test is accumulated per cycle and per instance.
+in every clock cycle (Hamming-distance model, --model hd) or that are 1 at
+the end of it (Hamming-weight model, --model hw), for the whole core, for
+each top-level instance and for every --group. Gaussian noise (--noise, in
+bits) is added and Welch's t-test is accumulated per cycle and per group.
+
+--group NAME=SIG[,SIG...] (repeatable) adds a group of signals, e.g. the
+registers holding one intermediate value; paths are relative to --scope and
+a trailing * matches a prefix:
+  --group P1=u_alu.u_mul0.p1,u_alu.u_mul1.p1 --group P2=u_alu.p00d*
 
 Outputs in --out:
   vectors.csv         the inputs (index,class,input_hex)
   vcd/                the first --keep-vcd VCDs of each class, for GTKWave
-  tvla_t.csv          t per cycle: cycle,pc,instruction,t_total,t_<instance>...
-  tvla_mean.csv       mean toggles per cycle of both classes (total)
+  tvla_t.csv          t per cycle: cycle,pc,instruction,t_total,t_<instance>...,t_<group>...
+  tvla_mean.csv       mean and standard deviation per cycle of both classes:
+                      total, then each --group
   summary.txt         the report printed at the end
 
 --fixed-vs-fixed gives both classes the same input: a check of the whole
@@ -74,6 +83,28 @@ func init() {
 	f.StringVar(&simScope, "scope", "tb_tvla.dut", "VCD scope of the core")
 	f.StringVar(&simROM, "rom", "hdl/core/mlkem_ucode_rom.sv", "microcode ROM source, used to name instructions")
 	f.BoolVar(&simSanity, "fixed-vs-fixed", false, "sanity check: both classes use the fixed input, so no leakage may be reported")
+	f.StringArrayVar(&simGroups, "group", nil, "extra signal group NAME=SIG[,SIG...] relative to --scope (repeatable)")
+	f.StringVar(&simModel, "model", "hd", "power model: hd (Hamming distance, bits toggling per cycle) or hw (Hamming weight, bits at 1)")
+}
+
+// parseSignalGroups parses the --group flags.
+func parseSignalGroups(specs []string) ([]sca.SignalGroup, error) {
+	var out []sca.SignalGroup
+	for _, spec := range specs {
+		name, list, ok := strings.Cut(spec, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" || strings.TrimSpace(list) == "" {
+			return nil, fmt.Errorf("--group %q: want NAME=SIG[,SIG...]", spec)
+		}
+		g := sca.SignalGroup{Name: name}
+		for _, sig := range strings.Split(list, ",") {
+			if sig = strings.TrimSpace(sig); sig != "" {
+				g.Signals = append(g.Signals, sig)
+			}
+		}
+		out = append(out, g)
+	}
+	return out, nil
 }
 
 type simResult struct {
@@ -83,9 +114,16 @@ type simResult struct {
 	err    error
 }
 
-func runSCASim(cmd *cobra.Command, args []string) error {
+func runSCASim(cmd *cobra.Command, args []string) (err error) {
 	if _, err := os.Stat(simBinary); err != nil {
 		return fmt.Errorf("simulator %s not found; build it with: make -C testbench/tvla_sim", simBinary)
+	}
+	vcdCfg := sca.VCDConfig{Root: simScope, Clock: "clk", Probes: []string{"u_ctrl.pc"}}
+	if vcdCfg.Groups, err = parseSignalGroups(simGroups); err != nil {
+		return err
+	}
+	if vcdCfg.Model, err = sca.ParsePowerModel(simModel); err != nil {
+		return err
 	}
 	op, vectors, err := scaVectorsN(simNum)
 	if err != nil {
@@ -135,15 +173,15 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("Simulation TVLA: ML-KEM-768 %s%s, %d traces, noise sigma %.2f, %d jobs\n",
-		op, mode, len(vectors), simNoise, simJobs)
+	fmt.Printf("Simulation TVLA: ML-KEM-768 %s%s, %d traces, model %s, noise sigma %.2f, %d jobs\n",
+		op, mode, len(vectors), vcdCfg.Model, simNoise, simJobs)
 
 	jobs := make(chan int)
 	results := make(chan simResult)
 	for w := 0; w < max(1, simJobs); w++ {
 		go func() {
 			for i := range jobs {
-				results <- simulateTrace(i, vectors[i].Input, hwOp, keep[i], tmpDir)
+				results <- simulateTrace(i, vectors[i].Input, hwOp, keep[i], tmpDir, vcdCfg)
 			}
 		}()
 	}
@@ -156,6 +194,7 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 
 	accs := map[string]*sca.TTestAccumulator{}
 	var groups []string
+	var bits []int
 	var pc []uint64
 	minCyc, maxCyc := math.MaxInt, 0
 	start := time.Now()
@@ -169,7 +208,7 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if groups == nil {
-			groups = r.trace.Groups
+			groups, bits = r.trace.Groups, r.trace.Bits
 			for _, g := range groups {
 				accs[g] = &sca.TTestAccumulator{}
 			}
@@ -207,7 +246,8 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 		}
 		return 0, ""
 	}
-	if err := writeSimCSVs(groups, res, accs["total"], instr); err != nil {
+	extra := groups[len(groups)-len(vcdCfg.Groups):]
+	if err := writeSimCSVs(groups, res, accs, extra, instr); err != nil {
 		return err
 	}
 
@@ -216,12 +256,14 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(&sb, "seed: %s\n", scaSeedUsed)
 	fmt.Fprintf(&sb, "traces: %d (%d fixed, %d random), cycles per trace: %d..%d, noise sigma: %.2f toggles\n",
 		len(vectors), res["total"].NumFixed, res["total"].NumRandom, minCyc, maxCyc, simNoise)
+	fmt.Fprintf(&sb, "power model: %s\n", vcdCfg.Model)
 	if minCyc != maxCyc {
 		fmt.Fprintf(&sb, "note: trace lengths differ, so cycles after the first data-dependent\n"+
 			"      delay are misaligned between traces\n")
 	}
-	fmt.Fprintf(&sb, "\n%-10s %9s %8s %9s %9s  %s\n", "instance", "max|t|", "cycle", "leaky", "first", "instruction at max")
-	for _, g := range groups {
+	fmt.Fprintf(&sb, "\n%-12s %6s %9s %8s %9s %9s  %s\n", "group", "bits", "max|t|", "cycle", "leaky", "first",
+		"instruction at max")
+	for gi, g := range groups {
 		r := res[g]
 		leaky, first := 0, -1
 		for c, t := range r.TValues {
@@ -233,7 +275,7 @@ func runSCASim(cmd *cobra.Command, args []string) error {
 			}
 		}
 		_, text := instr(r.MaxAbsTIndex)
-		fmt.Fprintf(&sb, "%-10s %9.1f %8d %8.2f%% %9d  %s\n", g, r.MaxAbsT, r.MaxAbsTIndex,
+		fmt.Fprintf(&sb, "%-12s %6d %9.1f %8d %8.2f%% %9d  %s\n", g, bits[gi], r.MaxAbsT, r.MaxAbsTIndex,
 			100*float64(leaky)/float64(max(1, len(r.TValues))), first, text)
 	}
 	fmt.Fprintf(&sb, "\nleaky = share of cycles with |t| > %.1f; first = first such cycle (-1: none)\n",
@@ -265,7 +307,7 @@ func className(c int) string {
 var tvlaResultRE = regexp.MustCompile(`TVLA_RESULT status=(\d+) cycles=(\d+)`)
 
 // simulateTrace runs the Verilator model on one input and parses its VCD.
-func simulateTrace(i int, input []byte, op int, keepPath, tmpDir string) simResult {
+func simulateTrace(i int, input []byte, op int, keepPath, tmpDir string, cfg sca.VCDConfig) simResult {
 	memPath := filepath.Join(tmpDir, fmt.Sprintf("in_%04d.mem", i))
 	vcdPath := keepPath
 	if vcdPath == "" {
@@ -300,7 +342,7 @@ func simulateTrace(i int, input []byte, op int, keepPath, tmpDir string) simResu
 		return simResult{index: i, err: err}
 	}
 	defer f.Close()
-	tr, err := sca.ReadVCDToggles(f, sca.VCDConfig{Root: simScope, Clock: "clk", Probes: []string{"u_ctrl.pc"}})
+	tr, err := sca.ReadVCDToggles(f, cfg)
 	if err != nil {
 		return simResult{index: i, err: fmt.Errorf("parsing %s: %w", vcdPath, err)}
 	}
@@ -327,8 +369,8 @@ func readROMText(path string) map[uint64]string {
 	return text
 }
 
-func writeSimCSVs(groups []string, res map[string]sca.TVLAResult, total *sca.TTestAccumulator,
-	instr func(int) (uint64, string)) error {
+func writeSimCSVs(groups []string, res map[string]sca.TVLAResult, accs map[string]*sca.TTestAccumulator,
+	extra []string, instr func(int) (uint64, string)) error {
 	header := []string{"cycle", "pc", "instruction"}
 	for _, g := range groups {
 		header = append(header, "t_"+g)
@@ -351,11 +393,31 @@ func writeSimCSVs(groups []string, res map[string]sca.TVLAResult, total *sca.TTe
 		return err
 	}
 
-	mf, mr := total.Mean(0), total.Mean(1)
-	rows = [][]string{{"cycle", "mean_fixed", "mean_random"}}
-	for c := range mf {
-		rows = append(rows, []string{strconv.Itoa(c),
-			strconv.FormatFloat(mf[c], 'f', 2, 64), strconv.FormatFloat(mr[c], 'f', 2, 64)})
+	// Means and standard deviations: total, then every extra group.
+	std := func(a *sca.TTestAccumulator, class int) []float64 {
+		v := a.Variance(class)
+		for i := range v {
+			v[i] = math.Sqrt(v[i])
+		}
+		return v
+	}
+	header = []string{"cycle", "mean_fixed", "mean_random", "std_fixed", "std_random"}
+	means := [][]float64{accs["total"].Mean(0), accs["total"].Mean(1), std(accs["total"], 0), std(accs["total"], 1)}
+	for _, g := range extra {
+		header = append(header, "mean_fixed_"+g, "mean_random_"+g, "std_fixed_"+g, "std_random_"+g)
+		means = append(means, accs[g].Mean(0), accs[g].Mean(1), std(accs[g], 0), std(accs[g], 1))
+	}
+	rows = [][]string{header}
+	for c := range means[0] {
+		row := []string{strconv.Itoa(c)}
+		for _, m := range means {
+			v := 0.0
+			if c < len(m) {
+				v = m[c]
+			}
+			row = append(row, strconv.FormatFloat(v, 'f', 2, 64))
+		}
+		rows = append(rows, row)
 	}
 	return writeCSV(filepath.Join(simOut, "tvla_mean.csv"), rows)
 }
