@@ -1,3 +1,0 @@
-read_verilog -sv -formal -overwrite {workspace}/hdl/core/mlkem_modmul.sv
-design -reset-vlog; proc;
-write_json {workspace}/netlist/mlkem_modmul.json

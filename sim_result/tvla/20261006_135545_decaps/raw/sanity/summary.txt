@@ -1,0 +1,44 @@
+ML-KEM-768 decaps simulation TVLA, fixed-vs-fixed sanity check
+seed: 3c6697da0d6fbbb83cab31c85d0b2c7d8c014ae74dbfeff775c1d6e8c5071e11c643f1db73ffa0027a0ed5e568ea5d78d15c2312fe4e9f472122d78f3abbb34b
+traces: 200 (100 fixed, 100 random), cycles per trace: 26285..26285, noise sigma: 1.00 toggles
+power model: hd
+
+group          bits    max|t|    cycle     leaky     first  instruction at max
+total         10882       4.4     1818     0.00%        -1  NTT s6
+top            1057       4.0    10798     0.00%        -1  NTT s2
+u_alu          2581       4.7    23577     0.00%     23577  INTT s3
+u_csr           850       4.1     9022     0.00%        -1  NTT s1
+u_ctrl         1633       4.6    14893     0.00%     14893  SAMPLE -> s4
+u_dbuf          288       4.4    24849     0.00%        -1  ADD s3 + s5 -> s3
+u_pack          585       4.3    19144     0.00%        -1  SAMPLE -> s4
+u_polyram       168       4.7     1806     0.00%      1806  NTT s6
+u_sponge       4672       4.2    17577     0.00%        -1  INTT s3
+u_unpack        939       3.9     9191     0.00%        -1  NTT s1
+P1_p1            48       4.4    20201     0.00%        -1  BMUL s4 * s2 -> s3 (acc)
+P1_p2            48       5.1    15883     0.00%     15883  BMUL s4 * s1 -> s3 (acc)
+P1               96       4.6     3181     0.00%      3181  DECODE d=10 IN+3040 -> s6
+P2_r             24       4.3     3018     0.00%        -1  BMUL s7 * s6 -> s3 (acc)
+P2_basemul      204       4.4     2004     0.00%        -1  NTT s6
+P2_acc           72       4.1    23298     0.00%        -1  BMUL s6 * s2 -> s3 (acc)
+P2              300       4.2    23836     0.00%        -1  INTT s3
+P3_ls            24       4.2    15315     0.00%        -1  BMUL s4 * s0 -> s3
+P3_rb_din        24       4.2     5744     0.00%        -1  INTT s3
+P3               48       4.1    20576     0.00%        -1  INTT s3
+
+leaky = share of cycles with |t| > 4.5; first = first such cycle (-1: none)
+
+Top 10 microcode instructions by max|t| (total):
+   max|t|          cycles    pc  instruction
+      4.4    1713-2711      240  NTT s6
+      4.4    3279-4277      244  NTT s6
+      4.1   23419-24560     363  INTT s3
+      4.0    4702-5843      247  INTT s3
+      4.0   11619-11622     285  HINIT SHAKE128
+      3.9   20258-21399     349  INTT s3
+      3.7   22714-22994     360  BMUL s6 * s1 -> s3 (acc)
+      3.6   25716-26266     373  CMP OUT+256, IN+2400 len=1088
+      3.6    7590-8588      266  NTT s0
+      3.5    8801-9799      272  NTT s1
+
+RESULT: sanity check passed: no leakage between identical inputs
+outputs: /Users/yuki/Downloads/Vivado/ML_KEM_Test/ML-KEM-Testkit/sim_result/tvla/20261006_135545_decaps/raw/sanity/{tvla_t.csv,tvla_mean.csv,vectors.csv,vcd/}

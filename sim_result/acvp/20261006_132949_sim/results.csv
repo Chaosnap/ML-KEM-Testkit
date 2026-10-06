@@ -1,0 +1,81 @@
+group,tcId,result,op,sec_level,status,error_code,cycles,core_time_us,uart_seconds,detail,acvp_reason
+keygen,26,PASS,KeyGen,768,0x2,0,16655,80.85,,matches NIST,
+keygen,27,PASS,KeyGen,768,0x2,0,16661,80.88,,matches NIST,
+keygen,28,PASS,KeyGen,768,0x2,0,16645,80.80,,matches NIST,
+keygen,29,PASS,KeyGen,768,0x2,0,16643,80.79,,matches NIST,
+keygen,30,PASS,KeyGen,768,0x2,0,16633,80.74,,matches NIST,
+keygen,31,PASS,KeyGen,768,0x2,0,16649,80.82,,matches NIST,
+keygen,32,PASS,KeyGen,768,0x2,0,16654,80.84,,matches NIST,
+keygen,33,PASS,KeyGen,768,0x2,0,16703,81.08,,matches NIST,
+keygen,34,PASS,KeyGen,768,0x2,0,16669,80.92,,matches NIST,
+keygen,35,PASS,KeyGen,768,0x2,0,16643,80.79,,matches NIST,
+keygen,36,PASS,KeyGen,768,0x2,0,16659,80.87,,matches NIST,
+keygen,37,PASS,KeyGen,768,0x2,0,16659,80.87,,matches NIST,
+keygen,38,PASS,KeyGen,768,0x2,0,16653,80.84,,matches NIST,
+keygen,39,PASS,KeyGen,768,0x2,0,16637,80.76,,matches NIST,
+keygen,40,PASS,KeyGen,768,0x2,0,16672,80.93,,matches NIST,
+keygen,41,PASS,KeyGen,768,0x2,0,16668,80.91,,matches NIST,
+keygen,42,PASS,KeyGen,768,0x2,0,16637,80.76,,matches NIST,
+keygen,43,PASS,KeyGen,768,0x2,0,16631,80.73,,matches NIST,
+keygen,44,PASS,KeyGen,768,0x2,0,16663,80.89,,matches NIST,
+keygen,45,PASS,KeyGen,768,0x2,0,16647,80.81,,matches NIST,
+keygen,46,PASS,KeyGen,768,0x2,0,16659,80.87,,matches NIST,
+keygen,47,PASS,KeyGen,768,0x2,0,16654,80.84,,matches NIST,
+keygen,48,PASS,KeyGen,768,0x2,0,16643,80.79,,matches NIST,
+keygen,49,PASS,KeyGen,768,0x2,0,16640,80.78,,matches NIST,
+keygen,50,PASS,KeyGen,768,0x2,0,16650,80.83,,matches NIST,
+encaps,26,PASS,Encaps,768,0x2,0,19250,93.45,,matches NIST,
+encaps,27,PASS,Encaps,768,0x2,0,19245,93.42,,matches NIST,
+encaps,28,PASS,Encaps,768,0x2,0,19291,93.65,,matches NIST,
+encaps,29,PASS,Encaps,768,0x2,0,19235,93.37,,matches NIST,
+encaps,30,PASS,Encaps,768,0x2,0,19288,93.63,,matches NIST,
+encaps,31,PASS,Encaps,768,0x2,0,19242,93.41,,matches NIST,
+encaps,32,PASS,Encaps,768,0x2,0,19247,93.43,,matches NIST,
+encaps,33,PASS,Encaps,768,0x2,0,19209,93.25,,matches NIST,
+encaps,34,PASS,Encaps,768,0x2,0,19237,93.38,,matches NIST,
+encaps,35,PASS,Encaps,768,0x2,0,19244,93.42,,matches NIST,
+encaps,36,PASS,Encaps,768,0x2,0,19238,93.39,,matches NIST,
+encaps,37,PASS,Encaps,768,0x2,0,19299,93.68,,matches NIST,
+encaps,38,PASS,Encaps,768,0x2,0,19231,93.35,,matches NIST,
+encaps,39,PASS,Encaps,768,0x2,0,19205,93.23,,matches NIST,
+encaps,40,PASS,Encaps,768,0x2,0,19249,93.44,,matches NIST,
+encaps,41,PASS,Encaps,768,0x2,0,19226,93.33,,matches NIST,
+encaps,42,PASS,Encaps,768,0x2,0,19253,93.46,,matches NIST,
+encaps,43,PASS,Encaps,768,0x2,0,19215,93.28,,matches NIST,
+encaps,44,PASS,Encaps,768,0x2,0,19234,93.37,,matches NIST,
+encaps,45,PASS,Encaps,768,0x2,0,19218,93.29,,matches NIST,
+encaps,46,PASS,Encaps,768,0x2,0,19321,93.79,,matches NIST,
+encaps,47,PASS,Encaps,768,0x2,0,19239,93.39,,matches NIST,
+encaps,48,PASS,Encaps,768,0x2,0,19251,93.45,,matches NIST,
+encaps,49,PASS,Encaps,768,0x2,0,19228,93.34,,matches NIST,
+encaps,50,PASS,Encaps,768,0x2,0,19242,93.41,,matches NIST,
+decaps,86,PASS,Decaps,768,0x2,0,26363,127.98,,matches NIST,valid decapsulation
+decaps,87,PASS,Decaps,768,0x2,0,26303,127.68,,matches NIST,valid decapsulation
+decaps,88,PASS,Decaps,768,0x2,0,26278,127.56,,matches NIST,modified ciphertext
+decaps,89,PASS,Decaps,768,0x2,0,26322,127.78,,matches NIST,valid decapsulation
+decaps,90,PASS,Decaps,768,0x2,0,26298,127.66,,matches NIST,valid decapsulation
+decaps,91,PASS,Decaps,768,0x2,0,26314,127.74,,matches NIST,modified ciphertext
+decaps,92,PASS,Decaps,768,0x2,0,26270,127.52,,matches NIST,modified ciphertext
+decaps,93,PASS,Decaps,768,0x2,0,26308,127.71,,matches NIST,modified ciphertext
+decaps,94,PASS,Decaps,768,0x2,0,26309,127.71,,matches NIST,valid decapsulation
+decaps,95,PASS,Decaps,768,0x2,0,26278,127.56,,matches NIST,modified ciphertext
+ekcheck,136,PASS,Encaps,768,0x2,0,19231,93.35,,accepted as expected,valid encapsulation key
+ekcheck,137,PASS,Encaps,768,0x6,2,19217,93.29,,ERROR_CODE 2 as expected,noisy linear system values too large
+ekcheck,138,PASS,Encaps,768,0x6,2,19249,93.44,,ERROR_CODE 2 as expected,noisy linear system values too large
+ekcheck,139,PASS,Encaps,768,0x2,0,19253,93.46,,accepted as expected,valid encapsulation key
+ekcheck,140,PASS,Encaps,768,0x2,0,19235,93.37,,accepted as expected,valid encapsulation key
+ekcheck,141,PASS,Encaps,768,0x6,2,19295,93.67,,ERROR_CODE 2 as expected,noisy linear system values too large
+ekcheck,142,PASS,Encaps,768,0x6,2,19251,93.45,,ERROR_CODE 2 as expected,noisy linear system values too large
+ekcheck,143,PASS,Encaps,768,0x2,0,19244,93.42,,accepted as expected,valid encapsulation key
+ekcheck,144,PASS,Encaps,768,0x2,0,19252,93.46,,accepted as expected,valid encapsulation key
+ekcheck,145,PASS,Encaps,768,0x6,2,19222,93.31,,ERROR_CODE 2 as expected,noisy linear system values too large
+errors,SEC_LEVEL=512 KeyGen,PASS,KeyGen,512,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=512 Encaps,PASS,Encaps,512,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=512 Decaps,PASS,Decaps,512,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=1024 KeyGen,PASS,KeyGen,1024,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=1024 Encaps,PASS,Encaps,1024,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=1024 Decaps,PASS,Decaps,1024,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=999 KeyGen,PASS,KeyGen,999,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=999 Encaps,PASS,Encaps,999,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,SEC_LEVEL=999 Decaps,PASS,Decaps,999,0x4,1,0,,,ERROR_CODE 1 as expected,
+errors,OP_MODE=3,PASS,3,768,0x4,1,0,,,ERROR_CODE 1 as expected,

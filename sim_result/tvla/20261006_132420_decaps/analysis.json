@@ -1,0 +1,717 @@
+{
+ "params": {
+  "op": "decaps",
+  "traces": 200,
+  "noise": 1.0,
+  "noise_seed": 1,
+  "seed": "",
+  "invalid_random": false,
+  "keep_vcd": 1
+ },
+ "meta": {
+  "seed": "c0d04ba0fd08f064417e8f877619b0fb1ebb3579e333815108a0647df2b5de57850f328a1317f3d2d3df4b8ba1c40cb90d22f3d9b2a9b74eae9b709d43f5821c",
+  "traces": 200,
+  "fixed": 100,
+  "random": 100,
+  "cycles_min": 26298,
+  "cycles_max": 26298,
+  "noise": 1.0,
+  "title": "ML-KEM-768 decaps simulation TVLA"
+ },
+ "main": {
+  "cycles": 26311,
+  "noise_floor": 4.511705305463529,
+  "modules": {
+   "total": {
+    "max_t": 46.259,
+    "cycle": 23870,
+    "leaky_pct": 61.70423016989092,
+    "leaky_cycles": 16235,
+    "first": 8,
+    "instruction": "INTT s3"
+   },
+   "top": {
+    "max_t": 41.753,
+    "cycle": 16452,
+    "leaky_pct": 57.90353844399681,
+    "leaky_cycles": 15235,
+    "first": 9,
+    "instruction": "BMUL s4 * s2 -> s3 (acc)"
+   },
+   "u_alu": {
+    "max_t": 51.983,
+    "cycle": 23870,
+    "leaky_pct": 54.82497814602257,
+    "leaky_cycles": 14425,
+    "first": 153,
+    "instruction": "INTT s3"
+   },
+   "u_csr": {
+    "max_t": 4.583,
+    "cycle": 331,
+    "leaky_pct": 0.0038006917258941128,
+    "leaky_cycles": 1,
+    "first": 331,
+    "instruction": "NTT s6"
+   },
+   "u_ctrl": {
+    "max_t": 35.098,
+    "cycle": 6725,
+    "leaky_pct": 6.229333738740451,
+    "leaky_cycles": 1639,
+    "first": 9,
+    "instruction": "HABS IN+2400 len=1088"
+   },
+   "u_dbuf": {
+    "max_t": 33.906,
+    "cycle": 25861,
+    "leaky_pct": 3.804492417620007,
+    "leaky_cycles": 1001,
+    "first": 8,
+    "instruction": "CMP OUT+256, IN+2400 len=1088"
+   },
+   "u_pack": {
+    "max_t": 41.669,
+    "cycle": 5947,
+    "leaky_pct": 45.574094485196305,
+    "leaky_cycles": 11991,
+    "first": 153,
+    "instruction": "DECODE d=4 IN+3360 -> s6"
+   },
+   "u_polyram": {
+    "max_t": 43.64,
+    "cycle": 8834,
+    "leaky_pct": 54.79837330394132,
+    "leaky_cycles": 14418,
+    "first": 18,
+    "instruction": "NTT s1"
+   },
+   "u_sponge": {
+    "max_t": 37.346,
+    "cycle": 25863,
+    "leaky_pct": 4.693854281479229,
+    "leaky_cycles": 1235,
+    "first": 10,
+    "instruction": "CMP OUT+256, IN+2400 len=1088"
+   },
+   "u_unpack": {
+    "max_t": 43.351,
+    "cycle": 24738,
+    "leaky_pct": 6.981870700467486,
+    "leaky_cycles": 1837,
+    "first": 10,
+    "instruction": "CBD2 -> s5"
+   }
+  },
+  "classes": {
+   "HINIT": {
+    "cycles": 75,
+    "leaky": 41,
+    "max_t": 26.573,
+    "leaky_pct": 54.666666666666664
+   },
+   "(start)": {
+    "cycles": 1,
+    "leaky": 0,
+    "max_t": 0.852,
+    "leaky_pct": 0.0
+   },
+   "DECODE": {
+    "cycles": 1573,
+    "leaky": 959,
+    "max_t": 34.815,
+    "leaky_pct": 60.96630642085187
+   },
+   "NTT": {
+    "cycles": 5994,
+    "leaky": 3907,
+    "max_t": 42.171,
+    "leaky_pct": 65.18184851518185
+   },
+   "BMUL": {
+    "cycles": 4215,
+    "leaky": 2771,
+    "max_t": 42.094,
+    "leaky_pct": 65.74139976275208
+   },
+   "INTT": {
+    "cycles": 5710,
+    "leaky": 3718,
+    "max_t": 46.259,
+    "leaky_pct": 65.11383537653239
+   },
+   "SUB": {
+    "cycles": 265,
+    "leaky": 173,
+    "max_t": 29.811,
+    "leaky_pct": 65.28301886792453
+   },
+   "ENCODE": {
+    "cycles": 1350,
+    "leaky": 847,
+    "max_t": 36.12,
+    "leaky_pct": 62.74074074074074
+   },
+   "HABS": {
+    "cycles": 956,
+    "leaky": 626,
+    "max_t": 30.85,
+    "leaky_pct": 65.48117154811716
+   },
+   "HFIN": {
+    "cycles": 72,
+    "leaky": 11,
+    "max_t": 11.686,
+    "leaky_pct": 15.277777777777779
+   },
+   "HSQZ": {
+    "cycles": 124,
+    "leaky": 84,
+    "max_t": 31.361,
+    "leaky_pct": 67.74193548387096
+   },
+   "HABI": {
+    "cycles": 64,
+    "leaky": 21,
+    "max_t": 23.262,
+    "leaky_pct": 32.8125
+   },
+   "CBD": {
+    "cycles": 1295,
+    "leaky": 875,
+    "max_t": 39.472,
+    "leaky_pct": 67.56756756756756
+   },
+   "SAMPLE": {
+    "cycles": 2710,
+    "leaky": 1002,
+    "max_t": 33.406,
+    "leaky_pct": 36.974169741697416
+   },
+   "ADD": {
+    "cycles": 1325,
+    "leaky": 847,
+    "max_t": 30.188,
+    "leaky_pct": 63.924528301886795
+   },
+   "CMP": {
+    "cycles": 551,
+    "leaky": 345,
+    "max_t": 28.594,
+    "leaky_pct": 62.613430127041745
+   },
+   "CSEL": {
+    "cycles": 19,
+    "leaky": 7,
+    "max_t": 23.883,
+    "leaky_pct": 36.8421052631579
+   },
+   "END": {
+    "cycles": 12,
+    "leaky": 1,
+    "max_t": 7.272,
+    "leaky_pct": 8.333333333333334
+   }
+  },
+  "top": [
+   {
+    "pc": 363,
+    "instruction": "INTT s3",
+    "first": 23432,
+    "last": 24573,
+    "max_t": 46.259,
+    "peak_cycle": 23870,
+    "peak_t": -46.259,
+    "leaky_pct": 62.95971978984238
+   },
+   {
+    "pc": 244,
+    "instruction": "NTT s6",
+    "first": 3279,
+    "last": 4277,
+    "max_t": 42.171,
+    "peak_cycle": 3662,
+    "peak_t": 42.171,
+    "leaky_pct": 65.76576576576578
+   },
+   {
+    "pc": 238,
+    "instruction": "BMUL s7 * s6 -> s3",
+    "first": 1289,
+    "last": 1569,
+    "max_t": 42.094,
+    "peak_cycle": 1407,
+    "peak_t": -42.094,
+    "leaky_pct": 63.70106761565836
+   },
+   {
+    "pc": 240,
+    "instruction": "NTT s6",
+    "first": 1713,
+    "last": 2711,
+    "max_t": 40.238,
+    "peak_cycle": 2525,
+    "peak_t": 40.238,
+    "leaky_pct": 65.76576576576578
+   },
+   {
+    "pc": 349,
+    "instruction": "INTT s3",
+    "first": 20271,
+    "last": 21412,
+    "max_t": 39.858,
+    "peak_cycle": 21237,
+    "peak_t": -39.858,
+    "leaky_pct": 65.41155866900175
+   },
+   {
+    "pc": 271,
+    "instruction": "CBD2 -> s1",
+    "first": 8616,
+    "last": 8800,
+    "max_t": 39.472,
+    "peak_cycle": 8678,
+    "peak_t": 39.472,
+    "leaky_pct": 63.24324324324324
+   },
+   {
+    "pc": 247,
+    "instruction": "INTT s3",
+    "first": 4702,
+    "last": 5843,
+    "max_t": 38.348,
+    "peak_cycle": 5685,
+    "peak_t": -38.348,
+    "leaky_pct": 68.1260945709282
+   },
+   {
+    "pc": 236,
+    "instruction": "NTT s6",
+    "first": 147,
+    "last": 1145,
+    "max_t": 37.257,
+    "peak_cycle": 485,
+    "peak_t": 37.257,
+    "leaky_pct": 68.06806806806807
+   },
+   {
+    "pc": 246,
+    "instruction": "BMUL s7 * s6 -> s3 (acc)",
+    "first": 4421,
+    "last": 4701,
+    "max_t": 36.203,
+    "peak_cycle": 4693,
+    "peak_t": -36.203,
+    "leaky_pct": 65.83629893238434
+   },
+   {
+    "pc": 372,
+    "instruction": "ENCODE d=4 s3 -> OUT+1216",
+    "first": 25459,
+    "last": 25728,
+    "max_t": 36.12,
+    "peak_cycle": 25696,
+    "peak_t": -36.12,
+    "leaky_pct": 62.59259259259259
+   },
+   {
+    "pc": 297,
+    "instruction": "INTT s3",
+    "first": 12842,
+    "last": 13983,
+    "max_t": 35.973,
+    "peak_cycle": 13883,
+    "peak_t": -35.973,
+    "leaky_pct": 65.49912434325745
+   },
+   {
+    "pc": 265,
+    "instruction": "CBD2 -> s0",
+    "first": 7405,
+    "last": 7589,
+    "max_t": 35.78,
+    "peak_cycle": 7485,
+    "peak_t": 35.78,
+    "leaky_pct": 68.10810810810811
+   },
+   {
+    "pc": 336,
+    "instruction": "BMUL s4 * s0 -> s3",
+    "first": 18766,
+    "last": 19046,
+    "max_t": 35.763,
+    "peak_cycle": 18968,
+    "peak_t": -35.763,
+    "leaky_pct": 65.83629893238434
+   },
+   {
+    "pc": 322,
+    "instruction": "BMUL s4 * s2 -> s3 (acc)",
+    "first": 16278,
+    "last": 16558,
+    "max_t": 35.67,
+    "peak_cycle": 16302,
+    "peak_t": -35.67,
+    "leaky_pct": 68.32740213523132
+   },
+   {
+    "pc": 370,
+    "instruction": "DECODE d=1 0x1c60 -> s5",
+    "first": 25051,
+    "last": 25193,
+    "max_t": 34.815,
+    "peak_cycle": 25158,
+    "peak_t": 34.815,
+    "leaky_pct": 65.73426573426573
+   }
+  ]
+ },
+ "sanity": {
+  "cycles": 26293,
+  "noise_floor": 4.511553617778084,
+  "modules": {
+   "total": {
+    "max_t": 4.447,
+    "cycle": 4499,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "BMUL s7 * s6 -> s3 (acc)"
+   },
+   "top": {
+    "max_t": 4.029,
+    "cycle": 20694,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "INTT s3"
+   },
+   "u_alu": {
+    "max_t": 4.659,
+    "cycle": 19881,
+    "leaky_pct": 0.0038032936523028946,
+    "leaky_cycles": 1,
+    "first": 19881,
+    "instruction": "SAMPLE -> s4"
+   },
+   "u_csr": {
+    "max_t": 3.935,
+    "cycle": 15966,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "SAMPLE -> s4"
+   },
+   "u_ctrl": {
+    "max_t": 4.531,
+    "cycle": 14506,
+    "leaky_pct": 0.0038032936523028946,
+    "leaky_cycles": 1,
+    "first": 14506,
+    "instruction": "ENCODE d=10 s3 -> OUT+256"
+   },
+   "u_dbuf": {
+    "max_t": 4.562,
+    "cycle": 7023,
+    "leaky_pct": 0.0038032936523028946,
+    "leaky_cycles": 1,
+    "first": 7023,
+    "instruction": "HABS IN+2400 len=1088"
+   },
+   "u_pack": {
+    "max_t": 4.398,
+    "cycle": 21571,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "CBD2 -> s5"
+   },
+   "u_polyram": {
+    "max_t": 4.386,
+    "cycle": 4688,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "BMUL s7 * s6 -> s3 (acc)"
+   },
+   "u_sponge": {
+    "max_t": 4.104,
+    "cycle": 8358,
+    "leaky_pct": 0.0,
+    "leaky_cycles": 0,
+    "first": -1,
+    "instruction": "NTT s0"
+   },
+   "u_unpack": {
+    "max_t": 4.626,
+    "cycle": 24794,
+    "leaky_pct": 0.0038032936523028946,
+    "leaky_cycles": 1,
+    "first": 24794,
+    "instruction": "ADD s3 + s5 -> s3"
+   }
+  },
+  "classes": {
+   "HINIT": {
+    "cycles": 75,
+    "leaky": 0,
+    "max_t": 2.341,
+    "leaky_pct": 0.0
+   },
+   "(start)": {
+    "cycles": 1,
+    "leaky": 0,
+    "max_t": 0.127,
+    "leaky_pct": 0.0
+   },
+   "DECODE": {
+    "cycles": 1573,
+    "leaky": 0,
+    "max_t": 4.312,
+    "leaky_pct": 0.0
+   },
+   "NTT": {
+    "cycles": 5994,
+    "leaky": 0,
+    "max_t": 3.618,
+    "leaky_pct": 0.0
+   },
+   "BMUL": {
+    "cycles": 4215,
+    "leaky": 0,
+    "max_t": 4.447,
+    "leaky_pct": 0.0
+   },
+   "INTT": {
+    "cycles": 5710,
+    "leaky": 0,
+    "max_t": 3.725,
+    "leaky_pct": 0.0
+   },
+   "SUB": {
+    "cycles": 265,
+    "leaky": 0,
+    "max_t": 2.784,
+    "leaky_pct": 0.0
+   },
+   "ENCODE": {
+    "cycles": 1350,
+    "leaky": 0,
+    "max_t": 3.991,
+    "leaky_pct": 0.0
+   },
+   "HABS": {
+    "cycles": 956,
+    "leaky": 0,
+    "max_t": 3.308,
+    "leaky_pct": 0.0
+   },
+   "HFIN": {
+    "cycles": 72,
+    "leaky": 0,
+    "max_t": 2.484,
+    "leaky_pct": 0.0
+   },
+   "HSQZ": {
+    "cycles": 124,
+    "leaky": 0,
+    "max_t": 2.564,
+    "leaky_pct": 0.0
+   },
+   "HABI": {
+    "cycles": 64,
+    "leaky": 0,
+    "max_t": 2.384,
+    "leaky_pct": 0.0
+   },
+   "CBD": {
+    "cycles": 1295,
+    "leaky": 0,
+    "max_t": 3.663,
+    "leaky_pct": 0.0
+   },
+   "SAMPLE": {
+    "cycles": 2692,
+    "leaky": 0,
+    "max_t": 4.097,
+    "leaky_pct": 0.0
+   },
+   "ADD": {
+    "cycles": 1325,
+    "leaky": 0,
+    "max_t": 3.33,
+    "leaky_pct": 0.0
+   },
+   "CMP": {
+    "cycles": 551,
+    "leaky": 0,
+    "max_t": 3.526,
+    "leaky_pct": 0.0
+   },
+   "CSEL": {
+    "cycles": 19,
+    "leaky": 0,
+    "max_t": 2.421,
+    "leaky_pct": 0.0
+   },
+   "END": {
+    "cycles": 12,
+    "leaky": 0,
+    "max_t": 1.735,
+    "leaky_pct": 0.0
+   }
+  },
+  "top": [
+   {
+    "pc": 246,
+    "instruction": "BMUL s7 * s6 -> s3 (acc)",
+    "first": 4421,
+    "last": 4701,
+    "max_t": 4.447,
+    "peak_cycle": 4499,
+    "peak_t": -4.447,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 239,
+    "instruction": "DECODE d=10 IN+2720 -> s6",
+    "first": 1570,
+    "last": 1712,
+    "max_t": 4.312,
+    "peak_cycle": 1671,
+    "peak_t": 4.312,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 360,
+    "instruction": "BMUL s6 * s1 -> s3 (acc)",
+    "first": 22709,
+    "last": 22989,
+    "max_t": 4.258,
+    "peak_cycle": 22862,
+    "peak_t": -4.258,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 315,
+    "instruction": "SAMPLE -> s4",
+    "first": 15356,
+    "last": 15651,
+    "max_t": 4.097,
+    "peak_cycle": 15381,
+    "peak_t": 4.097,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 250,
+    "instruction": "ENCODE d=1 s3 -> 0x1c60",
+    "first": 6252,
+    "last": 6521,
+    "max_t": 3.991,
+    "peak_cycle": 6512,
+    "peak_t": 3.991,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 283,
+    "instruction": "SAMPLE -> s4",
+    "first": 11038,
+    "last": 11338,
+    "max_t": 3.825,
+    "peak_cycle": 11082,
+    "peak_t": -3.825,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 323,
+    "instruction": "INTT s3",
+    "first": 16545,
+    "last": 17686,
+    "max_t": 3.725,
+    "peak_cycle": 17049,
+    "peak_t": 3.725,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 328,
+    "instruction": "CBD2 -> s5",
+    "first": 17714,
+    "last": 17898,
+    "max_t": 3.663,
+    "peak_cycle": 17767,
+    "peak_t": 3.663,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 266,
+    "instruction": "NTT s0",
+    "first": 7590,
+    "last": 8588,
+    "max_t": 3.618,
+    "peak_cycle": 7716,
+    "peak_t": -3.618,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 373,
+    "instruction": "CMP OUT+256, IN+2400 len=1088",
+    "first": 25711,
+    "last": 26261,
+    "max_t": 3.526,
+    "peak_cycle": 25782,
+    "peak_t": 3.526,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 321,
+    "instruction": "SAMPLE -> s4",
+    "first": 15960,
+    "last": 16263,
+    "max_t": 3.49,
+    "peak_cycle": 15989,
+    "peak_t": -3.49,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 290,
+    "instruction": "BMUL s4 * s1 -> s3 (acc)",
+    "first": 11951,
+    "last": 12231,
+    "max_t": 3.47,
+    "peak_cycle": 12130,
+    "peak_t": 3.47,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 236,
+    "instruction": "NTT s6",
+    "first": 147,
+    "last": 1145,
+    "max_t": 3.462,
+    "peak_cycle": 886,
+    "peak_t": 3.462,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 335,
+    "instruction": "SAMPLE -> s4",
+    "first": 18461,
+    "last": 18752,
+    "max_t": 3.433,
+    "peak_cycle": 18586,
+    "peak_t": -3.433,
+    "leaky_pct": 0.0
+   },
+   {
+    "pc": 363,
+    "instruction": "INTT s3",
+    "first": 23414,
+    "last": 24555,
+    "max_t": 3.408,
+    "peak_cycle": 23833,
+    "peak_t": 3.408,
+    "leaky_pct": 0.0
+   }
+  ]
+ }
+}

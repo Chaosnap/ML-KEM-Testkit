@@ -1,0 +1,8 @@
+part xc7a100tcsg324-1
+core_slice_sites 2387
+core_clb_tiles 1307
+core_period_ns 4.854
+core_wns_ns 0.093
+critical_path_requirement_ns 4.854
+sta_fmax_estimate_mhz 210.03990758244066
+core_whs_ns 0.036

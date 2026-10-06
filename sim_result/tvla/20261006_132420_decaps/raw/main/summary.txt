@@ -1,0 +1,33 @@
+ML-KEM-768 decaps simulation TVLA
+seed: c0d04ba0fd08f064417e8f877619b0fb1ebb3579e333815108a0647df2b5de57850f328a1317f3d2d3df4b8ba1c40cb90d22f3d9b2a9b74eae9b709d43f5821c
+traces: 200 (100 fixed, 100 random), cycles per trace: 26298..26298, noise sigma: 1.00 toggles
+
+instance      max|t|    cycle     leaky     first  instruction at max
+total           46.3    23870    61.70%         8  INTT s3
+top             41.8    16452    57.90%         9  BMUL s4 * s2 -> s3 (acc)
+u_alu           52.0    23870    54.83%       153  INTT s3
+u_csr            4.6      331     0.00%       331  NTT s6
+u_ctrl          35.1     6725     6.23%         9  HABS IN+2400 len=1088
+u_dbuf          33.9    25861     3.80%         8  CMP OUT+256, IN+2400 len=1088
+u_pack          41.7     5947    45.57%       153  DECODE d=4 IN+3360 -> s6
+u_polyram       43.6     8834    54.81%        18  NTT s1
+u_sponge        37.3    25863     4.70%        10  CMP OUT+256, IN+2400 len=1088
+u_unpack        43.4    24738     6.98%        10  CBD2 -> s5
+
+leaky = share of cycles with |t| > 4.5; first = first such cycle (-1: none)
+
+Top 10 microcode instructions by max|t| (total):
+   max|t|          cycles    pc  instruction
+     46.3   23432-24573     363  INTT s3
+     42.2    3279-4277      244  NTT s6
+     42.1    1289-1569      238  BMUL s7 * s6 -> s3
+     40.2    1713-2711      240  NTT s6
+     39.9   20271-21412     349  INTT s3
+     39.5    8616-8800      271  CBD2 -> s1
+     38.3    4702-5843      247  INTT s3
+     37.3     147-1145      236  NTT s6
+     36.2    4421-4701      246  BMUL s7 * s6 -> s3 (acc)
+     36.1   25459-25728     372  ENCODE d=4 s3 -> OUT+1216
+
+RESULT: LEAKAGE DETECTED (expected for an unmasked core)
+outputs: /Users/yuki/Downloads/Vivado/ML_KEM_Test/ML-KEM-Testkit/sim_result/tvla/20261006_132420_decaps/raw/main/{tvla_t.csv,tvla_mean.csv,vectors.csv,vcd/}
