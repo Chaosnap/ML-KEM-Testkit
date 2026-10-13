@@ -1,0 +1,4 @@
+read_verilog -sv -formal -overwrite {workspace}/build/latency_candidate1/hdl/core/mod_reduce.sv
+read_verilog -sv -formal -overwrite {workspace}/hdl/core/ntt_engine.sv
+design -reset-vlog; proc;
+write_json {workspace}/netlist/ntt_engine.json

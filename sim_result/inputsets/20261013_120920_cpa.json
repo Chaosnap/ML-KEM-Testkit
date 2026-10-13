@@ -1,0 +1,11 @@
+{
+  "mode": "cpa",
+  "strategy": "valid",
+  "poly": 0,
+  "pair": 0,
+  "n_traces": 300,
+  "seed": "50eeb37e1df92677b670919ea3f3e2945f0cde7526a1087ae9f60c54afd8871d12a5e6455ac5a76b2b838bb43edfca219ace8199c2758c8088cc69679f9dc6f4",
+  "invalid_random": false,
+  "dk_hash": "6afb53033a3447b8...",
+  "created_unix": 1791864560.643119
+}

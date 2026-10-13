@@ -1,0 +1,6 @@
+numpy>=2.0
+h5py>=3.10
+matplotlib>=3.9
+pyserial==3.5
+pyvisa>=1.14
+pyvisa-py>=0.7

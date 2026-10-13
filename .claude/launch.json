@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cpa-web-gui",
+      "runtimeExecutable": "/Users/yuki/Downloads/Vivado/ML_KEM_Test/ML-KEM-Testkit/.venv/bin/python3",
+      "runtimeArgs": [
+        "/Users/yuki/Downloads/Vivado/ML_KEM_Test/ML-KEM-Testkit/CPAProtectEvaluation/web_gui.py",
+        "--port", "8765",
+        "--no-browser"
+      ],
+      "port": 8765
+    }
+  ]
+}

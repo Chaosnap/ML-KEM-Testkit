@@ -27,6 +27,16 @@ set_property -dict {PACKAGE_PIN J5  IOSTANDARD LVCMOS33} [get_ports {led[1]}]
 set_property -dict {PACKAGE_PIN T9  IOSTANDARD LVCMOS33} [get_ports {led[2]}]
 set_property -dict {PACKAGE_PIN T10 IOSTANDARD LVCMOS33} [get_ports {led[3]}]
 
+## Oscilloscope trigger / capture-enable output: Pmod JA pin 1 (silkscreen
+## "1", topmost pin of the 6-pin row nearest the USB connector; ja_gpio[1]
+## net on the schematic). Per the Digilent Arty-A7-100-Master.xdc Pmod JA
+## block, pin 1 = PACKAGE_PIN G13. Pmod JA is unused elsewhere in this
+## design, so this is electrically safe on both the A7-35T and A7-100T -
+## but double-check pin 1's physical position against your own board
+## silkscreen/reference manual before probing; a mislabeled pin only means
+## probing the wrong header position, not board damage.
+set_property -dict {PACKAGE_PIN G13 IOSTANDARD LVCMOS33} [get_ports trig_out]
+
 ## Asynchronous inputs / slow outputs: no meaningful I/O timing relationship.
 ## BTN0 asserts reset asynchronously (release is synchronised in RTL);
 ## uart_rxd goes through a 2-FF synchroniser in uart_rx.
@@ -34,6 +44,7 @@ set_false_path -from [get_ports btn0]
 set_false_path -from [get_ports uart_rxd]
 set_false_path -to   [get_ports uart_txd]
 set_false_path -to   [get_ports {led[*]}]
+set_false_path -to   [get_ports trig_out]
 
 ## Configuration
 set_property CFGBVS VCCO [current_design]

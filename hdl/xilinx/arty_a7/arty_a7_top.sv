@@ -15,6 +15,11 @@
 //   - LED[2]: error indicator
 //   - LED[3]: heartbeat (~1.5 Hz)
 //   - BTN[0]: reset (active-high push button)
+//   - trig_out: Pmod JA pin 1 (JA1, pkg pin G13 on Arty A7-35T/100T).
+//     Scope trigger/capture-enable, = status_busy (same signal as LED0, but
+//     on a header pin a probe can actually reach). Verify JA1 against the
+//     board's own reference manual/master XDC before probing - see
+//     constraints.xdc for the citation.
 //
 // Build:
 //   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
@@ -32,6 +37,13 @@ module arty_a7_top #(
     // UART (on-board USB-UART bridge).
     input  logic       uart_rxd,      // UART receive (FPGA input).
     output logic       uart_txd,      // UART transmit (FPGA output).
+
+    // Oscilloscope capture-enable / trigger (Pmod JA pin 1).
+    // High for the whole core operation (= status_busy), so the scope arms
+    // on the rising edge and captures the computation window. Same signal as
+    // LED0, but on a clean header pin a probe can reach (the LEDs are not
+    // broken out). Jitter is ~1 core clock; see hostlab trigger option A.
+    output logic       trig_out,
 
     // LEDs for status indication.
     output logic [3:0] led
@@ -263,5 +275,10 @@ module arty_a7_top #(
     assign led[1] = status_done;            // LED1: operation complete.
     assign led[2] = status_error;           // LED2: error.
     assign led[3] = heartbeat_cnt[25];      // LED3: heartbeat (~1.5 Hz).
+
+    // Scope trigger: same signal as LED0, broken out to its own header pin
+    // so a probe doesn't have to touch the LED. See the port declaration
+    // above and constraints.xdc for the pin assignment.
+    assign trig_out = status_busy;
 
 endmodule
