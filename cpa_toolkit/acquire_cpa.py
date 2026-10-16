@@ -78,6 +78,18 @@ def dk_from_recipe(recipe: dict) -> bytes:
     return KEM.keygen(s64[:32], s64[32:])[1]
 
 
+def measure_record_length(target, sc) -> int:
+    """Samples per capture at the scope's current settings, from one Decaps of
+    a fresh random vector (the capture is discarded). Used when neither the
+    scope connection nor the campaign names a sample count."""
+    vs = TV.generate("cpa", 1, os.urandom(64), "valid")
+    sc.arm()
+    out = target.decaps(vs.dk, vs.ct[0].tobytes(), resend_dk=True)
+    if not out.ok:
+        raise RuntimeError("could not measure the scope's record length: %s" % out.describe())
+    return int(np.asarray(sc.read(timeout=10.0)).shape[0])
+
+
 def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSet | None = None,
                  resend_dk_every: int = 50, max_errors: int = 5, quiet: bool = False,
                  progress_cb=None, trace_cb=None, stop_cb=None, resume: bool = False,
@@ -171,7 +183,10 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
 
             trace = sc.read(timeout=10.0)
             if trace.shape[0] != n_samples:
-                trace = np.resize(trace, n_samples).astype(np.float32)
+                # timebase / memory depth changed: the rows would no longer line up in time
+                raise RuntimeError("the scope returned %d samples but this campaign records %d per trace: the "
+                                   "timebase or memory depth changed -- set it back and resume (%d traces kept)"
+                                   % (trace.shape[0], n_samples, i))
 
             ok = True
             if expected is not None and out.output != expected:
@@ -281,7 +296,8 @@ def _vectors_for(args, mode: str) -> tuple[TV.VectorSet, str]:
 def _run(args, mode: str):
     vs, vs_path = _vectors_for(args, mode)
     target, sc = _open_board_and_scope(args)
-    n_samples = sc.samples or args.samples or 10000
+    n_samples = sc.samples or args.samples or measure_record_length(target, sc)
+    print("%d samples per trace" % n_samples)
     out = os.path.join(args.out, time.strftime("%Y%m%d_%H%M%S") + "_%s.hdf5" % mode)
     print("writing", out)
     try:
@@ -325,7 +341,7 @@ def main() -> None:
         sp.add_argument("--ip", default="", help="scope IP; default is SCOPE_IP in config.py")
         sp.add_argument("--channel", default="")
         sp.add_argument("--dialect", default="", choices=["", "default", "tektronix"])
-        sp.add_argument("--samples", type=int, default=0, help="0 = scope's current memory depth")
+        sp.add_argument("--samples", type=int, default=0, help="0 = the scope's record length, measured with one capture")
         sp.add_argument("--resend-dk-every", type=int, default=50)
         sp.add_argument("--quiet", action="store_true")
 

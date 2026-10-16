@@ -69,12 +69,11 @@ BMUL_WINDOWS = [(1289, 1570), (2855, 3136), (4421, 4702)]
 NTT_WINDOWS_CYCLES: list[tuple[int, int]] | None = None
 INTT_WINDOW_CYCLES: tuple[int, int] | None = None
 
-#: Trigger = trig_out (status_busy), broken out on Pmod JA pin 1 / pkg pin
-#: G13 -- see hdl/xilinx/arty_a7/arty_a7_top.sv and constraints.xdc. Same
-#: signal as LD4 (pin H5), kept as a fallback probe point if you'd rather
-#: clip onto the LED than the Pmod header. Allow this many cycles of slack
-#: when the analysis slices a window out of a trace, for the trigger/start
-#: latency.
+#: Trigger = trig_out (STATUS.busy): Pmod JA pin 1 / pkg pin G13 on the Arty
+#: A7, Pmod JA pin 3 / Y16 on the Arty Z7 (see the boards' constraints.xdc).
+#: No LED carries it: the status LEDs are frozen while the core is busy.
+#: Allow this many samples of slack when the analysis slices a window out of
+#: a trace, for the trigger/start latency.
 TRIGGER_SLACK_CYCLES = 40
 
 # =============================================================================
@@ -84,15 +83,12 @@ IN_BASE = 0x0000
 OUT_BASE = 0x0E00
 
 # =============================================================================
-# CPA leakage model default (set from the GUI's "CPA Model" tab, or by hand)
+# CPA leakage model default (set from the GUI's Analysis page, or by hand)
 # =============================================================================
-#: Which leakage-model module cpa_attack.py / the GUI load by default. A
-#: module qualifies as a model by exposing Q, K, TARGETS, RPREVS, decrypt()
-#: and selftest() -- see mlkem_ref.py.
-CPA_MODEL_MODULE = "mlkem_ref"
+#: The leakage model cpa_attack.py uses without --model: a file in models/
+#: (one per model; `cpa_attack.py --list-models` lists them). The default is
+#: HD(R_prev, {c1, c0}) of the 24-bit RAM word -- see docs/ATTACK_MODEL.md.
+CPA_MODEL = "hd_basemul_word"
 
-#: Default --target / --rprev for cpa_attack.py (R.TARGETS / R.RPREVS keys
-#: in the module above): the accumulated 24-bit RAM word against the word
-#: written before it -- see docs/ATTACK_MODEL.md.
-CPA_TARGET = "word"
+#: Its R_prev (a choice that model accepts: zero / prev-word / acc).
 CPA_RPREV = "prev-word"

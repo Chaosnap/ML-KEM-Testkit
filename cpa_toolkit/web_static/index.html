@@ -88,7 +88,7 @@
               <div><label class="f">Channel</label><input id="scope-channel" type="text" list="channel-options">
                 <datalist id="channel-options"><option value="CHANnel1"><option value="CHANnel2"><option value="CHANnel3"><option value="CHANnel4"><option value="CH1"><option value="CH2"></datalist></div>
               <div><label class="f">SCPI dialect</label><select id="scope-dialect"><option value="default">Keysight / Rigol / Siglent</option><option value="tektronix">Tektronix</option></select></div>
-              <div><label class="f">Points per trace</label><input id="scope-points" type="text" value="0" title="0 = the scope's current memory depth"></div>
+              <div><label class="f">Points per trace</label><input id="scope-points" type="text" value="0" title="0 = transfer the whole record at the scope's current settings"></div>
               <div><label class="f">Timeout (ms)</label><input id="scope-timeout" type="text" value="20000"></div>
             </div>
             <div class="conn-state"><span class="dot" id="scope-dot"></span><span class="txt" id="scope-state-txt">Not connected</span>
@@ -198,7 +198,7 @@
             <select id="acq-vector-set"></select>
             <div class="hint" id="acq-vs-hint"></div>
             <div class="cols-2">
-              <div><label class="f">Samples per trace</label><input id="acq-samples" type="text" value="0" title="0 = the scope's memory depth"></div>
+              <div><label class="f">Samples per trace</label><input id="acq-samples" type="text" value="0" title="0 = the scope's record length, measured with one capture at the start"></div>
               <div><label class="f">Resend dk every</label><input id="acq-resend-dk" type="text" value="50"></div>
             </div>
             <details class="adv"><summary>Resume a stopped campaign</summary><div class="body">
@@ -297,16 +297,13 @@
           <div class="an-config-grid">
             <div id="an-cpa-setup">
               <div class="step-title"><span class="n">1</span>Leakage model</div>
-              <select id="an-preset"></select>
-              <div class="model-detail hidden" id="an-model-detail"></div>
-              <div class="cols-2" id="an-target-row">
-                <div><label class="f">Target register</label><select id="an-target"></select></div>
-                <div id="an-rprev-wrap"><label class="f">R_prev</label><select id="an-rprev"></select></div>
-              </div>
-              <details class="adv"><summary>Model plugins</summary><div class="body">
-                <div class="row"><select id="model-select" class="grow"></select><button class="btn secondary sm" id="model-load">Load</button></div>
-                <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test</button><button class="btn ghost sm" id="model-save-default">Save as CLI default</button></div>
-                <div class="hint" id="model-status"></div></div></details>
+              <div class="row"><select id="an-model" class="grow"></select>
+                <button class="btn ghost sm icon" id="an-model-reload" title="Re-read cpa_toolkit/models/ (new or edited model files)">↻</button></div>
+              <div class="model-detail" id="an-model-detail"></div>
+              <div id="an-rprev-wrap"><label class="f">R_prev — what the register held before</label><select id="an-rprev"></select></div>
+              <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test this model</button>
+                <button class="btn ghost sm" id="model-save-default">Save as CLI default</button><span class="hint" id="model-status" style="margin:0"></span></div>
+              <div class="table-wrap short hidden" id="model-selftest-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody id="model-selftest-table"></tbody></table></div>
             </div>
             <div>
               <div id="an-cpa-scoring">

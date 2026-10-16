@@ -113,6 +113,7 @@ vivado -mode batch -source scripts/vivado/program_bitstream.tcl -tclargs <bitstr
 
 ## 文档
 
+- [docs/TRACE_ACQUISITION.md](docs/TRACE_ACQUISITION.md)：实验室采集 trace 的上手指南（接线、示波器设置、GUI 操作、排错）
 - [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md)：主机 ↔ FPGA 通信协议、寄存器表、采集流程、吞吐量
 - [docs/ACVP_TEST.md](docs/ACVP_TEST.md)：ACVP 功能测试（上板 / 仿真）
 - [docs/ATTACK_MODEL.md](docs/ATTACK_MODEL.md)：CPA 攻击模型（目标寄存器、时钟拍、RTL 行号）

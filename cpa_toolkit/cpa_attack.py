@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """CPA attack against ML-KEM-768 BaseMul in K-PKE.Decrypt.
 
-Leakage model: ``HD(R_prev, BaseMul(u_hat, s_hat_guess) mod q)`` -- see
-``mlkem_ref.py: PairModel`` for the exact hypothesis construction and
-``docs/ATTACK_MODEL.md`` for the registers this targets in
-``hdl/core/mlkem_poly_alu.sv`` (P1/P2 there; this script attacks the
-accumulated-word register, "P2/acc" + "word" write-back, since that is
-what a real probe sees -- the 24-bit RAM word written back each BMUL
-cycle). The attacker knows every ciphertext ``c`` (hence ``u_hat``, public)
-and recovers ``s_hat`` (the decapsulation key) one 12-bit coefficient pair
-at a time, each independent of the other 127 under this model.
+The leakage model is chosen by name from ``models/`` (one file per model,
+``--model``; default ``hd_basemul_word``: ``HD(R_prev, {c1, c0})`` of the
+24-bit RAM word written back each BMUL cycle, since that is what a real
+probe sees). ``models/base.py: Guess`` builds the register values a
+hypothesis is made of; ``docs/ATTACK_MODEL.md`` names the registers in
+``hdl/core/mlkem_poly_alu.sv``. The attacker knows every ciphertext ``c``
+(hence ``u_hat``, public) and recovers ``s_hat`` (the decapsulation key) one
+12-bit coefficient at a time.
 
 Usage::
 
+    python cpa_attack.py --list-models                          # the models in models/
     python cpa_attack.py FILE.hdf5                              # unknown-key (the real attack)
+    python cpa_attack.py FILE.hdf5 --model hd_scalar --rprev zero
     python cpa_attack.py FILE.hdf5 --dk-ref REF.bin               # oracle-assisted evaluation
     python cpa_attack.py FILE.hdf5 --dk-ref REF.bin --curve         # + key-rank-vs-N, MTD
 
@@ -22,7 +23,7 @@ against the campaign's real key (``testvectors.py export <set> --format dk``:
 the vector set a campaign was captured with holds its key pair), purely for
 evaluation/reporting. The
 guesses themselves are never constructed with it -- see
-``mlkem_ref.py: PairModel`` and ``docs/ATTACK_MODEL.md`` section 5.4: without
+``models/base.py: Guess`` and ``docs/ATTACK_MODEL.md`` section 5.4: without
 ``--dk-ref`` every hypothesis is built only from already-recovered guesses
 (``recovered``, updated in place as coefficients are attacked) and the
 known, public ciphertext-derived ``u_hat``; the true secret coefficients are
@@ -46,6 +47,7 @@ import numpy as np
 
 import config as C
 import mlkem_ref as R
+import models as LM
 from hdf5_trace_store import TraceReader
 
 try:
@@ -70,26 +72,26 @@ def pearson_matrix(hyp: np.ndarray, traces: np.ndarray) -> np.ndarray:
     return (h.T @ t) / n
 
 
-def attack_coefficient(model: R.PairModel, target: str, rprev: str, traces: np.ndarray,
+def attack_coefficient(model: LM.LeakageModel, guess: LM.Guess, rprev: str, traces: np.ndarray,
                         candidates: np.ndarray) -> dict:
     """CPA over one secret coefficient; returns peak correlation per candidate."""
-    hyp = model.hypotheses(target, rprev, candidates)  # (N, G)
+    hyp = model.hypotheses(guess, rprev, candidates)   # (N, G)
     corr = pearson_matrix(hyp, traces)                  # (G, T)
     peak_per_cand = np.max(np.abs(corr), axis=1)
     peak_sample = np.argmax(np.abs(corr), axis=1)
     order = np.argsort(peak_per_cand)[::-1]
     true_rank = None
-    if model.true_value in candidates:
-        g_idx = int(np.where(candidates == model.true_value)[0][0])
+    if guess.true_value in candidates:
+        g_idx = int(np.where(candidates == guess.true_value)[0][0])
         true_rank = int(np.where(order == g_idx)[0][0]) + 1
     return {
-        "poly": model.poly, "coeff": model.j, "target": target, "rprev": rprev,
+        "poly": guess.poly, "coeff": guess.j, "target": model.register, "rprev": rprev,
         "best_guess": int(candidates[order[0]]),
         "best_corr": float(peak_per_cand[order[0]]),
         "best_sample": int(peak_sample[order[0]]),
-        "true_value": model.true_value, "true_rank": true_rank,
-        "true_corr": float(peak_per_cand[int(np.where(candidates == model.true_value)[0][0])])
-                     if model.true_value in candidates else None,
+        "true_value": guess.true_value, "true_rank": true_rank,
+        "true_corr": float(peak_per_cand[int(np.where(candidates == guess.true_value)[0][0])])
+                     if guess.true_value in candidates else None,
         "corr_curve": corr[order[0]],  # kept only in memory for plotting; not JSON-serialised
         "candidates": candidates, "peak_per_cand": peak_per_cand,
     }
@@ -102,8 +104,16 @@ def _require_cpa(r) -> None:
                          "(or the GUI's Run TVLA) for this file" % (r.path.name, r.mode.upper()))
 
 
-def run_attack(h5_path: str, target: str, rprev: str, max_traces: int, plot_dir: str | None,
+def _model(model, rprev: str) -> tuple[LM.LeakageModel, str]:
+    """A model (name or object) and the R_prev it runs with."""
+    m = LM.get(model) if isinstance(model, str) else model
+    return m, m.resolve_rprev(rprev)
+
+
+def run_attack(h5_path: str, model, rprev: str, max_traces: int, plot_dir: str | None,
                 dk_ref: bytes | None) -> dict:
+    """The full 768-coefficient attack with ``model`` (a name in ``models/``)."""
+    model, rprev = _model(model, rprev)
     with TraceReader(h5_path) as r:
         _require_cpa(r)
         n = min(r.n_completed, max_traces) if max_traces else r.n_completed
@@ -137,28 +147,26 @@ def run_attack(h5_path: str, target: str, rprev: str, max_traces: int, plot_dir:
     recovered = np.zeros((3, 256), dtype=np.int64)
     for poly in range(R.K):
         # Known-key evaluation uses the true s_hat of the OTHER 255
-        # coefficients (see mlkem_ref.PairModel docstring); for a from-
+        # coefficients (see models/base.py: Guess); for a from-
         # scratch attack with no dk-ref, substitute the already-recovered
         # guesses so far, in ascending coefficient order, exactly as a real
         # sequential CPA on this target would have to.
         traces = slice_window(traces_full, poly, bmul_windows, sample_rate)
-        # `recovered` (not a copy) so that PairModel.s, a view into it, picks
+        # `recovered` (not a copy) so that Guess.s, a view into it, picks
         # up each coefficient's guess as soon as it is written below -- the
         # second coefficient of a pair (w, e=1) then sees the first one's
         # just-made guess instead of a stale 0. The first coefficient of
         # each pair still has no better guess for its partner than 0: that
         # chicken-and-egg weakness is inherent to guessing one coefficient
         # at a time and is not fixed by this (see README caveats).
-        model_src = s_hat if s_hat is not None else recovered
-        model = R.PairModel(u_hat, model_src, poly, 0)  # j reset per coefficient below
+        guess = LM.Guess(u_hat, s_hat if s_hat is not None else recovered, poly)
         # Candidates are coefficient VALUES mod q (0..3328, canonical ML-KEM
-        # range), never a function of the register's bit width -- TARGETS[target]
-        # is only the width used inside hamming_distance() to score R_prev vs X.
+        # range), never a function of the register's bit width.
         candidates = np.arange(R.Q, dtype=np.int64)
         for j in range(256):
-            model.j, model.w, model.e = j, j >> 1, j & 1
-            model.true_value = int(s_hat[poly][j]) if s_hat is not None else -1
-            res = attack_coefficient(model, target, rprev, traces, candidates)
+            guess.at(j)
+            guess.true_value = int(s_hat[poly][j]) if s_hat is not None else -1
+            res = attack_coefficient(model, guess, rprev, traces, candidates)
             recovered[poly, j] = res["best_guess"]
             results.append({k: v for k, v in res.items() if k not in ("corr_curve", "candidates", "peak_per_cand")})
             if plot_dir and j < 4:  # a handful of example plots, not all 256*3
@@ -166,7 +174,8 @@ def run_attack(h5_path: str, target: str, rprev: str, max_traces: int, plot_dir:
 
     n_scored = sum(1 for r_ in results if r_["true_rank"] is not None)
     summary = {
-        "file": h5_path, "n_traces_used": n_ok, "target": target, "rprev": rprev,
+        "file": h5_path, "n_traces_used": n_ok, "model": model.name, "model_title": model.title,
+        "target": model.register, "rprev": rprev,
         "oracle_assisted": s_hat is not None,  # True <=> --dk-ref given; see module docstring
         "known_key_eval": s_hat is not None,  # deprecated alias, kept for older report consumers
         "coefficients_attacked": len(results),
@@ -183,16 +192,17 @@ def run_attack(h5_path: str, target: str, rprev: str, max_traces: int, plot_dir:
     return summary
 
 
-def correlation_curve_for_coefficient(h5_path: str, target: str, rprev: str, poly: int, coeff: int,
+def correlation_curve_for_coefficient(h5_path: str, model, rprev: str, poly: int, coeff: int,
                                        max_traces: int, dk_ref: bytes | None) -> dict:
     """Full per-sample correlation curve for ONE coefficient -- for the GUI's
     "Correlation vs. Time" chart. Fast (one coefficient, not all 768): this
     is a preview of a single guess in isolation, not a step of the
     sequential attack, so its pair-partner/accumulator is modelled as 0
     when no --dk-ref is given (same convention a from-scratch attack would
-    use for the very first coefficient of a pair -- see PairModel docstring
+    use for the very first coefficient of a pair -- see models/base.py: Guess
     and cpa_toolkit/README.md section 7 point 4 on the "chicken-and-egg" limitation).
     """
+    model, rprev = _model(model, rprev)
     if not 0 <= poly < R.K:
         raise ValueError("poly must be 0..%d" % (R.K - 1))
     if not 0 <= coeff < 256:
@@ -221,16 +231,15 @@ def correlation_curve_for_coefficient(h5_path: str, target: str, rprev: str, pol
     bmul_windows = json.loads(meta.get("bmul_windows_cycles", "null"))
     traces = slice_window(traces_full, poly, bmul_windows, sample_rate)
 
-    model_src = s_hat if s_hat is not None else np.zeros((R.K, 256), dtype=np.int64)
-    model = R.PairModel(u_hat, model_src, poly, coeff)
+    guess = LM.Guess(u_hat, s_hat if s_hat is not None else np.zeros((R.K, 256), dtype=np.int64), poly, coeff)
     candidates = np.arange(R.Q, dtype=np.int64)
-    hyp = model.hypotheses(target, rprev, candidates)
+    hyp = model.hypotheses(guess, rprev, candidates)
     corr = pearson_matrix(hyp, traces)                 # (Q, T)
     peak_per_cand = np.max(np.abs(corr), axis=1)
     best_idx = int(np.argmax(peak_per_cand))
 
     out = {
-        "poly": poly, "coeff": coeff, "target": target, "rprev": rprev,
+        "poly": poly, "coeff": coeff, "model": model.name, "target": model.register, "rprev": rprev,
         "n_traces": n_ok, "n_samples": int(traces.shape[1]),
         "best_guess": int(candidates[best_idx]),
         "best_corr": float(peak_per_cand[best_idx]),
@@ -238,7 +247,7 @@ def correlation_curve_for_coefficient(h5_path: str, target: str, rprev: str, pol
         "oracle_assisted": s_hat is not None,
     }
     if s_hat is not None:
-        true_idx = int(model.true_value)  # candidates[i] == i, so the value IS the index
+        true_idx = int(guess.true_value)  # candidates[i] == i, so the value IS the index
         out["true_value"] = true_idx
         out["true_rank"] = int(np.where(np.argsort(peak_per_cand)[::-1] == true_idx)[0][0]) + 1
         out["true_curve"] = [round(float(v), 5) for v in corr[true_idx]]
@@ -252,7 +261,7 @@ def default_checkpoints(n_max: int) -> list[int]:
     return pts
 
 
-def run_curve(h5_path: str, target: str, rprev: str, max_traces: int, dk_ref: bytes,
+def run_curve(h5_path: str, model, rprev: str, max_traces: int, dk_ref: bytes,
               checkpoints: list[int] | None = None) -> dict:
     """Key rank / success rate vs. trace count, oracle-assisted only.
 
@@ -265,13 +274,14 @@ def run_curve(h5_path: str, target: str, rprev: str, max_traces: int, dk_ref: by
     happens within ``max_traces``. Needs --dk-ref: there is no way to know
     when the attack has "succeeded" without a ground truth to check against.
     """
+    model, rprev = _model(model, rprev)
     with TraceReader(h5_path) as r:
         _require_cpa(r)
         n_avail = min(r.n_completed, max_traces) if max_traces else r.n_completed
     checkpoints = checkpoints or default_checkpoints(n_avail)
     rows, mtd = [], None
     for n in checkpoints:
-        s = run_attack(h5_path, target, rprev, n, None, dk_ref)
+        s = run_attack(h5_path, model, rprev, n, None, dk_ref)
         row = {
             "n_traces": s["n_traces_used"],
             "rank1_fraction": s.get("rank1_fraction", 0.0),
@@ -281,7 +291,8 @@ def run_curve(h5_path: str, target: str, rprev: str, max_traces: int, dk_ref: by
         rows.append(row)
         if mtd is None and row["rank1_fraction"] > 0.5:
             mtd = row["n_traces"]
-    return {"oracle_assisted": True, "target": target, "rprev": rprev, "checkpoints": rows, "mtd": mtd}
+    return {"oracle_assisted": True, "model": model.name, "target": model.register, "rprev": rprev,
+            "checkpoints": rows, "mtd": mtd}
 
 
 def write_results_csv(results: list[dict], path: str) -> None:
@@ -347,16 +358,15 @@ def plot_coefficient(res: dict, poly: int, j: int, out_dir: str) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("file", help="HDF5 campaign file from acquire_cpa.py")
-    ap.add_argument("--model", default="", choices=[""] + list(R.MODEL_PRESETS),
-                     help="named model preset (overrides --target/--rprev): %s"
-                          % "; ".join("%s = %s" % (k, v["desc"]) for k, v in R.MODEL_PRESETS.items()))
-    ap.add_argument("--target", default=C.CPA_TARGET, choices=list(R.TARGETS),
-                     help="which register the hypothesis models (default from config.py's "
-                          "CPA_TARGET, settable from the GUI's CPA Analysis tab: %s)" % C.CPA_TARGET)
-    ap.add_argument("--rprev", default=C.CPA_RPREV, choices=list(R.RPREVS),
-                     help="R_prev model (default from config.py's CPA_RPREV: %s). All options: %s"
-                          % (C.CPA_RPREV, "; ".join("%s = %s" % kv for kv in R.RPREVS.items())))
+    ap.add_argument("file", nargs="?", help="HDF5 campaign file from acquire_cpa.py")
+    ap.add_argument("--list-models", action="store_true", help="list the leakage models in models/ and exit")
+    ap.add_argument("--model", default=C.CPA_MODEL, choices=LM.names() + sorted(LM.ALIASES),
+                     help="leakage model, a file in models/ (default from config.py's CPA_MODEL: %s)"
+                          % C.CPA_MODEL)
+    ap.add_argument("--rprev", default="", choices=[""] + list(LM.RPREVS),
+                     help="R_prev, one the model accepts (default: config.py's CPA_RPREV for the default "
+                          "model, else the model's first). Options: %s"
+                          % "; ".join("%s = %s" % kv for kv in LM.RPREVS.items()))
     ap.add_argument("--max-traces", type=int, default=0, help="0 = use every trace in the file")
     ap.add_argument("--dk-ref", default="",
                      help="path to a dk binary: turns this into an ORACLE-ASSISTED evaluation "
@@ -371,22 +381,28 @@ def main():
     ap.add_argument("-o", "--out", default="", help="write the full JSON report here")
     args = ap.parse_args()
 
-    target, rprev = args.target, args.rprev
-    if args.model:
-        p = R.MODEL_PRESETS[args.model]
-        target, rprev = p["target"], p["rprev"]
+    if args.list_models:
+        for m in LM.scan()[0]:
+            print("%-18s %-4s %-6s R_prev: %-22s %s" % (m.name, m.family, m.register,
+                                                       " / ".join(m.rprevs) or "-", m.equation))
+        return
+    if not args.file:
+        ap.error("the campaign file is required")
+    model = LM.get(args.model)
+    rprev = args.rprev or (C.CPA_RPREV if model.name == LM.resolve(C.CPA_MODEL) and C.CPA_RPREV in model.rprevs else "")
+    rprev = model.resolve_rprev(rprev)
 
     dk_ref = open(args.dk_ref, "rb").read() if args.dk_ref else None
     if args.curve and dk_ref is None:
         raise SystemExit("--curve needs --dk-ref (oracle-assisted evaluation): there is no way "
                          "to know when the attack has succeeded without a ground-truth key")
 
-    summary = run_attack(args.file, target, rprev, args.max_traces, args.plots or None, dk_ref)
+    summary = run_attack(args.file, model, rprev, args.max_traces, args.plots or None, dk_ref)
 
     print("file:            %s" % summary["file"])
     print("traces used:     %d" % summary["n_traces_used"])
-    print("model:           target=%s rprev=%s%s" % (summary["target"], summary["rprev"],
-          "  (--model %s)" % args.model if args.model else ""))
+    print("model:           %s  (register %s, R_prev %s)" % (model.name, model.register, rprev or "-"))
+    print("                 %s" % model.equation)
     print("coefficients:    %d (of 768)" % summary["coefficients_attacked"])
     if summary["oracle_assisted"]:
         print("\n################################################################")
@@ -416,7 +432,7 @@ def main():
               "verdict, only what the attack recovered under the stated model.")
 
     if args.curve:
-        curve = run_curve(args.file, target, rprev, args.max_traces, dk_ref)
+        curve = run_curve(args.file, model, rprev, args.max_traces, dk_ref)
         print("\n-- key rank / success rate vs. trace count (oracle-assisted) --")
         print("%10s  %12s  %12s  %10s" % ("n_traces", "rank1_frac", "median_rank", "mean|rho|"))
         for row in curve["checkpoints"]:

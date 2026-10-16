@@ -40,8 +40,7 @@ import config as C
 import connection as CN
 import cpa_attack as CA
 import hdf5_trace_store as HS
-import mlkem_ref as R
-import model_registry as M
+import models as LM
 import scope as S
 import testvectors as TV
 import tvla_analysis as TVA
@@ -75,7 +74,7 @@ scope_conn = CN.Managed("scope", log)
 _lock = threading.Lock()
 # `busy`: job_id of the running job that owns the board + scope (acquisition,
 # board verification), or None. Nothing else may talk to the board meanwhile.
-_state = {"model": None, "busy": None}
+_state = {"busy": None}
 
 _jobs_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
@@ -196,10 +195,9 @@ def _axis(rate: float, n_samples: int) -> dict:
 # =============================================================================
 def api_state(_body: dict) -> dict:
     with _lock:
-        model, busy = _state["model"], _state["busy"]
+        busy = _state["busy"]
     return {
         "board": board.snapshot(), "scope": scope_conn.snapshot(), "busy": busy,
-        "model": model.__name__ if model is not None else None,
         "defaults": {"port": C.SERIAL_PORT, "baud": C.BAUD, "scope_ip": C.SCOPE_IP,
                      "scope_placeholder_ip": C.SCOPE_PLACEHOLDER_IP, "scope_channel": C.SCOPE_CHANNEL,
                      "scope_dialect": C.SCOPE_DIALECT, "scope_timeout_ms": C.SCOPE_TIMEOUT_MS,
@@ -523,53 +521,43 @@ def api_scope_save_config(body: dict) -> dict:
 # =============================================================================
 # CPA model
 # =============================================================================
+def _default_model() -> tuple[str, str]:
+    """config.py's CPA_MODEL / CPA_RPREV, if they still name a model and a choice it accepts."""
+    name = LM.resolve(C.CPA_MODEL) or "hd_basemul_word"
+    try:
+        return name, LM.get(name).resolve_rprev(C.CPA_RPREV)
+    except ValueError:
+        return name, ""
+
+
 def api_model_list(_body: dict) -> dict:
-    with _lock:
-        loaded = _state["model"].__name__ if _state["model"] is not None else None
-    return {"modules": M.discover(), "loaded": loaded, "default_module": C.CPA_MODEL_MODULE,
-            "default_target": C.CPA_TARGET, "default_rprev": C.CPA_RPREV}
+    """Every leakage model in models/, re-read from disk (new or edited files show up)."""
+    found, errors = LM.scan()
+    for e in errors:
+        log("[warn] leakage model %s not loaded: %s" % (e["file"], e["error"]))
+    name, rprev = _default_model()
+    return {"models": [LM.describe(m) for m in found], "errors": errors,
+            "default_model": name, "default_rprev": rprev, "rprevs": LM.RPREVS}
 
 
-def api_model_load(body: dict) -> dict:
-    mod = M.load(body["module"])
-    with _lock:
-        _state["model"] = mod
-    info = M.describe(mod)
-    log("loaded CPA model: %s (Q=%d, K=%d, %d targets, %d R_prev modes)"
-        % (info["module"], info["q"], info["k"], len(info["targets"]), len(info["rprevs"])))
-    return info
-
-
-def api_model_selftest(_body: dict) -> dict:
-    with _lock:
-        mod = _state["model"]
-    if mod is None:
-        raise ValueError("no CPA model loaded -- load one first")
-    result = M.run_selftest(mod)
-    log("self-test (%s): %s -- %s" % (mod.__name__, {True: "PASS", False: "FAIL", None: "N/A"}[result["ok"]],
-                                      result["detail"]))
-    return result
+def api_model_selftest(body: dict) -> dict:
+    model = LM.get(str(body.get("model", "")), reload=True)
+    rows = LM.selftest(model)
+    for r in rows:
+        log("self-test %s: %s %s -- %s" % (model.name, "PASS" if r["ok"] else "FAIL", r["name"], r["detail"]))
+    return {"model": model.name, "checks": rows, "ok": all(r["ok"] for r in rows)}
 
 
 def api_model_save_default(body: dict) -> dict:
-    with _lock:
-        mod = _state["model"]
-    if mod is None:
-        raise ValueError("no CPA model loaded -- load one first")
-    target, rprev = body["target"], body["rprev"]
-    if target not in mod.TARGETS or rprev not in mod.RPREVS:
-        raise ValueError("unknown target/rprev for %s" % mod.__name__)
-    save_config_values(CPA_MODEL_MODULE=mod.__name__, CPA_TARGET=target, CPA_RPREV=rprev)
-    log("saved CPA_MODEL_MODULE=%s CPA_TARGET=%s CPA_RPREV=%s to config.py" % (mod.__name__, target, rprev))
+    model = LM.get(str(body.get("model", "")))
+    rprev = model.resolve_rprev(str(body.get("rprev", "")))
+    values = {"CPA_MODEL": model.name}
+    if rprev:
+        values["CPA_RPREV"] = rprev
+    save_config_values(**values)
+    C.CPA_MODEL, C.CPA_RPREV = model.name, rprev or C.CPA_RPREV
+    log("saved CPA_MODEL=%s%s to config.py" % (model.name, " CPA_RPREV=%s" % rprev if rprev else ""))
     return {}
-
-
-def api_model_presets(_body: dict) -> dict:
-    return {
-        "presets": [dict(name=n, bits=R.TARGETS[p["target"]], **p) for n, p in R.MODEL_PRESETS.items()],
-        "targets": [{"name": n, "bits": b} for n, b in R.TARGETS.items()],
-        "rprevs": [{"name": n, "desc": d} for n, d in R.RPREVS.items()],
-    }
 
 
 # =============================================================================
@@ -860,17 +848,22 @@ def _run_acquire_job(job_id: str, vs_path: str, resume_path: str, samples: int, 
     try:
         target = board.require()
         sc = scope_conn.require()
-        n_samples = getattr(sc, "samples", 0) or samples or 10000
-        rate = sc.sample_rate()
         if resume_path:
             out_path = Path(resume_path)
-            mode = HS.summarize(out_path)["mode"]
+            s = HS.summarize(out_path)
+            mode, n_samples = s["mode"], int(s["n_samples"])     # the file's row length
             vectors = None
         else:
             vectors = _load_set(vs_path)
             mode = vectors.mode
             TRACES_DIR.mkdir(parents=True, exist_ok=True)
             out_path = TRACES_DIR / ("%s_%s.hdf5" % (time.strftime("%Y%m%d_%H%M%S"), mode))
+            n_samples = getattr(sc, "samples", 0) or samples
+            if not n_samples:                                       # 0: whatever the scope records
+                _update_job(job_id, message="measuring the scope's record length...")
+                n_samples = A.measure_record_length(target, sc)
+            log("%d samples per trace" % n_samples)
+        rate = sc.sample_rate()
         live = _LiveStats(n_samples, rate, mode)
         with _live_lock:
             _live[job_id] = live
@@ -1153,11 +1146,22 @@ def _reports_for(path: str) -> list[dict]:
             if rep.get("kind") == "cpa":
                 r["headline"] = ("rank-1 %.1f%%" % (100 * rep["rank1_fraction"]) if rep.get("oracle_assisted")
                                  and rep.get("rank1_fraction") is not None else "blind attack")
+                r.update(_cpa_summary(rep))
             elif rep.get("kind") == "tvla":
                 r["headline"] = "max |t| %.2f, %s" % (rep.get("max_abs_t", 0),
                                                        "leakage" if rep.get("leakage_detected") else "no leakage")
             out.append(r)
     return out
+
+
+def _cpa_summary(rep: dict) -> dict:
+    """The numbers a CPA report is compared by (GUI: Compare models)."""
+    best = [x["best_corr"] for x in rep.get("results", []) if x.get("best_corr") is not None]
+    model, rprev = _report_model(rep)
+    return dict({k: rep.get(k) for k in ("n_traces_used", "oracle_assisted", "rank1_fraction",
+                                         "median_true_rank", "mean_true_corr")},
+                model=model, rprev=rprev, mean_best_corr=float(np.mean(best)) if best else None,
+                max_best_corr=float(np.max(best)) if best else None, mtd=(rep.get("curve") or {}).get("mtd"))
 
 
 def _tags_of(md) -> list[str]:
@@ -1389,9 +1393,15 @@ def _csv_paths(h5_path: str, job_id: str) -> tuple[Path, Path]:
             ANALYSIS_DIR / ("%s_%s_curve.csv" % (stem, job_id)))
 
 
-def _model_version() -> str:
-    """Content hash of mlkem_ref.py: which leakage-model version produced a report."""
-    return "mlkem_ref:" + hashlib.sha256(Path(R.__file__).read_bytes()).hexdigest()[:12]
+def _model_version(model: str = "") -> str:
+    """Content hash of the model file, models/base.py and mlkem_ref.py: which
+    version of the leakage model produced a report."""
+    import mlkem_ref
+    files = [Path(LM.__file__).with_name("base.py"), Path(mlkem_ref.__file__)]
+    if model:
+        files.insert(0, Path(LM.get(model).source))
+    h = hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest()[:12]
+    return "%s:%s" % (model or "models", h)
 
 
 def _save_analysis_report(kind: str, file: str, job_id: str, summary: dict) -> str:
@@ -1400,7 +1410,7 @@ def _save_analysis_report(kind: str, file: str, job_id: str, summary: dict) -> s
         dataset = HS.summarize(file)
     except Exception:  # noqa: BLE001
         dataset = {"path": file}
-    report = {"kind": kind, "job_id": job_id, "dataset": dataset, "model_version": _model_version(),
+    report = {"kind": kind, "job_id": job_id, "dataset": dataset, "model_version": _model_version(summary.get("model", "")),
               "analysis_timestamp_unix": time.time(), **summary}
     out_path = ANALYSIS_DIR / ("%s_%s_%s_report.json" % (Path(file).stem, job_id, kind))
     report["report_path"] = str(out_path)
@@ -1421,11 +1431,14 @@ def api_results_list(body: dict) -> dict:
         dataset_path = rep.get("dataset", {}).get("path", "")
         if file_filter and dataset_path != file_filter:
             continue
-        out.append({"path": str(p), "filename": p.name, "kind": rep.get("kind"),
-                    "dataset_path": dataset_path,
-                    "dataset_filename": Path(dataset_path).name if dataset_path else "",
-                    "analysis_timestamp_unix": rep.get("analysis_timestamp_unix"),
-                    "model_config": rep.get("model_config")})
+        row = {"path": str(p), "filename": p.name, "kind": rep.get("kind"),
+               "dataset_path": dataset_path,
+               "dataset_filename": Path(dataset_path).name if dataset_path else "",
+               "analysis_timestamp_unix": rep.get("analysis_timestamp_unix"),
+               "model_config": rep.get("model_config")}
+        if rep.get("kind") == "cpa":
+            row.update(_cpa_summary(rep))
+        out.append(row)
     return {"results": out}
 
 
@@ -1436,7 +1449,10 @@ def _inside(path: Path, directory: Path) -> Path:
 
 
 def api_results_load(body: dict) -> dict:
-    return json.loads(_inside(Path(body["path"]), ANALYSIS_DIR).read_text())
+    rep = json.loads(_inside(Path(body["path"]), ANALYSIS_DIR).read_text())
+    if rep.get("kind") == "cpa":
+        rep["model"], rep["rprev"] = _report_model(rep)
+    return rep
 
 
 def api_results_delete(body: dict) -> dict:
@@ -1476,13 +1492,13 @@ def _dk_ref(file: str, source: str) -> bytes | None:
     return Path(source).read_bytes()
 
 
-def _run_cpa_analysis_job(job_id: str, file: str, model: str, target: str, rprev: str,
+def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str,
                           max_traces: int, dk_source: str, curve: bool) -> None:
     try:
         dk_ref = _dk_ref(file, dk_source)
-        _update_job(job_id, message="running CPA analysis (%s/%s)..." % (target, rprev))
-        summary = CA.run_attack(file, target, rprev, max_traces, None, dk_ref)
-        summary["model_config"] = {"preset": model or "custom", "target": target, "rprev": rprev,
+        _update_job(job_id, message="running CPA analysis (%s%s)..." % (model, ", R_prev " + rprev if rprev else ""))
+        summary = CA.run_attack(file, model, rprev, max_traces, None, dk_ref)
+        summary["model_config"] = {"model": model, "target": summary["target"], "rprev": rprev,
                                    "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None}
         results_csv, curve_csv = _csv_paths(file, job_id)
         CA.write_results_csv(summary["results"], str(results_csv))
@@ -1491,7 +1507,7 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, target: str, rprev
             if dk_ref is None:
                 raise ValueError("the key-rank curve needs the true key (oracle-assisted evaluation)")
             _update_job(job_id, message="computing key-rank-vs-trace-count curve...")
-            c = CA.run_curve(file, target, rprev, max_traces, dk_ref)
+            c = CA.run_curve(file, model, rprev, max_traces, dk_ref)
             CA.write_curve_csv(c, str(curve_csv))
             c["curve_csv"] = str(curve_csv)
             summary["curve"] = c
@@ -1503,26 +1519,30 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, target: str, rprev
         log("[error] CPA analysis job %s: %s" % (job_id, e))
 
 
+def _model_of(body: dict) -> tuple[str, str]:
+    """(model, R_prev) of a request: a model name (old preset names and, for
+    old "custom" reports, a target register also work) and an R_prev it accepts."""
+    name = LM.resolve(str(body.get("model", "") or ""), str(body.get("target", "") or ""))
+    if not name and not body.get("model") and not body.get("target"):
+        name = _default_model()[0]
+    if not name:
+        raise ValueError("no such leakage model: %s" % (body.get("model") or body.get("target")))
+    model = LM.get(name, reload=True)
+    return model.name, model.resolve_rprev(str(body.get("rprev", "") or ""))
+
+
 def api_analysis_cpa_start(body: dict) -> dict:
     file = body["file"]
     if not Path(file).is_file():
         raise ValueError("no such file: %s" % file)
-    model = body.get("model", "")
-    if model:
-        if model not in R.MODEL_PRESETS:
-            raise ValueError("no such model preset: %s" % model)
-        target, rprev = R.MODEL_PRESETS[model]["target"], R.MODEL_PRESETS[model]["rprev"]
-    else:
-        target, rprev = body.get("target", C.CPA_TARGET), body.get("rprev", C.CPA_RPREV)
-        if target not in R.TARGETS or rprev not in R.RPREVS:
-            raise ValueError("unknown target/rprev")
+    model, rprev = _model_of(body)
     dk_source = str(body.get("dk_ref", body.get("dk_ref_path", ""))).strip()
     job_id = _new_job("cpa_analysis")
     threading.Thread(target=_run_cpa_analysis_job, daemon=True,
-                     args=(job_id, file, model, target, rprev, int(body.get("max_traces", 0) or 0),
+                     args=(job_id, file, model, rprev, int(body.get("max_traces", 0) or 0),
                            dk_source, bool(body.get("curve", False)))).start()
-    log("started CPA analysis job %s: %s target=%s rprev=%s%s" % (job_id, Path(file).name, target, rprev,
-        " (oracle-assisted)" if dk_source else ""))
+    log("started CPA analysis job %s: %s model=%s%s%s" % (job_id, Path(file).name, model,
+        " R_prev=" + rprev if rprev else "", " (oracle-assisted)" if dk_source else ""))
     return {"job_id": job_id}
 
 
@@ -1555,9 +1575,9 @@ def api_analysis_correlation_curve(body: dict) -> dict:
         raise ValueError("no such file: %s" % file)
     dk_source = str(body.get("dk_ref", body.get("dk_ref_path", ""))).strip()
     try:
+        model, rprev = _model_of(body)
         return CA.correlation_curve_for_coefficient(
-            file, body.get("target", C.CPA_TARGET), body.get("rprev", C.CPA_RPREV),
-            int(body.get("poly", 0) or 0), int(body.get("coeff", 0) or 0),
+            file, model, rprev, int(body.get("poly", 0) or 0), int(body.get("coeff", 0) or 0),
             int(body.get("max_traces", 0) or 0), _dk_ref(file, dk_source))
     except SystemExit as e:
         raise ValueError(str(e))
@@ -1628,10 +1648,20 @@ def api_analysis_raw_traces(body: dict) -> dict:
             "axis": _axis(rate, n_samples), "traces": traces, "stats": stats}
 
 
+def _report_model(rep: dict) -> tuple[str, str]:
+    """(model, R_prev) a CPA report was made with, also for reports from before models/."""
+    mc = rep.get("model_config") or {}
+    name = LM.resolve(mc.get("model") or rep.get("model") or mc.get("preset") or "", mc.get("target") or rep.get("target") or "")
+    rprev = mc.get("rprev", rep.get("rprev", ""))
+    if name == "hw_scalar":
+        rprev = ""          # older HW reports said "zero": the same hypothesis
+    return name, rprev or ""
+
+
 def api_analysis_success_rate(body: dict) -> dict:
     """Success rate vs trace count across >= 2 independent, oracle-assisted
-    campaigns analysed with the same (target, rprev) -- never for a single one."""
-    target, rprev = body.get("target", C.CPA_TARGET), body.get("rprev", C.CPA_RPREV)
+    campaigns analysed with the same model and R_prev -- never for a single one."""
+    model, rprev = _model_of(body)
     ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     curves, dataset_paths = [], []
     for p in sorted(ANALYSIS_DIR.glob("*_cpa_report.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -1639,8 +1669,8 @@ def api_analysis_success_rate(body: dict) -> dict:
             rep = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        mc, curve = rep.get("model_config") or {}, rep.get("curve")
-        if not curve or not curve.get("checkpoints") or mc.get("target") != target or mc.get("rprev") != rprev:
+        curve = rep.get("curve")
+        if not curve or not curve.get("checkpoints") or _report_model(rep) != (model, rprev):
             continue
         ds_path = rep.get("dataset", {}).get("path", "")
         if not ds_path or ds_path in dataset_paths:
@@ -1648,7 +1678,7 @@ def api_analysis_success_rate(body: dict) -> dict:
         dataset_paths.append(ds_path)
         curves.append(curve["checkpoints"])
     if len(curves) < 2:
-        return {"available": False, "target": target, "rprev": rprev, "n_campaigns": len(curves),
+        return {"available": False, "model": model, "rprev": rprev, "n_campaigns": len(curves),
                 "reason": "need >=2 independent campaigns analysed oracle-assisted with --curve at "
                           "this model config; have %d" % len(curves)}
     grid = sorted({row["n_traces"] for ckpts in curves for row in ckpts})
@@ -1660,7 +1690,7 @@ def api_analysis_success_rate(body: dict) -> dict:
         return float(v) if np.isfinite(v) else None
     rows = [{"n_traces": n, "mean_rank1_fraction": f(mean[i]), "min_rank1_fraction": f(lo[i]),
              "max_rank1_fraction": f(hi[i])} for i, n in enumerate(grid)]
-    return {"available": True, "target": target, "rprev": rprev, "n_campaigns": len(curves),
+    return {"available": True, "model": model, "rprev": rprev, "n_campaigns": len(curves),
             "dataset_paths": dataset_paths, "checkpoints": rows}
 
 
@@ -1687,10 +1717,8 @@ ROUTES = {
     ("POST", "/api/scope/disconnect"): api_scope_disconnect,
     ("POST", "/api/scope/save_config"): api_scope_save_config,
     ("GET", "/api/model/list"): api_model_list,
-    ("POST", "/api/model/load"): api_model_load,
     ("POST", "/api/model/selftest"): api_model_selftest,
     ("POST", "/api/model/save_default"): api_model_save_default,
-    ("GET", "/api/model/presets"): api_model_presets,
     ("GET", "/api/jobs/status"): api_job_status,
     ("POST", "/api/jobs/stop"): api_job_stop,
     ("GET", "/api/vectors/info"): api_vectors_info,

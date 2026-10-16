@@ -152,6 +152,10 @@ class VisaScope(Scope):
                 raise TimeoutError("scope did not trigger within %.1f s (state %s): check trigger "
                                    "source/level and that the board is running" % (timeout, state))
         raw = self.dev.query_binary_values(d["data"], datatype=d["datatype"], container=np.array)
+        try:  # the record as captured: the sample rate follows timebase changes made on the bench
+            self.preamble = self.dev.query(d["preamble"]).strip()
+        except Exception:  # noqa: BLE001 - keep the previous one
+            pass
         return np.asarray(raw)
 
     def sample_rate(self) -> float:

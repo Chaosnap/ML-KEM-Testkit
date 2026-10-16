@@ -121,7 +121,7 @@ ROM 里 Encaps 路径的 `DECODE d=12 chk IN+0 -> s6`，第 252 行），因为 
 NTT 得到的 `û_i`——这正是 `mlkem_ref.py: u_hat_from_ct()` 算的那个量，和硬件里进
 BMUL 之前的 `s6` 是同一个值。
 
-三次 `BMUL s7*s6->s3` 对应 `mlkem_ref.py: PairModel` 里的 `poly = 0, 1, 2`。
+三次 `BMUL s7*s6->s3` 对应 `models/base.py: Guess` 里的 `poly = 0, 1, 2`。
 
 ### 4.2 BMUL 一条流水线的时序（`hdl/core/mlkem_poly_alu.sv`）
 
@@ -143,21 +143,21 @@ c1 = a0·b1 + a1·b0 = (a0+a1)(b0+b1) − a0·b0 − a1·b1
 | T+3 | `m0_r` (经 7 拍后 = T+10) | u_mul0 内部 | `a0·b0 mod q` | — |
 | T+4 | `ksa, ksb` | 259-260 | `a0+a1`, `b0+b1`（Karatsuba 和项） | 否，和项本身不是乘积 |
 | T+10 | `m1_a = m1_r` (上一次 `a1·b1` 的结果) | 232-233 | 乘法器 1 复用算 `(a1·b1)·γ` | — |
-| **T+11** | **`p00`** | 269 | **`a0·b0 mod q`（锁存）** | **✔ `--target p_self`** |
-| **T+11** | **`p11`** | 270 | **`a1·b1 mod q`（锁存）** | **✔ `--target p_self`** |
+| **T+11** | **`p00`** | 269 | **`a0·b0 mod q`（锁存）** | **✔ `p_self`（`hw_scalar` / `hd_scalar`）** |
+| **T+11** | **`p11`** | 270 | **`a1·b1 mod q`（锁存）** | **✔ `p_self`（`hw_scalar` / `hd_scalar`）** |
 | T+11 | `s1 = msub(m0_r, p00)` | 277 | `(a0+a1)(b0+b1) − a0·b0` | 否（中间差，未单独建模） |
 | T+12 | `h1 = msub(s1, p11d)` | 279 | `= c1`（减完两次，Karatsuba 交叉项） | 内部中间量，c1 要到 T+13 才稳定 |
 | **T+13…T+17** | **`p00d[0..5]`** | 280-282 | **`a0·b0` 的 6 级延迟副本**（陪着 `h1` 走流水线） | 真实硅片上这些延迟寄存器也在翻转，本工具**没有单独建模**（见第 9 节局限） |
 | **T+13…T+18** | **`h1d[0..4]`** | 283-285 | **`c1` 的 5 级延迟副本** | 同上，未单独建模 |
 | T+17 | `h0 = madd(p00d[5], m1_r)` | 286 | `a0·b0 + a1·b1·γ = c0` | — |
 | T+18 | `cd[0..13]` | 287-289 | `C`（累加目标的旧值）的 14 级延迟副本，陪着乘积走完流水线 | 对应 `--rprev acc` 的来源 |
-| **T+18** | **`wb = {madd(cd[13][23:12],h1d[4]), madd(cd[13][11:0],h0)}`** | 290 | **`{c1,c0}` 加上累加值 `C_old`，24 位字，还没写进 RAM** | **✔ `--target word`（配合 `--rprev acc`，`cd[13]` 就是真实的 `C_old`）** |
-| **T+19** | **`wbd = wb`** | 291 | **`wb` 再锁存一拍** | **✔ `--target word`** |
-| **T+21** | **`rb_din = wbd`（写回 RAM）** | 301, 189 | **真正写进多项式 RAM 的那一拍，`rb_din` 连续被下一个字覆写** | **✔ `--target word` + `--rprev prev-word`：`rb_din` 这个寄存器是流水线里连续写入的，物理上最贴近真实探头能测到的信号** |
+| **T+18** | **`wb = {madd(cd[13][23:12],h1d[4]), madd(cd[13][11:0],h0)}`** | 290 | **`{c1,c0}` 加上累加值 `C_old`，24 位字，还没写进 RAM** | **✔ `word`（`hd_basemul_word`，配合 R_prev `acc`，`cd[13]` 就是真实的 `C_old`）** |
+| **T+19** | **`wbd = wb`** | 291 | **`wb` 再锁存一拍** | **✔ `word`（`hd_basemul_word`）** |
+| **T+21** | **`rb_din = wbd`（写回 RAM）** | 301, 189 | **真正写进多项式 RAM 的那一拍，`rb_din` 连续被下一个字覆写** | **✔ `hd_basemul_word` + R_prev `prev-word`：`rb_din` 这个寄存器是流水线里连续写入的，物理上最贴近真实探头能测到的信号** |
 
-`c0`/`c1` 单独（不拼成 24 位字）对应上表里 `h0`/`h1d[4]` 这两个时刻，也在
-`TARGETS` 里单独列了一项，供 `--target c0` / `--target c1` 用，方便和 `word` 对比
-谁的信号更强。
+`c0`/`c1` 单独（不拼成 24 位字）对应上表里 `h0`/`h1d[4]` 这两个时刻，各有一个
+模型文件（`models/hd_basemul_c0.py` / `hd_basemul_c1.py`），方便和 `word` 对比谁的
+信号更强。
 
 ### 4.3 三条攻击窗口在核心周期里的具体位置
 
@@ -187,21 +187,20 @@ RTL，没有这个假设的物理基础**——上表里任何一个寄存器，
 实数据，不是 0。所以必须显式建模"旧值是什么"，这就是 `R_prev` 存在的原因，也是
 这个工具和一般教科书 CPA 教程最大的设计差异。
 
-`mlkem_ref.py: hamming_distance()` 实现：
+`models/base.py: hw()` / `hd()` 实现：
 
 ```python
-def hamming_distance(x, y, bits):
-    z = x ^ y
-    return 12位查表(z) 或 两次12位查表相加(word, 24位)
+def hd(a, b, bits):
+    return hw(a ^ b, bits)      # hw: 12 位查表，或两次 12 位查表相加（word，24 位）
 ```
 
 查表（`_HW12`）预先算好 0..4095 每个值的比特数，4096 项的 numpy 数组，避免逐 trace
 现算 `bin(x).count('1')`——这是把假设计算矢量化到 `(N, 3329)` 候选矩阵之后唯一的
 性能考虑，不影响模型本身。
 
-### 5.2 `X`：四种寄存器目标（`mlkem_ref.py: TARGETS`）
+### 5.2 `X`：四种寄存器（`models/base.py: REGISTERS`）
 
-| `--target` | 公式 | 对应寄存器（见第 4.2 节表格） | 位宽 |
+| `register` | 公式 | 对应寄存器（见第 4.2 节表格） | 位宽 |
 | --- | --- | --- | --- |
 | `p_self` | `a_j · g mod q`，`g` 是猜测，`a_j` 是已知的 û 系数 | `p00` / `p11`（T+11） | 12 |
 | `c0` | `(a0·b0 + γ·a1·b1) [+ C_old] mod q` | `h0`（T+17），`g` 替换 `b0` 或 `b1`（取决于猜的是哪个系数） | 12 |
@@ -212,33 +211,35 @@ def hamming_distance(x, y, bits):
 论上信噪比最高，但对应的寄存器在硬件里只存在 1 拍（T+11 这一瞬间），真实探头采样
 率不够高的话容易漏过。`word` 是最贴近"写进 RAM 的最终值"的点，也是默认选项。
 
-**命名预设（`mlkem_ref.py: MODEL_PRESETS`）**：`--target p_self
---rprev zero` 和 `--target p_self --rprev prev-word` 分别对应任务书里点名要做的
-`HW((û × s_guess) mod q)` 和 `HD(R_prev, (û × s_guess) mod q)` 两个模型——数学上
-`HD(0, X) = HW(X)` 恒成立（异或 0 不改变比特、popcount 就是汉明权重），所以 `HW`
-不需要另外实现一套代码，就是 `p_self` 配 `R_prev=0` 的特例。CLI/GUI 都可以直接用
-`--model HW`、`--model HD`、`--model basemul-c0`、`--model basemul-c1`、
-`--model basemul-word` 这五个名字，不用自己拼 `--target`/`--rprev`。
+**模型文件（`cpa_toolkit/models/`，一个文件一个模型）**：每个模型选定一个寄存器、
+它接受的 R_prev，以及泄漏函数 `leak(x, r_prev)`。`hw_scalar`（`p_self`，无 R_prev）
+和 `hd_scalar`（`p_self`，R_prev 为 `prev-word` 或 `zero`）分别对应任务书里点名要做的
+`HW((û × s_guess) mod q)` 和 `HD(R_prev, (û × s_guess) mod q)`——数学上
+`HD(0, X) = HW(X)` 恒成立（异或 0 不改变比特、popcount 就是汉明权重），所以
+`hd_scalar` 配 `zero` 与 `hw_scalar` 的假设完全相同。另外三个是 `hd_basemul_c0`、
+`hd_basemul_c1`、`hd_basemul_word`（默认）。CLI 用 `--model <文件名> --rprev <前态>`，
+GUI 在 Analysis 页的模型下拉框里选；旧的预设名（`HW`、`HD`、`basemul-*`）仍然可用。
+加新模型的方法见 `cpa_toolkit/README.md` 第 6 节。
 
-### 5.3 `R_prev`：三种前态假设（`mlkem_ref.py: RPREVS`）
+### 5.3 `R_prev`：三种前态假设（`models/base.py: RPREVS`）
 
-| `--rprev` | 取值 | 对应物理行为 | 代码位置 |
+| R_prev | 取值 | 对应物理行为 | 代码位置 |
 | --- | --- | --- | --- |
-| `zero` | 恒为 0 | 寄存器被同步复位清零，或者是"保守默认，不知道前态就假设是 0"——对 `p_self` 这种只活 1 拍的寄存器比较合理，因为它清晰的"前态"是上一次被该乘法器算的完全不同的东西 | `PairModel.r_prev()` |
-| `prev-word` | 同一条 BMUL 遍里，**上一个**字的 `word` 值 | `rb_din`/`wb`/`wbd` 是流水线寄存器，连续写入下一个字——第 w 个字进来时，寄存器里还留着第 w-1 个字 | `PairModel.r_prev()`，递归调用 `self.values(..., w-1)` |
-| `acc` | `C_old`，前面已经处理过的多项式的累加和 | RAM 字读-改-写：第 2/3 个多项式的 BMUL 要把新乘积加到已有的部分和上，`cin`/`cd[13]`（见第 4.2 节表格 T+18 行）就是这个旧值 | `PairModel.r_prev()` |
+| `zero` | 恒为 0 | 寄存器被同步复位清零，或者是"保守默认，不知道前态就假设是 0"——对 `p_self` 这种只活 1 拍的寄存器比较合理，因为它清晰的"前态"是上一次被该乘法器算的完全不同的东西 | `Guess.previous()` |
+| `prev-word` | 同一条 BMUL 遍里，**上一个**字的 `word` 值 | `rb_din`/`wb`/`wbd` 是流水线寄存器，连续写入下一个字——第 w 个字进来时，寄存器里还留着第 w-1 个字 | `Guess.previous()`，递归调用 `self.register(..., w-1)` |
+| `acc` | `C_old`，前面已经处理过的多项式的累加和 | RAM 字读-改-写：第 2/3 个多项式的 BMUL 要把新乘积加到已有的部分和上，`cin`/`cd[13]`（见第 4.2 节表格 T+18 行）就是这个旧值 | `Guess.previous()` |
 
 `zero` 和 `word` 的差异本质是：**要不要显式建模流水线寄存器连续被覆写这个事实**。
 用 `zero` 相当于假设每次写入都是从一片空白电路写入，用 `prev-word`/`acc` 相当于承
 认这是一条真实存在的、数据连续流过的流水线——后者更贴近物理现实，这也是为什么
 正对照（见 README 第 3.3 节）必须配 `--rprev prev-word` 才能把注入的泄漏打穿（配
-`zero` 只有 0.8% rank-1，配 `prev-word` 是 92.8%，同一组 trace、同一个 `--target
-word`，差距就在 R_prev 这一个假设上——第 6 节有完整对照）。
+`zero` 只有 0.8% rank-1，配 `prev-word` 是 92.8%，同一组 trace、同一个寄存器
+`word`，差距就在 R_prev 这一个假设上——第 6 节有完整对照）。
 
-### 5.4 `PairModel`：猜测怎么构造（`mlkem_ref.py: PairModel`）
+### 5.4 `Guess`：猜测怎么构造（`models/base.py: Guess`）
 
 BaseMul 的 Karatsuba 分解里，一次乘法同时涉及**一对**系数（`b0=ŝ[2w]`,
-`b1=ŝ[2w+1]`），而 CPA 一次只猜一个系数 `j`。`PairModel` 的设计：
+`b1=ŝ[2w+1]`），而 CPA 一次只猜一个系数 `j`。`Guess` 的设计：
 
 - `e = j & 1` 决定猜的是这对里的偶数下标（`b0`）还是奇数下标（`b1`）；
 - **搭档系数**（没在猜的那一个）和**累加值 `C_old`**，在"已知密钥评估"模式下直接
@@ -334,7 +335,7 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 ## 9. 已知局限（设计层面，补充 `cpa_toolkit/README.md` 第 7 节）
 
 1. **延迟链副本没有单独建模。** 第 4.2 节表格里 `p00d[0..5]`、`h1d[0..4]` 这些延
-   迟寄存器副本，真实硅片上每一级都在独立翻转、独立消耗功耗，`PairModel` 只建模
+   迟寄存器副本，真实硅片上每一级都在独立翻转、独立消耗功耗，现有模型只建模
    了"当前字"（`word`/`c0`/`c1`）和"上一个字"（`prev-word`）两个时间点，没有把
    流水线里同时存在的 6+5 级延迟副本都纳入假设。这意味着真实信号可能比模型预测
    的更强（延迟链贡献了额外没被算进去的信噪比），但也可能因为相位没对齐被漏掉
@@ -353,11 +354,12 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 
 | 内容 | 文件 |
 | --- | --- |
-| 本文档引用的 FIPS 203 软件参考实现、假设模型、`PairModel` | [`mlkem_ref.py`](../cpa_toolkit/mlkem_ref.py) |
+| 本文档引用的 FIPS 203 软件参考实现 | [`mlkem_ref.py`](../cpa_toolkit/mlkem_ref.py) |
+| 泄漏模型（一个文件一个模型）、`Guess`、R_prev、汉明重量 / 距离、模型自检 | [`models/`](../cpa_toolkit/models/) |
 | BMUL 流水线 RTL（第 4.2 节表格的全部行号出处） | [`../hdl/core/mlkem_poly_alu.sv`](../hdl/core/mlkem_poly_alu.sv) |
 | Decaps 微码（第 4.1 节的 ROM 地址） | [`../hdl/core/mlkem_ucode_rom.sv`](../hdl/core/mlkem_ucode_rom.sv) |
 | 微码生成器（slot/操作码定义） | [`../scripts/gen/gen_mlkem_ucode.py`](../scripts/gen/gen_mlkem_ucode.py) |
 | CPA 相关系数引擎、`--curve`、oracle-assisted 标注 | [`cpa_attack.py`](../cpa_toolkit/cpa_attack.py) |
 | TVLA 实测分析引擎（Welch's t） | [`tvla_analysis.py`](../cpa_toolkit/tvla_analysis.py) |
 | CPA/TVLA 采集、三种密文策略、结构化密文生成调用方 | [`acquire_cpa.py`](../cpa_toolkit/acquire_cpa.py) |
-| 用法、正负对照、TVLA 流程、命名模型预设、常见问题 | [`README.md`](../cpa_toolkit/README.md) |
+| 用法、正负对照、TVLA 流程、泄漏模型与新增模型、常见问题 | [`README.md`](../cpa_toolkit/README.md) |

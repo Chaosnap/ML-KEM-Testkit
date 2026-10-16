@@ -1127,7 +1127,8 @@ function tvCsv() {
 // =====================================================================================
 // Analysis page
 // =====================================================================================
-let anFiles = [], anReports = [], anPresets = [], anTargets = [], anRprevs = [], anOracle;
+let anFiles = [], anReports = [], anModels = [], anRprevDesc = {}, anOracle;
+const anModelOf = (name) => anModels.find((m) => m.name === name);
 let cur = null;          // report being shown (cpa or tvla)
 let insp = null;         // {poly, coeff} selected in the CPA inspector
 const ccCache = new Map();
@@ -1197,9 +1198,9 @@ function anConfig(open) {
   $("an-config").classList.toggle("hidden", !open);
   $("an-new").classList.toggle("hidden", open);
 }
-const reportLabel = (r) => r.kind === "cpa"
-  ? `CPA · ${r.model_config ? (r.model_config.preset && r.model_config.preset !== "custom" ? r.model_config.preset : `${r.model_config.target}/${r.model_config.rprev}`) : "?"} · ${r.model_config?.oracle_assisted ? "scored" : "blind"}`
-  : "TVLA · Welch t-test";
+// "model / R_prev" of a CPA report (the server resolves older reports' preset / target names)
+const modelTxt = (r) => (r.model || r.model_config?.model || r.model_config?.preset || "?") + (r.rprev ? " / " + r.rprev : "");
+const reportLabel = (r) => r.kind === "cpa" ? `CPA · ${modelTxt(r)} · ${r.model_config?.oracle_assisted ? "scored" : "blind"}` : "TVLA · Welch t-test";
 async function anReportsList(selectPath) {
   const f = anFile();
   anReports = f ? (await api("POST", "/api/results/list", { file: f.path }).catch(() => ({ results: [] }))).results : [];
@@ -1220,7 +1221,7 @@ function anEmpty(t, body) {
 async function anOpenReport(path) {
   try {
     const rep = await api("POST", "/api/results/load", { path });
-    rep.report_path = rep.report_path || path;
+    rep.report_path = path;                       // where it was loaded from
     if (anReports.some((r) => r.path === path)) $("an-report").value = path;
     rep.kind === "cpa" ? renderCPA(rep) : renderTVLA(rep);
   } catch (e) { err(e); }
@@ -1232,7 +1233,7 @@ async function anReportAction(act) {
   if (act === "csv") return cur.results_csv ? download("/api/analysis/download", { path: cur.results_csv }) : toast("This report has no CSV export", "warn");
   if (act === "rerun") { anPrefill(cur); anConfig(true); $("an-config").scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
   if (act === "delete") {
-    if (!(await dialog({ title: "Delete this report?", body: `<b>${esc(reportLabel({ kind: cur.kind, model_config: cur.model_config }))}</b> from ${esc(fmtDate(cur.analysis_timestamp_unix))} and its CSV files are removed from <code>data/analysis/</code>. The campaign itself is not touched.`, ok: "Delete", danger: true }))) return;
+    if (!(await dialog({ title: "Delete this report?", body: `<b>${esc(reportLabel(cur))}</b> from ${esc(fmtDate(cur.analysis_timestamp_unix))} and its CSV files are removed from <code>data/analysis/</code>. The campaign itself is not touched.`, ok: "Delete", danger: true }))) return;
     try {
       await api("POST", "/api/results/delete", { path: cur.report_path });
       toast("Report deleted", "ok");
@@ -1246,42 +1247,42 @@ function anPrefill(r) {
   const mc = r.model_config || {};
   $("an-max-traces").value = mc.max_traces_requested ?? 0;
   if (r.kind !== "cpa") return;
-  const preset = anPresets.some((p) => p.name === mc.preset) ? mc.preset : "";
-  $("an-preset").value = preset;
-  anModel();
-  if (!preset) { $("an-target").value = r.target; $("an-rprev").value = r.rprev; }
+  if (anModelOf(r.model)) { $("an-model").value = r.model; anModel(r.rprev); }
+  else toast(`The model of this report (${modelTxt(r)}) is not in cpa_toolkit/models/ any more`, "warn");
   const f = anFile();
   const v = r.oracle_assisted ? (f && f.has_recipe ? "vector_set" : "file") : "";
   anOracle.set(v); anOracleChanged(v);
   $("an-curve").checked = !!r.curve && !!v;
 }
 
-// model selection
-async function anLoadPresets() {
+// model selection: the files in cpa_toolkit/models/, one per model
+async function anLoadModels(quiet) {
   try {
-    const r = await api("GET", "/api/model/presets");
-    anPresets = r.presets; anTargets = r.targets; anRprevs = r.rprevs;
-    $("an-preset").innerHTML = anPresets.map((p) => `<option value="${esc(p.name)}" ${p.name === "basemul-word" ? "selected" : ""}>${esc(p.name)} — ${esc(p.desc)}</option>`).join("") +
-      `<option value="">Custom target / R_prev…</option>`;
-    anModel();
+    const r = await api("GET", "/api/model/list"), keep = $("an-model").value, keepRprev = $("an-rprev").value;
+    anModels = r.models; anRprevDesc = r.rprevs;
+    const fams = [...new Set(anModels.map((m) => m.family || "other"))];
+    $("an-model").innerHTML = fams.map((f) => `<optgroup label="${esc(f)}">` + anModels.filter((m) => (m.family || "other") === f)
+      .map((m) => `<option value="${esc(m.name)}">${esc(m.name)} — ${esc(m.title)}</option>`).join("") + "</optgroup>").join("");
+    const name = anModelOf(keep) ? keep : r.default_model;
+    $("an-model").value = name;
+    anModel(name === keep ? keepRprev : r.default_rprev);
+    $("model-status").textContent = `${anModels.length} models in cpa_toolkit/models/` + (r.errors.length ? ` · ${r.errors.length} file(s) failed to load` : "");
+    r.errors.forEach((e) => toast(`${e.file}: ${e.error}`, "bad", 10000));
+    if (!quiet) toast(`${anModels.length} leakage models loaded`, "ok");
   } catch (e) { err(e); }
 }
-function fillSel(id, items, label, val) { $(id).innerHTML = items.map((x) => `<option value="${esc(x.name)}" ${x.name === val ? "selected" : ""}>${esc(label(x))}</option>`).join(""); }
-function anModel() {
-  const p = anPresets.find((x) => x.name === $("an-preset").value);
-  $("an-model-detail").classList.toggle("hidden", !p);
-  if (!p) {
-    $("an-target").disabled = $("an-rprev").disabled = false; $("an-rprev-wrap").classList.remove("hidden");
-    fillSel("an-target", anTargets, (t) => `${t.name} (${t.bits} bit)`, $("an-target").value || "word");
-    fillSel("an-rprev", anRprevs, (r) => r.name, $("an-rprev").value || "prev-word");
-    return;
-  }
-  $("an-model-detail").innerHTML = [["Equation", p.equation], ["Register", p.register], ["Stage", p.pipeline_stage], ["Limits", p.limitations]]
-    .map(([k, v]) => `<div class="md-row"><span class="md-k">${k}</span><span class="md-v${k === "Limits" ? " prose" : ""}">${esc(v)}</span></div>`).join("");
-  fillSel("an-target", anTargets, (t) => `${t.name} (${t.bits} bit)`, p.target); $("an-target").disabled = true;
-  if (p.name === "HW") $("an-rprev-wrap").classList.add("hidden");
-  else { $("an-rprev-wrap").classList.remove("hidden"); fillSel("an-rprev", anRprevs.filter((r) => p.valid_rprevs.includes(r.name)), (r) => r.name, p.rprev); $("an-rprev").disabled = true; }
+function anModel(rprev) {
+  const m = anModelOf($("an-model").value);
+  $("model-selftest-wrap").classList.add("hidden");
+  if (!m) { $("an-model-detail").innerHTML = ""; return; }
+  $("an-model-detail").innerHTML = [["Equation", m.equation], ["Register", `${m.register} (${m.bits} bit)${m.rtl_register ? " · " + m.rtl_register : ""}`],
+    ["Stage", m.pipeline_stage], ["Needs", m.required_inputs], ["Limits", m.limitations], ["File", "cpa_toolkit/" + m.file]].filter(([, v]) => v)
+    .map(([k, v]) => `<div class="md-row"><span class="md-k">${k}</span><span class="md-v${k === "Limits" || k === "Needs" ? " prose" : ""}">${esc(v)}</span></div>`).join("");
+  $("an-rprev-wrap").classList.toggle("hidden", !m.rprevs.length);
+  $("an-rprev").innerHTML = m.rprevs.map((x) => `<option value="${esc(x.name)}" title="${esc(x.desc)}">${esc(x.name)} — ${esc(x.desc.replace(/^R_prev = /, ""))}</option>`).join("");
+  if (typeof rprev === "string" && m.rprevs.some((x) => x.name === rprev)) $("an-rprev").value = rprev;
 }
+const anRprev = () => (anModelOf($("an-model").value)?.rprevs.length ? $("an-rprev").value : "");
 function anOracleChanged(v) {
   $("an-dkref").classList.toggle("hidden", v !== "file");
   $("an-oracle-warn").textContent = v ? "Oracle-assisted: the true key only ranks the attack's guesses (key rank, MTD); it never builds them."
@@ -1297,7 +1298,7 @@ async function anRun() {
   if (!f || anJob) return;
   const kind = f.mode === "cpa" ? "cpa" : "tvla";
   if (kind === "cpa" && anOracle.get() === "file" && !$("an-dkref").value.trim()) return toast("Enter the path of the dk file", "warn");
-  const body = kind === "cpa" ? { file: f.path, model: $("an-preset").value, target: $("an-target").value, rprev: $("an-rprev").value,
+  const body = kind === "cpa" ? { file: f.path, model: $("an-model").value, rprev: anRprev(),
       max_traces: $("an-max-traces").value, dk_ref: anDkRef(), curve: $("an-curve").checked } : { file: f.path, max_traces: $("an-max-traces").value };
   const pr = $("an-progress"), t0 = Date.now();
   try {
@@ -1340,7 +1341,7 @@ function showTab(kind, t, draw) {
 function reportHead(r) {
   const mc = r.model_config || {};
   const chips = r.kind === "cpa"
-    ? [chip("model", mc.preset && mc.preset !== "custom" ? mc.preset : "custom"), chip("target / R_prev", `${r.target} / ${r.rprev}`),
+    ? [chip("model", r.model || "?"), chip("register / R_prev", `${r.target} / ${r.rprev || "—"}`),
        chip("scoring", r.oracle_assisted ? "true key (oracle-assisted)" : "blind", r.oracle_assisted ? "warn" : ""), chip("traces", r.n_traces_used)]
     : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold)];
   chips.push(chip("analysed", fmtDate(r.analysis_timestamp_unix)));
@@ -1348,11 +1349,11 @@ function reportHead(r) {
 }
 function detailsKv(r) {
   const d = r.dataset || {}, mc = r.model_config || {};
-  const p = anPresets.find((x) => x.name === mc.preset);
+  const m = anModelOf(r.model);
   const common = [["Campaign", String(r.file || d.path || "").split("/").pop()], ["Traces in file", d.n_completed], ["Samples / trace", d.n_samples],
     ["Sample rate", rateTxt(d.sample_rate_hz || r.sample_rate_hz)], ["K correct (acquisition)", pct(d.k_match_fraction)]];
   const specific = r.kind === "cpa"
-    ? [["Model preset", mc.preset || "custom"], ["Equation", p ? p.equation : "—"], ["Target / R_prev", `${r.target} / ${r.rprev}`],
+    ? [["Leakage model", r.model || "?"], ["Equation", m ? m.equation : "—"], ["Register / R_prev", `${r.target} / ${r.rprev || "—"}`],
        ["Scoring", r.oracle_assisted ? "oracle-assisted (true key)" : "blind"], ["Traces used", r.n_traces_used], ["Candidates", r.n_candidates],
        ["Coefficients", r.coefficients_attacked ?? (r.results || []).length], ["Chance rank (mean)", r.chance_rank_mean], ["Model version", r.model_version]]
     : [["Fixed / random", `${r.n_fixed} / ${r.n_random}`], ["Threshold", "|t| > " + r.leakage_threshold], ["max |t|", r.max_abs_t?.toFixed(3)]];
@@ -1367,7 +1368,7 @@ function renderCPA(r) {
   const best = rows.map((x) => x.best_corr);
   const mean = best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0;
   heatMetric = oracle ? "rank" : "corr";
-  const t = tabsHtml("cpa", [["map", "Key map"], ["conv", r.curve ? "Convergence" : "Distribution"], ["table", "Coefficients"], ["details", "Details"]]);
+  const t = tabsHtml("cpa", [["map", "Key map"], ["conv", r.curve ? "Convergence" : "Distribution"], ["table", "Coefficients"], ["models", "Compare models"], ["details", "Details"]]);
   const pan = (id, html) => `<div class="tab-panel ${id === t.active ? "active" : ""}" data-t="${id}">${html}</div>`;
   $("an-results").innerHTML = reportHead(r) + `<div class="kpis" id="cpa-kpis"></div>` + t.html +
     pan("map", `<div class="card"><div class="card-head"><h2>ŝ coefficients</h2><span class="sub">3 polynomials × 256 — click a cell to inspect it</span>
@@ -1378,15 +1379,19 @@ function renderCPA(r) {
     pan("conv", `<div class="card"><div class="card-head"><h2>${r.curve ? "Key rank vs trace count" : "Peak |ρ| of the best guess"}</h2>
         <span class="sub">${r.curve ? "how many traces the attack needs (oracle-assisted)" : "blind run: no key to rank against — enable scoring + MTD for a convergence curve"}</span>
         ${r.curve ? '<div class="actions"><button class="btn ghost sm" id="cpa-dl-curve">CSV</button></div>' : ""}</div><div class="chart" id="cpa-side"></div></div>
-      <div class="card" id="cpa-sr-card"><div class="card-head"><h2>Success rate across campaigns</h2><span class="sub">independent campaigns, same target / R_prev</span></div>
+      <div class="card" id="cpa-sr-card"><div class="card-head"><h2>Success rate across campaigns</h2><span class="sub">independent campaigns, same model / R_prev</span></div>
         <div class="chart" id="cpa-sr"></div><div class="chart-note" id="cpa-sr-note"></div></div>`) +
     pan("table", `<div class="card"><div class="card-head"><h2>All coefficients</h2><span class="sub" id="cpa-table-sub"></span>
         <div class="actions">${oracle ? '<div class="seg" id="cpa-filter"><button data-v="" class="active">all</button><button data-v="wrong">not recovered</button><button data-v="right">recovered</button></div>' : ""}
         <button class="btn ghost sm" id="cpa-dl-results">CSV</button></div></div>
         <div class="table-wrap tall"><table class="t click" id="cpa-table"><thead></thead><tbody></tbody></table></div>
         <div class="chart-note">Click a row to open the coefficient in the Key map inspector.</div></div>`) +
+    pan("models", `<div class="card"><div class="card-head"><h2>Leakage models on this campaign</h2><span class="sub" id="cpa-models-sub"></span></div>
+        <div class="table-wrap"><table class="t click" id="cpa-models"><thead></thead><tbody></tbody></table></div>
+        <div class="chart-note">Every CPA report of this campaign, one row per run. Run <b>New analysis</b> with another model (or R_prev) to add one; click a row to open it.
+          Compare like with like: scored runs by rank-1 and median true rank, blind runs by peak |ρ|, and the same number of traces.</div></div>`) +
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
-  kpis("cpa-kpis", [["traces used", r.n_traces_used, `${r.target} / ${r.rprev}`],
+  kpis("cpa-kpis", [["traces used", r.n_traces_used, modelTxt(r)],
     oracle ? ["recovered (rank 1)", pct(r.rank1_fraction), `${rows.filter((x) => x.true_rank === 1).length} of ${rows.length} coefficients`, r.rank1_fraction > 0 ? "bad" : "good"] : ["mode", "blind", "no key used"],
     oracle ? ["median true rank", Math.round(r.median_true_rank), `of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean || r.n_candidates / 2)})`] : ["mean peak |ρ|", mean.toFixed(3), "best guess per coefficient"],
     oracle ? ["mean |ρ| (true key)", r.mean_true_corr.toFixed(3)] : ["max peak |ρ|", best.length ? Math.max(...best).toFixed(3) : "—"],
@@ -1420,7 +1425,7 @@ function drawCPATab(t) {
       chart("cpa-side", [{ type: "histogram", x: rows.map((x) => x.best_corr), marker: { color: C.s[0] }, nbinsx: 40, name: "peak |ρ|" }],
         { height: 280, xTitle: "peak |ρ| of the best guess", yTitle: "coefficients", showlegend: false, hovermode: "closest" });
     }
-    srDraw(r.target, r.rprev);
+    srDraw(r.model, r.rprev);
   } else if (t === "table") {
     const tbl = makeTable("cpa-table", [
       { key: "poly", label: "poly", num: true }, { key: "coeff", label: "coeff", num: true }, { key: "best_guess", label: "best guess", num: true },
@@ -1437,7 +1442,8 @@ function drawCPATab(t) {
     setRows("");
     if (oracle) seg("cpa-filter", setRows);
     $("cpa-dl-results").addEventListener("click", () => r.results_csv ? download("/api/analysis/download", { path: r.results_csv }) : toast("no CSV", "warn"));
-  } else if (t === "details") kv("an-details-kv", detailsKv(r));
+  } else if (t === "models") drawModelCompare();
+  else if (t === "details") kv("an-details-kv", detailsKv(r));
 }
 function heatData() {
   const rows = cur.results || [], z = [[], [], []], text = [[], [], []];
@@ -1483,7 +1489,7 @@ async function selectCoef(poly, coeff) {
     let c = ccCache.get(key);
     if (!c) {
       const f = anFiles.find((x) => x.path === cur.file) || {};
-      c = await api("POST", "/api/analysis/correlation_curve", { file: cur.file, target: cur.target, rprev: cur.rprev, poly, coeff,
+      c = await api("POST", "/api/analysis/correlation_curve", { file: cur.file, model: cur.model, target: cur.target, rprev: cur.rprev || "", poly, coeff,
         max_traces: cur.model_config?.max_traces_requested || 0, dk_ref: cur.oracle_assisted && f.has_recipe ? "vector_set" : "" });
       ccCache.set(key, c);
     }
@@ -1501,17 +1507,39 @@ document.addEventListener("keydown", (e) => {
   const m = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.key];
   if (m) { e.preventDefault(); selectCoef(insp.poly + m[0], insp.coeff + m[1]); }
 });
-async function srDraw(target, rprev) {
+// The CPA reports of the open campaign, one row per model run (anReports carries their summary numbers).
+function drawModelCompare() {
+  const rows = anReports.filter((x) => x.kind === "cpa");
+  $("cpa-models-sub").textContent = `${rows.length} CPA report(s) · ${new Set(rows.map((x) => modelTxt(x))).size} model / R_prev combination(s)`;
+  const num = (v, d) => (v === null || v === undefined ? "—" : v.toFixed(d));
+  makeTable("cpa-models", [
+    { key: "model", label: "model", render: (x) => `<div class="name mono">${esc(x.model || "?")}</div><div class="sub">${esc(anModelOf(x.model)?.equation || "")}</div>` },
+    { key: "rprev", label: "R_prev", render: (x) => esc(x.rprev || "—") },
+    { key: "oracle_assisted", label: "scoring", value: (x) => (x.oracle_assisted ? 1 : 0), render: (x) => (x.oracle_assisted ? '<span class="badge warn">scored</span>' : '<span class="badge">blind</span>') },
+    { key: "n_traces_used", label: "traces", num: true },
+    { key: "rank1_fraction", label: "rank-1", num: true, render: (x) => (x.oracle_assisted ? pct(x.rank1_fraction) : "—") },
+    { key: "median_true_rank", label: "median rank", num: true, render: (x) => (x.oracle_assisted ? num(x.median_true_rank, 0) : "—") },
+    { key: "mean_true_corr", label: "|ρ| true key", num: true, render: (x) => (x.oracle_assisted ? num(x.mean_true_corr, 4) : "—") },
+    { key: "mean_best_corr", label: "mean peak |ρ|", num: true, render: (x) => num(x.mean_best_corr, 4) },
+    { key: "mtd", label: "MTD", num: true, render: (x) => x.mtd ?? "—" },
+    { key: "analysis_timestamp_unix", label: "analysed", render: (x) => fmtAgo(x.analysis_timestamp_unix) },
+  ], { key: (x) => x.path, onRow: (x) => anOpenReport(x.path), sortKey: rows.some((x) => x.oracle_assisted) ? "rank1_fraction" : "mean_best_corr", dir: -1,
+       empty: '<div class="empty">No CPA reports for this campaign yet.</div>' }).set(rows);
+  const t = $("cpa-models").querySelector(`tr[data-key="${CSS.escape(cur.report_path || "")}"]`);
+  if (t) t.classList.add("sel");
+}
+async function srDraw(model, rprev) {
   try {
-    const r = await api("POST", "/api/analysis/success_rate", { target, rprev });
+    const r = await api("POST", "/api/analysis/success_rate", { model, rprev: rprev || "" });
+    const what = esc(model) + (rprev ? " / " + esc(rprev) : "");
     if (!r.available) {
-      $("cpa-sr").innerHTML = `<div class="chart-empty">Needs at least two independent campaigns analysed with scoring + MTD at ${esc(target)} / ${esc(rprev)}.</div>`;
+      $("cpa-sr").innerHTML = `<div class="chart-empty">Needs at least two independent campaigns analysed with scoring + MTD with ${what}.</div>`;
       return;
     }
     const b = r.checkpoints.filter((c) => c.min_rank1_fraction !== null), m = r.checkpoints.filter((c) => c.mean_rank1_fraction !== null);
     chart("cpa-sr", [...band("min–max", "#38bdf82e", b.map((c) => c.n_traces), b.map((c) => 100 * c.min_rank1_fraction), b.map((c) => 100 * c.max_rank1_fraction)),
       line("mean rank-1 %", C.s[0], m.map((c) => c.n_traces), m.map((c) => 100 * c.mean_rank1_fraction))], { height: 240, yRange: [0, 100], xTitle: "trace count", yTitle: "rank-1 %" });
-    $("cpa-sr-note").textContent = `${r.n_campaigns} independent campaigns at ${r.target} / ${r.rprev}`;
+    $("cpa-sr-note").textContent = `${r.n_campaigns} independent campaigns with ${r.model}${r.rprev ? " / " + r.rprev : ""}`;
   } catch (e) { chartEmpty("cpa-sr", e.message); }
 }
 
@@ -1572,20 +1600,22 @@ function drawTVLATab(t) {
   } else if (t === "details") kv("an-details-kv", detailsKv(r));
 }
 
-// model plugins
-async function modelRefresh() {
-  try {
-    const r = await api("GET", "/api/model/list");
-    $("model-select").innerHTML = r.modules.map((m) => `<option ${m === (r.loaded || r.default_module) ? "selected" : ""}>${esc(m)}</option>`).join("");
-    $("model-status").textContent = r.loaded ? "loaded: " + r.loaded : "";
-  } catch (e) { err(e); }
-}
-async function modelLoad() { try { const i = await api("POST", "/api/model/load", { module: $("model-select").value }); $("model-status").textContent = `loaded ${i.module} (Q=${i.q}, K=${i.k})`; } catch (e) { err(e); } }
+// model self-test and CLI default
 async function modelSelftest() {
-  try { const r = await api("POST", "/api/model/selftest", {}); toast((r.ok ? "Self-test passed: " : r.ok === null ? "N/A: " : "Self-test FAILED: ") + r.detail, r.ok ? "ok" : "bad", 7000); }
+  const name = $("an-model").value;
+  await busy($("model-selftest"), async () => {
+    try {
+      const r = await api("POST", "/api/model/selftest", { model: name });
+      $("model-selftest-table").innerHTML = r.checks.map((c) => `<tr><td>${esc(c.name)}</td><td class="${c.ok ? "pass" : "fail"}">${c.ok ? "PASS" : "FAIL"}</td><td>${esc(c.detail)}</td></tr>`).join("");
+      $("model-selftest-wrap").classList.remove("hidden");
+      toast(r.ok ? `${name}: all self-test checks pass` : `${name}: self-test FAILED — do not trust CPA results from it`, r.ok ? "ok" : "bad", 7000);
+    } catch (e) { err(e); }
+  });
+}
+async function modelSaveDefault() {
+  try { await api("POST", "/api/model/save_default", { model: $("an-model").value, rprev: anRprev() }); toast("Saved as the cpa_attack.py default (config.py)", "ok"); }
   catch (e) { err(e); }
 }
-async function modelSaveDefault() { try { await api("POST", "/api/model/save_default", { target: $("an-target").value, rprev: $("an-rprev").value }); toast("Saved as the CLI default", "ok"); } catch (e) { err(e); } }
 
 // =====================================================================================
 // Advanced page
@@ -1846,13 +1876,12 @@ async function init() {
   $("an-config-close").addEventListener("click", () => anConfig(false));
   $("an-more-btn").addEventListener("click", (e) => { e.stopPropagation(); $("an-more").classList.toggle("open"); });
   $("an-more").querySelectorAll("a").forEach((a) => a.addEventListener("click", () => anReportAction(a.dataset.act)));
-  $("an-preset").addEventListener("change", anModel);
+  $("an-model").addEventListener("change", () => anModel());
+  $("an-model-reload").addEventListener("click", () => anLoadModels(false));
   $("an-run").addEventListener("click", anRun);
-  $("model-load").addEventListener("click", modelLoad);
   $("model-selftest").addEventListener("click", modelSelftest);
   $("model-save-default").addEventListener("click", modelSaveDefault);
-  await anLoadPresets();
-  modelRefresh();
+  await anLoadModels(true);
 
   // advanced
   lsReady = true;
