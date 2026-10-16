@@ -588,7 +588,7 @@ def _run_vectors_job(job_id: str, kw: dict) -> None:
         check = vs.verify_software(sample=32)
         if not check["ok"]:
             raise RuntimeError("software Decaps disagrees with the generated K at rows %s" % check["mismatches"])
-        path = vs.save()
+        path = vs.save(VECTORS_DIR / (vs.meta["id"] + ".npz"))      # where the GUI lists sets
         result = dict(vs.meta, path=str(path), filename=path.name, size_bytes=path.stat().st_size,
                       software_check=check)
         _update_job(job_id, status="done", result=result, message="done")
@@ -624,8 +624,94 @@ def api_job_status(body: dict) -> dict:
     return _get_job(body["job_id"])
 
 
-def api_vectors_list(_body: dict) -> dict:
-    return {"sets": TV.list_sets(VECTORS_DIR)}
+VEC_TRASH = VECTORS_DIR / ".trash"
+
+
+def api_vectors_list(body: dict) -> dict:
+    trash = str(body.get("trash", "")).lower() in ("1", "true")
+    VEC_TRASH.mkdir(parents=True, exist_ok=True)
+    return {"sets": TV.list_sets(VEC_TRASH if trash else VECTORS_DIR), "trash": trash,
+            "storage": {"n_sets": len(list(VECTORS_DIR.glob("*.npz"))), "n_trash": len(list(VEC_TRASH.glob("*.npz"))),
+                        "bytes": sum(q.stat().st_size for q in VECTORS_DIR.glob("*.npz"))}}
+
+
+def _vector_file(path: str, directory: Path) -> Path:
+    p = Path(path)
+    if not p.is_absolute():
+        p = directory / p
+    if directory.resolve() != p.resolve().parent or p.suffix != ".npz" or not p.is_file():
+        raise ValueError("no such vector set: %s" % p.name)
+    return p
+
+
+def api_vectors_update(body: dict) -> dict:
+    """Name and/or tags of one vector set (kept in <set>.meta.json)."""
+    p = _vector_file(body["path"], VECTORS_DIR)
+    a = TV.write_annotations(p, label=str(body["label"])[:120] if "label" in body else None,
+                             tags=_clean_tags(body["tags"]) if "tags" in body else None)
+    log("updated %s of %s" % ("/".join(k for k in ("label", "tags") if k in body), p.name))
+    return a
+
+
+def api_vectors_tag(body: dict) -> dict:
+    done = []
+    for path in _paths(body):
+        p = _vector_file(path, VECTORS_DIR)
+        TV.write_annotations(p, tags=_edit_tags(TV.read_annotations(p)["tags"],
+                                                body.get("add", []), body.get("remove", [])))
+        done.append(p.name)
+    log("tags changed on %d vector set(s)" % len(done))
+    return {"done": done}
+
+
+def _move_set(p: Path, dest_dir: Path) -> Path:
+    side = TV.annotations_path(p)
+    dest = _move_unique(p, dest_dir)
+    if side.is_file():
+        shutil.move(str(side), str(TV.annotations_path(dest)))
+    return dest
+
+
+def api_vectors_delete(body: dict) -> dict:
+    """Move vector sets to data/vectors/.trash/. Campaigns captured with a set
+    keep working: each campaign file stores its ciphertexts, expected keys and
+    the recipe (seed) the key is rebuilt from."""
+    done = [str(_move_set(_vector_file(path, VECTORS_DIR), VEC_TRASH)) for path in _paths(body)]
+    log("moved %d vector set(s) to the trash" % len(done))
+    return {"trashed": done}
+
+
+def api_vectors_restore(body: dict) -> dict:
+    done = []
+    for path in _paths(body):
+        p = _vector_file(path, VEC_TRASH)
+        if (VECTORS_DIR / p.name).exists():
+            raise ValueError("%s already exists" % p.name)
+        done.append(_move_set(p, VECTORS_DIR).name)
+    log("restored vector set(s) %s" % ", ".join(done))
+    return {"restored": done}
+
+
+def _purge_set(p: Path) -> None:
+    TV.annotations_path(p).unlink(missing_ok=True)
+    p.unlink()
+
+
+def api_vectors_purge(body: dict) -> dict:
+    paths = [_vector_file(path, VEC_TRASH) for path in _paths(body)]
+    for p in paths:
+        _purge_set(p)
+    log("permanently deleted %d vector set(s)" % len(paths))
+    return {"deleted": len(paths)}
+
+
+def api_vectors_empty_trash(_body: dict) -> dict:
+    VEC_TRASH.mkdir(parents=True, exist_ok=True)
+    paths = list(VEC_TRASH.glob("*.npz"))
+    for p in paths:
+        _purge_set(p)
+    log("emptied the vector-set trash: %d set(s)" % len(paths))
+    return {"deleted": len(paths)}
 
 
 def _load_set(path: str) -> TV.VectorSet:
@@ -984,6 +1070,48 @@ def api_datasets(_body: dict) -> dict:
 
 
 # =============================================================================
+# Tags, multi-item requests, trash (shared by the trace library and vector sets)
+# =============================================================================
+MAX_TAGS, MAX_TAG_LEN = 16, 32
+
+
+def _clean_tags(value) -> list[str]:
+    """User tags: a list or a comma-separated string -> trimmed, no commas,
+    at most MAX_TAG_LEN characters each, duplicates (ignoring case) dropped."""
+    items = value.split(",") if isinstance(value, str) else list(value or [])
+    out: list[str] = []
+    for t in items:
+        t = " ".join(str(t).replace(",", " ").split())[:MAX_TAG_LEN]
+        if t and t.lower() not in (x.lower() for x in out):
+            out.append(t)
+    return out[:MAX_TAGS]
+
+
+def _edit_tags(tags: list[str], add, remove) -> list[str]:
+    drop = {t.lower() for t in _clean_tags(remove)}
+    return _clean_tags([t for t in tags if t.lower() not in drop] + _clean_tags(add))
+
+
+def _paths(body: dict) -> list[str]:
+    paths = body.get("paths")
+    if paths is None:
+        paths = [body["path"]]
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("no items given")
+    return [str(x) for x in paths]
+
+
+def _move_unique(src: Path, dest_dir: Path) -> Path:
+    """Move a file into dest_dir; a name already there gets a timestamp suffix."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    if dest.exists():
+        dest = dest_dir / ("%s_%d%s" % (src.stem, int(time.time()), src.suffix))
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+# =============================================================================
 # Trace library (campaign files under data/traces/)
 # =============================================================================
 TRASH_DIR = TRACES_DIR / ".trash"
@@ -1032,6 +1160,13 @@ def _reports_for(path: str) -> list[dict]:
     return out
 
 
+def _tags_of(md) -> list[str]:
+    try:
+        return _clean_tags(json.loads(str(md.get("tags", "[]") or "[]")))
+    except ValueError:
+        return []
+
+
 def _row(p: Path, s: dict, n_reports: int) -> dict:
     md = s["metadata"]
     planned, done = s.get("n_traces_planned", s["n_completed"]), s["n_completed"]
@@ -1039,7 +1174,7 @@ def _row(p: Path, s: dict, n_reports: int) -> dict:
     rate = s.get("sample_rate_hz") or 0.0
     return {
         "filename": p.name, "path": str(p), "label": str(md.get("label", "") or ""),
-        "notes": str(md.get("notes", "") or ""), "mode": s.get("mode", "cpa"), "status": status,
+        "notes": str(md.get("notes", "") or ""), "tags": _tags_of(md), "mode": s.get("mode", "cpa"), "status": status,
         "simulated": bool(s.get("simulated", False)), "n_completed": done, "n_traces_planned": planned,
         "resumable": bool(s.get("resumable", False)), "created_unix": md.get("created_unix"),
         "strategy": md.get("strategy", ""), "vector_set": md.get("vector_set", ""),
@@ -1070,14 +1205,15 @@ def api_traces_list(body: dict) -> dict:
             with _jobs_lock:
                 job = next(j for j in _jobs.values() if j.get("file") and str(Path(j["file"]).resolve()) == recording)
                 done, total = job["progress"], job["total"]
-            rows.append({"filename": p.name, "path": str(p), "label": "", "notes": "", "mode": job.get("mode", ""),
+            rows.append({"filename": p.name, "path": str(p), "label": "", "notes": "", "tags": [], "mode": job.get("mode", ""),
                          "status": "recording", "n_completed": done, "n_traces_planned": total,
                          "size_bytes": p.stat().st_size, "created_unix": p.stat().st_mtime, "n_reports": 0})
             continue
         try:
-            rows.append(_row(p, HS.summarize(p), report_counts.get(str(p), 0)))
+            # reports name the campaign by its library path, also while it is in the trash
+            rows.append(_row(p, HS.summarize(p), report_counts.get(str(TRACES_DIR / p.name), 0)))
         except Exception:  # noqa: BLE001 - unreadable/partial file: still list it
-            rows.append({"filename": p.name, "path": str(p), "status": "unreadable", "mode": "?",
+            rows.append({"filename": p.name, "path": str(p), "status": "unreadable", "mode": "?", "tags": [],
                          "size_bytes": p.stat().st_size, "created_unix": p.stat().st_mtime, "n_reports": 0})
     usage = shutil.disk_usage(str(TRACES_DIR))
     total = sum(q.stat().st_size for q in TRACES_DIR.glob("*.hdf5"))
@@ -1115,39 +1251,102 @@ def api_traces_detail(body: dict) -> dict:
     return row
 
 
-def api_traces_update(body: dict) -> dict:
-    p = _campaign(body["path"])
-    _not_recording(p)
+def _set_trace_meta(p: Path, label=None, notes=None, tags=None) -> None:
     import h5py
     with h5py.File(str(p), "r+") as f:
-        if "label" in body:
-            f["metadata"].attrs["label"] = str(body["label"])[:120]
-        if "notes" in body:
-            f["metadata"].attrs["notes"] = str(body["notes"])[:4000]
-    log("updated label/notes of %s" % p.name)
-    return {"ok": True}
+        attrs = f["metadata"].attrs
+        if label is not None:
+            attrs["label"] = str(label)[:120]
+        if notes is not None:
+            attrs["notes"] = str(notes)[:4000]
+        if tags is not None:
+            attrs["tags"] = json.dumps(_clean_tags(tags))
+
+
+def api_traces_update(body: dict) -> dict:
+    """Name, notes and/or tags of one campaign."""
+    p = _campaign(body["path"])
+    _not_recording(p)
+    tags = _clean_tags(body["tags"]) if "tags" in body else None
+    _set_trace_meta(p, body.get("label"), body.get("notes"), tags)
+    log("updated %s of %s" % ("/".join(k for k in ("label", "notes", "tags") if k in body), p.name))
+    return {"ok": True, "tags": tags}
+
+
+def api_traces_tag(body: dict) -> dict:
+    """Add and/or remove tags on several campaigns."""
+    done = []
+    for path in _paths(body):
+        p = _campaign(path)
+        _not_recording(p)
+        with HS.TraceReader(p) as r:
+            current = _tags_of(r.metadata)
+        _set_trace_meta(p, tags=_edit_tags(current, body.get("add", []), body.get("remove", [])))
+        done.append(p.name)
+    log("tags changed on %d campaign(s)" % len(done))
+    return {"done": done}
 
 
 def api_traces_delete(body: dict) -> dict:
-    p = _campaign(body["path"])
-    _not_recording(p)
-    TRASH_DIR.mkdir(parents=True, exist_ok=True)
-    dest = TRASH_DIR / p.name
-    if dest.exists():
-        dest = TRASH_DIR / ("%s_%d%s" % (p.stem, int(time.time()), p.suffix))
-    shutil.move(str(p), str(dest))
-    log("moved %s to the trace library's trash (%s)" % (p.name, TRASH_DIR))
-    return {"trashed": str(dest)}
+    """Move campaigns to the trash (data/traces/.trash/); they can be restored."""
+    done = []
+    for path in _paths(body):
+        p = _campaign(path)
+        _not_recording(p)
+        done.append(str(_move_unique(p, TRASH_DIR)))
+    log("moved %d campaign(s) to the trace library's trash" % len(done))
+    return {"trashed": done}
 
 
 def api_traces_restore(body: dict) -> dict:
-    p = _campaign(body["path"], TRASH_DIR)
-    dest = TRACES_DIR / p.name
-    if dest.exists():
-        raise ValueError("%s already exists in the library" % p.name)
-    shutil.move(str(p), str(dest))
-    log("restored %s from the trash" % p.name)
-    return {"restored": str(dest)}
+    done = []
+    for path in _paths(body):
+        p = _campaign(path, TRASH_DIR)
+        if (TRACES_DIR / p.name).exists():
+            raise ValueError("%s already exists in the library" % p.name)
+        shutil.move(str(p), str(TRACES_DIR / p.name))
+        done.append(p.name)
+    log("restored %s from the trash" % ", ".join(done))
+    return {"restored": done}
+
+
+def _purge_campaign(p: Path) -> int:
+    """Delete a trashed campaign file and the analysis reports made from it."""
+    original = str(TRACES_DIR / p.name)
+    n = 0
+    for rp in ANALYSIS_DIR.glob("*_report.json"):
+        try:
+            rep = json.loads(rp.read_text())
+        except (OSError, ValueError):
+            continue
+        if rep.get("dataset", {}).get("path") == original:
+            for extra in (rep.get("results_csv"), (rep.get("curve") or {}).get("curve_csv")):
+                if extra and Path(extra).is_file() and ANALYSIS_DIR.resolve() in Path(extra).resolve().parents:
+                    Path(extra).unlink()
+            rp.unlink()
+            n += 1
+    p.unlink()
+    return n
+
+
+def api_traces_purge(body: dict) -> dict:
+    """Permanently delete campaigns that are in the trash (and their reports)."""
+    files = reports = 0
+    for path in _paths(body):
+        reports += _purge_campaign(_campaign(path, TRASH_DIR))
+        files += 1
+    log("permanently deleted %d campaign(s) and %d analysis report(s)" % (files, reports))
+    return {"deleted": files, "reports": reports}
+
+
+def api_traces_empty_trash(_body: dict) -> dict:
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
+    files = reports = 0
+    for p in list(TRASH_DIR.glob("*.hdf5")):
+        reports += _purge_campaign(p)
+        files += 1
+    log("emptied the trace library's trash: %d campaign(s), %d report(s)" % (files, reports))
+    return {"deleted": files, "reports": reports}
 
 
 def api_traces_download(body: dict):
@@ -1523,6 +1722,15 @@ ROUTES = {
     ("POST", "/api/results/list"): api_results_list,
     ("POST", "/api/results/load"): api_results_load,
     ("POST", "/api/results/delete"): api_results_delete,
+    ("POST", "/api/traces/tag"): api_traces_tag,
+    ("POST", "/api/traces/purge"): api_traces_purge,
+    ("POST", "/api/traces/empty_trash"): api_traces_empty_trash,
+    ("POST", "/api/vectors/update"): api_vectors_update,
+    ("POST", "/api/vectors/tag"): api_vectors_tag,
+    ("POST", "/api/vectors/delete"): api_vectors_delete,
+    ("POST", "/api/vectors/restore"): api_vectors_restore,
+    ("POST", "/api/vectors/purge"): api_vectors_purge,
+    ("POST", "/api/vectors/empty_trash"): api_vectors_empty_trash,
 }
 
 

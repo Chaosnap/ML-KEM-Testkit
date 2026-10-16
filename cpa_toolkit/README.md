@@ -41,13 +41,21 @@ GUI 只依赖标准库 `http.server`，加上随仓库附带的 Plotly.js，不�
 | 页面 | 内容 |
 | ---- | ---- |
 | **Connection** | 串口列表：标出推荐接口；Digilent 板的 `…0` 是 JTAG 通道，会被标注出来。连接和断开不阻塞，可随时断开，可开启自动重连。链路自检中的最后一项显示当前 bitstream 是否支持 `0x05` 完成通知。示波器部分可以搜索 VISA 仪器（点击一行即填入 IP），也可以把设置存为 `config.py` 的默认值 |
-| **Test Vectors** | 生成 CPA（valid / invalid / structured）或 TVLA（fixed vs random）向量集。可以逐行查看 c / m / K（支持复制），导出 csv / json / dk / ek，用软件 Decaps 复核，或在板上跑前 N 条，核对 K 和恒定周期 |
+| **Test Vectors** | 生成 CPA（valid / invalid / structured）或 TVLA（fixed vs random）向量集。可以逐行查看 c / m / K（支持复制），导出 csv / json / dk / ek，用软件 Decaps 复核，或在板上跑前 N 条，核对 K 和恒定周期。向量集可以命名、加标签（见下文“标签与删除”），可以删除到回收站；删除前会提示有几个 campaign 用过它——这些 campaign 不受影响，因为每个 campaign 文件自带密文、期望 K 和种子 |
 | **Acquisition** | 开始前会列出检查项（板子、示波器、向量集）。采集时实时显示最新 trace、均值和 fixed−random 差值，以及速度和剩余时间；可随时停止，文件可以续采。另有 Setup capture：用一次性向量抓一条波形，用来调触发、量程和时基；*Check trigger* 检查示波器只在 Decaps 开始时触发（无运算时不触发、Decaps 时触发、波形覆盖全部 BMUL 窗口），结果也显示在检查项里 |
-| **Trace Library** | 所有 campaign 的列表，可搜索、按模式和状态筛选、排序。详情页显示 K 正确率、CYCLE_COUNT 分布、trace 是否覆盖全部 BMUL 窗口、来源信息（向量集、种子、板子、示波器），可以命名和写备注。波形查看器可以按序号、类别或指定索引叠加 trace，并显示均值 ± σ 带。支持导出 .hdf5、导出 .npz 片段、移入回收站和恢复 |
-| **Analysis** | 顶部选 campaign 和已保存的报告（下拉列出所有历史报告）。*New analysis* 打开配置面板，按三步填写：1 泄漏模型、2 打分方式（盲攻击 / 用真实密钥打分）、3 运行；运行时显示进度。*Report ▾* 菜单可以用同样的设置重跑、下载 .json / .csv、删除报告。每份报告顶部列出它的配置（模型、target / R_prev、打分方式、trace 数、时间）和关键指标，下面分标签页。CPA 有四个标签：**Key map**（3×256 系数热力图，可切换 peak \|ρ\| / 真实密钥排名 / 是否恢复；每个多项式的汇总；点击任一格打开该系数的相关曲线，← → ↑ ↓ 切换）、**Convergence**（key rank 随 trace 数的变化，标出 MTD；跨 campaign 的成功率）、**Coefficients**（可排序、可筛选的表，点击一行跳到 Key map）、**Details**（完整的配置与文件信息）。TVLA 有四个标签：\|t\| 曲线（可一键缩放到各 BMUL 窗口，点击图中任意位置读取该采样点）、类均值、检测曲线、Details。报告保存在 `data/analysis/` |
+| **Trace Library** | 所有 campaign 的列表，可搜索、按模式和状态筛选、排序。详情页显示 K 正确率、CYCLE_COUNT 分布、trace 是否覆盖全部 BMUL 窗口、来源信息（向量集、种子、板子、示波器），可以命名、写备注、加标签。波形查看器可以按序号、类别或指定索引叠加 trace，并显示均值 ± σ 带。支持导出 .hdf5 和 .npz 片段。回收站里可以恢复或永久删除；永久删除时，由该 campaign 生成的分析报告也一起删除 |
+| **Analysis** | 顶部选 campaign（下拉项和信息条上显示标签）和已保存的报告（下拉列出所有历史报告）。*New analysis* 打开配置面板，按三步填写：1 泄漏模型、2 打分方式（盲攻击 / 用真实密钥打分）、3 运行；运行时显示进度。*Report ▾* 菜单可以用同样的设置重跑、下载 .json / .csv、删除报告。每份报告顶部列出它的配置（模型、target / R_prev、打分方式、trace 数、时间）和关键指标，下面分标签页。CPA 有四个标签：**Key map**（3×256 系数热力图，可切换 peak \|ρ\| / 真实密钥排名 / 是否恢复；每个多项式的汇总；点击任一格打开该系数的相关曲线，← → ↑ ↓ 切换）、**Convergence**（key rank 随 trace 数的变化，标出 MTD；跨 campaign 的成功率）、**Coefficients**（可排序、可筛选的表，点击一行跳到 Key map）、**Details**（完整的配置与文件信息）。TVLA 有四个标签：\|t\| 曲线（可一键缩放到各 BMUL 窗口，点击图中任意位置读取该采样点）、类均值、检测曲线、Details。报告保存在 `data/analysis/` |
 | **Advanced** | **Link settings**：操作超时；显示当前 bitstream 是否支持 0x05 Run（不支持则所有运算被禁用，需要重新生成），可重新探测。**Buffer layout**：dk / c / K 以及 KeyGen、Encaps 输入输出所在的偏移，点击即读取该区域。**Protocol steps**：按 SimpleSerial 的 x / m / s / c / e / a 逐步执行一次运算（复位、设模式、发 dk、发 c、运行并等待、读结果），每步记录在 Step log 中，Run 的结果显示 STATUS 各位、周期数、错误码和输出，并与选中的测试向量的期望 K 比较；也可以一键跑完整 Decaps。**Registers**：一次读出全部寄存器并解码（STATUS 各位、OP_MODE、ERROR_CODE、VERSION）。**Data buffer**：原始读写 |
 
 GUI 和下面的命令行工具调用的是同一套函数，所以结果一致。如果要做很长的采集，也可以直接用命令行。
+
+### 标签与删除
+
+Test Vectors 和 Trace Library 两页的管理方式相同：
+
+- **标签**：在详情里输入，回车或逗号确认，退格删除最后一个，也可以从已有标签中选。每个对象最多 16 个，每个最长 32 个字符，大小写不同算同一个。列表中点击标签即按该标签筛选；工具栏的标签下拉框列出所有标签和数量；搜索框也会匹配标签。campaign 的标签存在 HDF5 元数据里，向量集的名称和标签存在旁边的 `<set>.meta.json` 里。
+- **批量操作**：勾选多行（表头的勾选框选中当前筛选结果的全部行），上方会出现操作栏：*Tags…* 批量加减标签，*Move to trash* 移入回收站。正在采集的 campaign 不能被改动。
+- **删除分两步**：先移入回收站（`data/traces/.trash/`、`data/vectors/.trash/`），名称、备注、标签随文件一起移动，可以恢复。在回收站视图中可以 *Delete permanently* 或 *Empty trash*，这一步不可撤销。永久删除 campaign 时，从它生成的分析报告（.json 和 .csv）也一起删除；删除向量集不影响已采集的 campaign，而且用同样的设置（用途、密文类型、数量）和种子可以重新生成完全相同的向量集。
 
 ---
 
@@ -116,7 +124,9 @@ TVLA 中，class 0 是同一条固定密文的重复（`m0 = SHA3-256("pqc-testk
 | 位置 | 内容 |
 | ---- | ---- |
 | `data/vectors/*.npz` | 测试向量集：dk、ek、密文、类别、期望 K，以及生成参数（recipe） |
-| `data/traces/*.hdf5` | campaign：`/traces`、`/intermediates/ct`、`/intermediates/k_expected`、输出、周期数、逐条检查结果，以及元数据（向量集 recipe、板子、示波器、采样率、名称/备注） |
+| `data/vectors/<set>.meta.json` | 向量集的名称和标签（GUI 中编辑；.npz 本身不改） |
+| `data/vectors/.trash/` | 被删除的向量集（连同 .meta.json） |
+| `data/traces/*.hdf5` | campaign：`/traces`、`/intermediates/ct`、`/intermediates/k_expected`、输出、周期数、逐条检查结果，以及元数据（向量集 recipe、板子、示波器、采样率、名称/备注/标签） |
 | `data/traces/.trash/` | Trace Library 的回收站 |
 | `data/analysis/*_report.json` | CPA/TVLA 报告：完整数组和模型配置，GUI 可以直接重新打开 |
 

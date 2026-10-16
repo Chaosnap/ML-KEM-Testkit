@@ -27,6 +27,21 @@ set_property -dict {PACKAGE_PIN J5  IOSTANDARD LVCMOS33} [get_ports {led[1]}]
 set_property -dict {PACKAGE_PIN T9  IOSTANDARD LVCMOS33} [get_ports {led[2]}]
 set_property -dict {PACKAGE_PIN T10 IOSTANDARD LVCMOS33} [get_ports {led[3]}]
 
+## RGB LEDs LD0-LD3 (above BTN0-BTN3), Digilent Arty-A7-100-Master.xdc led0..3_r/g/b.
+## rgb_*[i] = LDi: power-reset / host link / completion notice / last operation.
+set_property -dict {PACKAGE_PIN G6  IOSTANDARD LVCMOS33} [get_ports {rgb_r[0]}]
+set_property -dict {PACKAGE_PIN F6  IOSTANDARD LVCMOS33} [get_ports {rgb_g[0]}]
+set_property -dict {PACKAGE_PIN E1  IOSTANDARD LVCMOS33} [get_ports {rgb_b[0]}]
+set_property -dict {PACKAGE_PIN G3  IOSTANDARD LVCMOS33} [get_ports {rgb_r[1]}]
+set_property -dict {PACKAGE_PIN J4  IOSTANDARD LVCMOS33} [get_ports {rgb_g[1]}]
+set_property -dict {PACKAGE_PIN G4  IOSTANDARD LVCMOS33} [get_ports {rgb_b[1]}]
+set_property -dict {PACKAGE_PIN J3  IOSTANDARD LVCMOS33} [get_ports {rgb_r[2]}]
+set_property -dict {PACKAGE_PIN J2  IOSTANDARD LVCMOS33} [get_ports {rgb_g[2]}]
+set_property -dict {PACKAGE_PIN H4  IOSTANDARD LVCMOS33} [get_ports {rgb_b[2]}]
+set_property -dict {PACKAGE_PIN K1  IOSTANDARD LVCMOS33} [get_ports {rgb_r[3]}]
+set_property -dict {PACKAGE_PIN H6  IOSTANDARD LVCMOS33} [get_ports {rgb_g[3]}]
+set_property -dict {PACKAGE_PIN K2  IOSTANDARD LVCMOS33} [get_ports {rgb_b[3]}]
+
 ## Oscilloscope trigger / capture-enable output: Pmod JA pin 1 (silkscreen
 ## "1", topmost pin of the 6-pin row nearest the USB connector; ja_gpio[1]
 ## net on the schematic). Per the Digilent Arty-A7-100-Master.xdc Pmod JA
@@ -44,6 +59,7 @@ set_false_path -from [get_ports btn0]
 set_false_path -from [get_ports uart_rxd]
 set_false_path -to   [get_ports uart_txd]
 set_false_path -to   [get_ports {led[*]}]
+set_false_path -to   [get_ports {rgb_r[*] rgb_g[*] rgb_b[*]}]
 set_false_path -to   [get_ports trig_out]
 
 ## Configuration

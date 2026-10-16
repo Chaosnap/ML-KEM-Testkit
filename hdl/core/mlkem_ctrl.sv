@@ -214,6 +214,7 @@ module mlkem_ctrl (
     // ---------------------------------------------------------------------
     logic [31:0] fq0, fq1;              // Banked FIFO heads (no word shifting).
     logic [2:0]  fcnt;                  // Valid entries.
+    logic        f_ne, f_two;           // fcnt != 0, fcnt >= 2 (registered in the FIFO).
     logic [2:0]  rp;                    // Reads in flight, rp[2]: data this cycle.
     logic [15:0] rd_left;               // Reads still to issue.
     logic        rd_b;                  // Next read uses ptr_b (CMP: alternate).
@@ -225,11 +226,11 @@ module mlkem_ctrl (
     // FIFO consumers (pop 1 or 2 words).
     logic pop1, pop2;
     logic wr_copy, wr_sqz, wr_enc;      // Write commands this cycle.
-    assign wr_copy = (state == C_COPY) && (fcnt != 3'd0);
+    assign wr_copy = (state == C_COPY) && f_ne;
     assign wr_sqz  = (state == C_HSQZ) && h_squeeze_valid;
     assign wr_enc  = (state == C_UNIT) && is_encode && pk_out_valid;
-    assign pop1    = ((state == C_HABS) && (fcnt != 3'd0) && h_absorb_ready) || wr_copy;
-    assign pop2    = ((state == C_CMP) && (fcnt >= 3'd2)) ||
+    assign pop1    = ((state == C_HABS) && f_ne && h_absorb_ready) || wr_copy;
+    assign pop2    = ((state == C_CMP) && f_two) ||
                      ((state == C_UNIT) && is_decode && up_src_take);
 
     logic rd_issue;
@@ -242,7 +243,7 @@ module mlkem_ctrl (
         .push (rp[2]),
         .din (buf_dout),
         .pop_count (pop2 ? 2'd2 : pop1 ? 2'd1 : 2'd0),
-        .head0 (fq0), .head1 (fq1), .count (fcnt)
+        .head0 (fq0), .head1 (fq1), .count (fcnt), .nonempty (f_ne), .two (f_two)
     );
 
     // Profiling only (testbench/core_sim): sequencer overhead cycles.
@@ -257,7 +258,7 @@ module mlkem_ctrl (
     // HABI absorbs its 1-2 immediate bytes in one chunk (the generator keeps
     // them inside a lane); HABS one FIFO word. HSQZ squeezes a word (its
     // squeeze position is always a multiple of 4).
-    assign h_absorb_valid = (state == C_HABI) || ((state == C_HABS) && (fcnt != 3'd0));
+    assign h_absorb_valid = (state == C_HABI) || ((state == C_HABS) && f_ne);
     assign h_absorb_data  = (state == C_HABI) ? {48'b0, imm} : {32'b0, fq0};
     assign h_absorb_n     = (state == C_HABI) ? ((i_p == 8'd1) ? 4'd1 : 4'd2) : 4'd4;
     assign h_finalize     = (state == C_HFIN) && h_absorb_ready;
@@ -266,7 +267,7 @@ module mlkem_ctrl (
     assign h_squeeze_n    = (state == C_HSQZ) ? 4'd4 : 4'd8;
 
     // Unpacker source: sponge lanes, or two FIFO words (DECODE).
-    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : (fcnt >= 3'd2);
+    assign up_src_valid = unit_src_sponge ? h_squeeze_valid : f_two;
     assign up_src_data  = unit_src_sponge ? h_squeeze_data  : {fq1, fq0};
 
     // ---------------------------------------------------------------------

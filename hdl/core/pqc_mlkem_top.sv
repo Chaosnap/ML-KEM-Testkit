@@ -60,7 +60,8 @@ module pqc_mlkem_top #(
     // Status outputs for board-level indicators (active-high).
     output logic                        o_busy,
     output logic                        o_done,
-    output logic                        o_error
+    output logic                        o_error,
+    output logic [1:0]                  o_op_mode       // OP_MODE register (0 KeyGen, 1 Encaps, 2 Decaps)
 );
 
     // =========================================================================
@@ -400,5 +401,6 @@ module pqc_mlkem_top #(
     assign o_busy  = status_busy;
     assign o_done  = status_done;
     assign o_error = status_error;
+    assign o_op_mode = op_mode[1:0];
 
 endmodule

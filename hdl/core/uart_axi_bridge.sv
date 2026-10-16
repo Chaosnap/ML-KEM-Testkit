@@ -80,7 +80,14 @@ module uart_axi_bridge #(
     input  logic [31:0] m_axi_rdata,
     input  logic [1:0]  m_axi_rresp,
     input  logic        m_axi_rvalid,
-    output logic        m_axi_rready
+    output logic        m_axi_rready,
+
+    // One-cycle events for status LEDs: a reply went out with STATUS OK /
+    // with STATUS error (bad CRC, length, command, AXI error), and a 0x05
+    // completion notice was sent.
+    output logic        ev_ok,
+    output logic        ev_err,
+    output logic        ev_run
 );
 
     localparam logic [7:0] CMD_READ_REG   = 8'h01;
@@ -132,7 +139,6 @@ module uart_axi_bridge #(
     logic [31:0] cnt;             // Byte counter (field / payload / loop).
     logic [31:0] crc;             // Running CRC (RX, then TX).
     logic [31:0] crc_rx;          // Received CRC.
-    logic [7:0]  payload [0:MAX_WRITE-1];
     logic [31:0] reg_val;         // 0x01 read value / 0x02 write value.
     logic [31:0] resp_len;
     logic        resp_err;
@@ -141,17 +147,31 @@ module uart_axi_bridge #(
     logic        axi_err;
     logic [31:0] data_off;        // Current buffer byte offset (0x03/0x04/0x05).
 
-    // 0x05 Run: arguments (the last 8 payload bytes: out offset, out count,
-    // shifted in as they arrive), the status block read back after the
-    // operation, and the index of the status word being read.
-    logic [63:0] run_args;
+    // Payload of 0x03 Write data: a MAX_WRITE x 8 distributed RAM, written
+    // at the receive counter, read at rd_idx while the bytes go out on AXI.
+    // (Held in registers it cost ~2000 flip-flops, and rx_byte fanned out to
+    // all of them across the die: ~7 ns of routing, the worst sys_clk path
+    // on the Arty Z7.)
+    localparam int PW = $clog2(MAX_WRITE);
+    (* ram_style = "distributed" *) logic [7:0] payload [0:MAX_WRITE-1];
+    logic [PW-1:0] rd_idx;
+    logic [7:0]    pay_q;
+    always_ff @(posedge clk)
+        if (state == RX_DATA && rx_valid && cnt < MAX_WRITE)
+            payload[cnt[PW-1:0]] <= rx_byte;
+    assign pay_q = payload[rd_idx];
+
+    // The first 12 payload bytes, captured as they arrive: the u32 value of
+    // 0x02 / byte count of 0x04 / CTRL value of 0x05 (bytes 0-3), and the
+    // out offset / out count of 0x05 (bytes 4-11).
+    logic [95:0] args;
     logic [31:0] run_off, run_cnt;
     logic [31:0] run_st, run_cyc, run_err;
     logic [95:0] run_blk;
     logic [1:0]  rd_seq;
     logic        run_ok;
-    assign run_off = run_args[31:0];
-    assign run_cnt = run_args[63:32];
+    assign run_off = args[63:32];
+    assign run_cnt = args[95:64];
     assign run_blk = {run_err, run_cyc, run_st};
     assign run_ok  = run_st[1] && !run_st[2] && !run_st[0];  // done, no error, idle.
 
@@ -171,14 +191,14 @@ module uart_axi_bridge #(
     // sys_clk path of the whole design (15 logic levels, ~0.02 ns slack at
     // 125 MHz on the Arty Z7, ~0.01 ns at 100 MHz on the Arty A7). The CHECK
     // state registers it into frame_ok_q one cycle earlier instead; EXEC only
-    // reads the register. Inputs (cmd, addr, len, payload, crc, crc_rx) are
+    // reads the register. Inputs (cmd, addr, len, args, crc, crc_rx) are
     // all final once RX_CRC has taken its last byte and none change in
     // CHECK, so frame_ok_q equals what EXEC used to compute. Cost: one
     // sys_clk cycle per command; the core's own cycle counts are unaffected.
     logic [31:0] rd_count;
     logic        frame_ok;
     logic        frame_ok_q;
-    assign rd_count = {payload[3], payload[2], payload[1], payload[0]};
+    assign rd_count = args[31:0];
     always_comb begin
         frame_ok = (~crc == crc_rx);
         case (cmd)
@@ -219,7 +239,11 @@ module uart_axi_bridge #(
             txb           <= '0;
             axi_err       <= 1'b0;
             data_off      <= '0;
-            run_args      <= '0;
+            args          <= '0;
+            rd_idx        <= '0;
+            ev_ok         <= 1'b0;
+            ev_err        <= 1'b0;
+            ev_run        <= 1'b0;
             run_st        <= '0;
             run_cyc       <= '0;
             run_err       <= '0;
@@ -235,6 +259,9 @@ module uart_axi_bridge #(
             m_axi_arvalid <= 1'b0;
         end else begin
             tx_valid <= 1'b0;
+            ev_ok    <= 1'b0;
+            ev_err   <= 1'b0;
+            ev_run   <= 1'b0;
 
             // Inter-byte timeout while a frame is being received.
             // (Explicit compares rather than `inside`, for Icarus Verilog.)
@@ -283,9 +310,8 @@ module uart_axi_bridge #(
                 end
 
                 RX_DATA: if (rx_valid) begin
-                    if (cnt < MAX_WRITE)
-                        payload[cnt[$clog2(MAX_WRITE)-1:0]] <= rx_byte;
-                    run_args <= {rx_byte, run_args[63:8]};
+                    if (cnt < 32'd12)
+                        args[8*cnt[3:0] +: 8] <= rx_byte;
                     crc <= crc32_byte(crc, rx_byte);
                     cnt <= cnt + 32'd1;
                     if (cnt == len - 32'd1) begin
@@ -304,6 +330,7 @@ module uart_axi_bridge #(
                 // ----- Execute -----
                 CHECK: begin
                     frame_ok_q <= frame_ok;
+                    rd_idx     <= '0;
                     state      <= EXEC;
                 end
 
@@ -335,7 +362,8 @@ module uart_axi_bridge #(
                                 state <= AXI_WR;
                                 m_axi_awaddr  <= DATA_BASE + {2'b00, addr[13:2], 2'b00};
                                 m_axi_awvalid <= 1'b1;
-                                m_axi_wdata   <= {4{payload[0]}};
+                                m_axi_wdata   <= {4{pay_q}};       // payload[0]
+                                rd_idx        <= PW'(1);
                                 m_axi_wstrb   <= 4'b0001 << addr[1:0];
                                 m_axi_wvalid  <= 1'b1;
                             end
@@ -364,7 +392,8 @@ module uart_axi_bridge #(
                         data_off      <= data_off + 32'd1;
                         m_axi_awaddr  <= DATA_BASE + {2'b00, 12'(( data_off + 32'd1) >> 2), 2'b00};
                         m_axi_awvalid <= 1'b1;
-                        m_axi_wdata   <= {4{payload[8'(cnt + 32'd1)]}};
+                        m_axi_wdata   <= {4{pay_q}};               // payload[cnt + 1]
+                        rd_idx        <= rd_idx + PW'(1);
                         m_axi_wstrb   <= 4'b0001 << 2'(data_off + 32'd1);
                         m_axi_wvalid  <= 1'b1;
                         state         <= AXI_WR;
@@ -465,6 +494,11 @@ module uart_axi_bridge #(
                 TX_SEND: if (tx_ready) begin
                     tx_byte  <= txb;
                     tx_valid <= 1'b1;
+                    if (phase == PH_HDR && cnt == 32'd0) begin   // first byte of a reply
+                        ev_ok  <= !resp_err;
+                        ev_err <= resp_err;
+                        ev_run <= !resp_err && cmd == CMD_RUN;
+                    end
                     if (phase != PH_CRC)
                         crc <= crc32_byte(crc, txb);
                     state <= TX_HOLD;

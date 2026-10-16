@@ -242,8 +242,36 @@ def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int 
     return VectorSet(meta, dk, ek, cls, ct.astype(np.uint8), m, has_m, k, valid)
 
 
+def annotations_path(npz: Path) -> Path:
+    """The side file next to ``<set>.npz`` that holds its user name and tags
+    (kept outside the .npz so editing them never rewrites the vectors)."""
+    npz = Path(npz)
+    return npz.with_name(npz.stem + ".meta.json")
+
+
+def read_annotations(npz: Path) -> dict:
+    """``{"label": str, "tags": [str]}`` of a stored set (empty when never annotated)."""
+    try:
+        a = json.loads(annotations_path(npz).read_text())
+    except (OSError, ValueError):
+        a = {}
+    return {"label": str(a.get("label", "") or ""), "tags": [str(t) for t in a.get("tags", []) or []]}
+
+
+def write_annotations(npz: Path, label: str | None = None, tags: list[str] | None = None) -> dict:
+    """Update the name and/or tags of a stored set; returns the new annotations."""
+    a = read_annotations(npz)
+    if label is not None:
+        a["label"] = label
+    if tags is not None:
+        a["tags"] = list(tags)
+    annotations_path(npz).write_text(json.dumps(a, indent=1))
+    return a
+
+
 def list_sets(directory: Path = VECTORS_DIR) -> list[dict]:
-    """Metadata of every stored set, newest first (reads only the small ``meta`` member)."""
+    """Metadata of every stored set, newest first (reads only the small ``meta``
+    member), with its user name and tags."""
     directory.mkdir(parents=True, exist_ok=True)
     out = []
     for p in sorted(directory.glob("*.npz"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -252,7 +280,7 @@ def list_sets(directory: Path = VECTORS_DIR) -> list[dict]:
                 meta = json.loads(str(z["meta"]))
         except Exception:  # noqa: BLE001 - skip unreadable/partial files
             continue
-        out.append(dict(meta, path=str(p), filename=p.name, size_bytes=p.stat().st_size))
+        out.append(dict(meta, path=str(p), filename=p.name, size_bytes=p.stat().st_size, **read_annotations(p)))
     return out
 
 
@@ -298,8 +326,9 @@ def main() -> None:
         print(vs.save())
     elif a.cmd == "list":
         for m in list_sets():
-            print("%-48s %-5s %-15s n=%-6d seed=%s..." % (m["filename"], m["mode"], m["strategy"],
-                                                          m["n"], m["seed"][:16]))
+            print("%-48s %-5s %-15s n=%-6d seed=%s...%s%s" % (
+                m["filename"], m["mode"], m["strategy"], m["n"], m["seed"][:16],
+                "  \"%s\"" % m["label"] if m["label"] else "", "".join("  #" + t for t in m["tags"])))
     elif a.cmd == "export":
         vs = VectorSet.load(a.path)
         if a.format in ("dk", "ek"):

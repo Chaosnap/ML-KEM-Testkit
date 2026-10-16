@@ -1,7 +1,9 @@
 # load_arty_z7_ps.tcl — bring up the Arty Z7-20 PS variant (run after every power-up).
 #
-# Resets the Zynq, programs the PL bitstream, initialises the PS (clocks,
-# MIO, UARTs, PS<->PL level shifters) and starts the UART forwarder on CPU0.
+# Programs the PL bitstream, initialises the PS (MIO, PLLs, clocks, UARTs,
+# PS<->PL level shifters; no DDR -- the forwarder runs from on-chip memory)
+# and starts the UART forwarder on CPU0. Same steps as the host-side
+# scripts/board/boot_arty_z7_ps.py. Needs jumper JP4 on JTAG.
 # After this, the host talks to the ML-KEM core over the board's on-board
 # USB serial (the ...1 interface) at 115200, exactly like the Arty A7.
 #
@@ -85,15 +87,8 @@ proc select_target {pattern} {
         puts "ERROR: no JTAG target matching '$pattern' ($msg). Targets visible:"
         set visible [targets]
         puts $visible
-        if {[string match "*DAP (Cannot open JTAG port*" $visible]} {
-            # The BootROM only opens the ARM DAP in JTAG boot mode or after a
-            # successful SD/QSPI boot; a failed boot locks it down until POR.
-            puts "The ARM debug port (DAP) is not reachable. Either:"
-            puts " - jumper JP4 is not on JTAG: move it, then power-cycle the board"
-            puts "   (unplug USB/power -- the PROG/SRST buttons are not enough), or"
-            puts " - the XVC server garbles ARM-DAP reads: openFPGALoader <= 1.1.1 has a TDO"
-            puts "   alignment bug (fixed upstream in commit 4700951); use a newer build, or"
-            puts "   run `uv run scripts/board/boot_arty_z7_ps.py` on the host instead."
+        if {[string match "*DAP (*" $visible]} {
+            dap_locked_hint
         } else {
             puts "Is the board powered and is openFPGALoader (XVC) running? (./run_vivado.sh arty_z7_20)"
         }
@@ -101,19 +96,60 @@ proc select_target {pattern} {
     }
 }
 
-puts "== resetting the Zynq (PS + PL)"
+# The ARM debug port answers on JTAG but cannot reach the PS: "Cannot open
+# JTAG port" or "AHB AP transaction error". The BootROM keeps it locked after
+# a failed SD/QSPI boot, and a timed-out access leaves it in a sticky error.
+proc dap_locked_hint {} {
+    puts "The ARM debug port (DAP) cannot reach the PS. Put jumper JP4 on JTAG, power the"
+    puts "board off completely (USB and any external supply -- PROG/SRST are not enough),"
+    puts "then run this again (or: uv run scripts/board/boot_arty_z7_ps.py on the host)."
+}
+
+# Same steps as scripts/board/boot_arty_z7_ps.py, which is known to work:
+#   - no `rst -system`: it re-runs the BootROM, which locks the DAP unless JP4 is on JTAG;
+#   - ps7_init without the DDR part: the forwarder runs from on-chip memory, and the
+#     DDR calibration polls are where a slow or failing link used to hang;
+#   - every mask_poll gives up after 2 s with a message (Xilinx's tries 100,000,000
+#     reads -- over XVC that is "forever, silently").
+
+puts "== checking the ARM debug port"
 select_target "APU*"
-rst -system
-after 1000
+if {[catch {mrd -value 0xF8000530} msg]} {        ;# PSS_IDCODE: answers on any reachable PS
+    puts "ERROR: reading the PS failed: $msg"
+    dap_locked_hint
+    exit 1
+}
 
 puts "== programming the PL: $bit"
 fpga -file $bit
 
-puts "== initialising the PS: $init"
+puts "== initialising the PS (ps7_init without DDR): $init"
 select_target "APU*"
 source $init
-ps7_init
-ps7_post_config            ;# enables the PS<->PL level shifters EMIO needs
+proc mask_poll {addr mask} {
+    set deadline [expr {[clock milliseconds] + 2000}]
+    while {([mrd -value $addr] & $mask) == 0} {
+        if {[clock milliseconds] > $deadline} {
+            error "mask_poll $addr & $mask did not complete within 2 s"
+        }
+    }
+}
+switch -- [ps_version] {             ;# the same choice ps7_init makes
+    0x0     { set suffix 1_0 }
+    0x1     { set suffix 2_0 }
+    default { set suffix 3_0 }
+}
+if {[catch {
+    foreach part {mio pll clock peripherals} {
+        puts "   ps7_${part}_init_data_$suffix"
+        ps7_${part}_init_data_$suffix
+    }
+    ps7_post_config            ;# enables the PS<->PL level shifters EMIO needs
+} msg]} {
+    puts "ERROR: ps7_init failed: $msg"
+    dap_locked_hint
+    exit 1
+}
 
 puts "== starting the UART forwarder on CPU0: $elf"
 select_target "*A9*#0"

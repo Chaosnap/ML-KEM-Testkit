@@ -354,7 +354,16 @@ def main():
         print("== holding CPU0 in reset")
         slcr_unlocked(dap, lambda: dap.write32(A9_CPU_RST_CTRL, dap.read32(A9_CPU_RST_CTRL) | 0x11))
 
-        suffix = silicon_suffix(args.ps7_init, dap.read32(DEVCFG_MCTRL))
+        mctrl = dap.read32(DEVCFG_MCTRL)
+        try:
+            dap.check("the first PS register accesses")
+        except IOError:
+            # Every AHB access faults (even before ps7_init): the BootROM keeps the ARM DAP
+            # locked after a failed SD/QSPI boot. A wrong silicon version would follow.
+            sys.exit("the ARM debug port cannot reach the PS (every access faults): the BootROM keeps it\n"
+                     "locked after a failed SD/QSPI boot. Put jumper JP4 on JTAG, power the board off\n"
+                     "completely (USB and any external supply), then run this again.")
+        suffix = silicon_suffix(args.ps7_init, mctrl)
         print("== initialising the PS (ps7_init %s, DDR skipped): %s"
               % (suffix, args.ps7_init.relative_to(REPO)))
         for part in ("mio", "pll", "clock", "peripherals"):

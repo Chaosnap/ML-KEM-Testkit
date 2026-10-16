@@ -43,9 +43,9 @@ make gui                     # Web GUI：http://127.0.0.1:8765
 GUI 左侧导航对应一次实验的完整流程：
 
 1. **Connection**：连接板子（串口）和示波器（VISA/LAN），可运行链路自检。
-2. **Test Vectors**：生成 CPA 或 TVLA 向量集。每条密文的期望 K 都由软件 FIPS 203 预先算好，可以先在软件或板上核对。
+2. **Test Vectors**：生成 CPA 或 TVLA 向量集。每条密文的期望 K 都由软件 FIPS 203 预先算好，可以先在软件或板上核对。向量集可以命名、加标签，可以删除（先进回收站）。
 3. **Acquisition**：采集，实时显示最新 trace 和均值。每条 trace 都校验 K 和 CYCLE_COUNT，可随时停止，之后能续采。
-4. **Trace Library**：管理已采集的 campaign，包括命名、备注、查看波形、导出（.hdf5 / .npz）、移入回收站和恢复。
+4. **Trace Library**：管理已采集的 campaign，包括命名、备注、自定义标签（按标签筛选、搜索）、查看波形、导出（.hdf5 / .npz）。可以勾选多项批量加减标签、移入回收站；回收站里可以恢复或永久删除。
 5. **Analysis**：CPA 分析提供 3×256 系数热力图、逐系数相关曲线、key rank / MTD；TVLA 分析提供 |t| 曲线、类均值和检测曲线。
 
 命令行用法与实验方法见 [cpa_toolkit/README.md](cpa_toolkit/README.md)。
@@ -60,6 +60,23 @@ GUI 左侧导航对应一次实验的完整流程：
 
 示波器触发引脚输出 `trig_out = STATUS.busy`：在运算开始的那个核心时钟沿上升，保持 CYCLE_COUNT 个周期后下降，只有真正开始运算时才出现。GUI 的 Acquisition → *Check trigger* 可以在板上验证触发是否正确（见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md) 第 5.1 节）。
 
+三块板共用 `hdl/core/mlkem_uart_system.sv`（UART、协议桥、跨时钟域、核心、触发、LED），各板顶层只负责时钟、复位和引脚。
+
+**板上 LED**（`hdl/core/status_leds.sv`）：
+
+| 灯 | Arty A7 | Arty Z7 | 含义 |
+| -- | ------- | ------- | ---- |
+| 绿灯 0 | LD4 | LD0 | 运算活动：每次运算后亮 0.1 s（运算本身只有约 0.13 ms，肉眼看不到） |
+| 绿灯 1 | LD5 | LD1 | 上一次运算成功完成 |
+| 绿灯 2 | LD6 | LD2 | 上一次运算出错 |
+| 绿灯 3 | LD7 | LD3 | 心跳（1 Hz 闪烁）：bitstream 已加载，时钟在运行 |
+| RGB 0 | LD0（BTN0 上方） | LD4 | 电源 / 复位：按住 BTN0 或核心时钟未锁定时为红色，正常运行为暗绿色 |
+| RGB 1 | LD1 | LD5 | 主机链路：每个应答帧闪蓝色，帧被拒绝（CRC / 长度 / 命令错误）时亮红色 0.5 s；在 Z7 上还会在每次 0x05 完成通知时闪绿色 |
+| RGB 2 | LD2 | — | 0x05 完成通知：每次闪绿色 |
+| RGB 3 | LD3 | — | 上一次运算（暗光）：Decaps 绿色，Encaps 蓝色，KeyGen 品红色；出错时为红色 |
+
+核心忙时 LED 模块完全静止：所有寄存器、计数器和输出都保持不变，因此 LED 不会在功耗 trace 里引入任何翻转。`make sim-system` 会检查这一点。
+
 ```bash
 vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem
 vivado -mode batch -source scripts/vivado/build_arty_z7.tcl -tclargs mlkem
@@ -71,8 +88,8 @@ vivado -mode batch -source scripts/vivado/program_bitstream.tcl -tclargs <bitstr
 
 - 只实现 ML-KEM-768，支持 KeyGen、Encaps 和 Decaps（含隐式拒绝），其他 SEC_LEVEL 返回 ERROR_CODE 1。
 - Decaps 约 26 300 个核心周期（≈ 128 µs）。密钥固定时，周期数与密文无关；不同密钥之间略有差异（26 270–26 363），因为矩阵 Â 的拒绝采样取决于公开种子 ρ。采集时会逐条检查 CYCLE_COUNT 是否恒定。
-- Arty A7-100T 在 206 MHz 下布线后时序满足（WNS +0.093 ns，WHS +0.036 ns）。
-- 核心资源：7248 LUT、4623 FF、3 个 RAMB36、2 个 DSP，详见 [docs/results/arty-a7-100t_206MHz](docs/results/arty-a7-100t_206MHz/)。
+- **时序**：上一版实现在 206 MHz 下刚好满足，余量几乎为零（WNS：A7 +0.009 ns，Z7 +0.004 / +0.005 ns）。全部 30 条最差路径都从读 FIFO 的 `rd_ptr` / `count` 出发；现在 FIFO 的读地址和满/空标志已改为寄存器（逐周期行为不变）。另外，Z7 125 MHz 时钟域的最差路径（串口字节扇出到协议桥 2048 个 payload 触发器）已随 payload 改为分布式 RAM 而消失。新的 WNS 需要重新实现后确认。
+- 核心资源（上一版）：7248 LUT、4623 FF、3 个 RAMB36、2 个 DSP，详见 [docs/results/arty-a7-100t_206MHz](docs/results/arty-a7-100t_206MHz/)。
 
 ## 主机 ↔ FPGA 协议
 
@@ -89,6 +106,7 @@ vivado -mode batch -source scripts/vivado/program_bitstream.tcl -tclargs <bitstr
 | `make test` | Python：FIPS 203 参考实现、测试向量、UART 主机驱动（在软件板模型上测试：只用 `0x05`、从不轮询 STATUS，旧 bitstream 被拒绝） |
 | `make sim-link` | Icarus：UART 链路与协议桥全部命令，包括 `0x05` 的超时、错误，以及运算期间 TX 静默 |
 | `make sim-bridge` | Verilator：协议桥 + CDC + 真实核心，用 `0x05` 跑 ACVP Decaps |
+| `make sim-system` | Verilator：整个板级系统（`mlkem_uart_system`）经真实串口跑 Decaps；检查触发，以及 LED 在核心忙时不翻转 |
 | `make sim-cdc` / `make sim-units` | CDC 系统测试；各运算单元的单元测试 |
 | `make acvp-sim` / `make acvp-uart PORT=…` | NIST ACVP 向量，分别在 RTL 和板上运行，见 [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
 | `make regress` | 运行以上全部仿真和单元测试 |

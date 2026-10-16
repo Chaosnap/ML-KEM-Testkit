@@ -1,4 +1,4 @@
-.PHONY: help setup gui test vectors ucode sim-iverilog sim-link sim-bridge sim-cdc sim-units \
+.PHONY: help setup gui test vectors ucode sim-iverilog sim-link sim-bridge sim-system sim-cdc sim-units \
 	acvp-sim acvp-uart check lint regress clean
 
 # Python of the project environment (pyproject.toml / uv.lock).
@@ -15,6 +15,7 @@ help:
 	@echo "make check PORT=   board link self-test over UART (no scope needed)"
 	@echo "make acvp-uart PORT=  NIST ACVP vectors on the board;  make acvp-sim: same on the RTL"
 	@echo "make sim-link      UART link + 0x05 Run (Icarus);  make sim-bridge: host protocol on the real core"
+	@echo "make sim-system    whole board system over a serial line, incl. trigger and LEDs"
 	@echo "make regress       all simulation and unit tests"
 	@echo "make ucode         regenerate the microcode / zeta ROMs"
 	@echo "Protocol: docs/UART_PROTOCOL.md   ACVP: docs/ACVP_TEST.md   CPA/TVLA: cpa_toolkit/README.md"
@@ -51,6 +52,10 @@ sim-link:
 sim-bridge:
 	$(MAKE) -C testbench/cdc bridge
 
+# The whole board system (mlkem_uart_system) over a serial line: Decaps, trigger, LEDs (Verilator).
+sim-system:
+	$(MAKE) -C testbench/cdc system
+
 # axil_cdc + real core: registers, KeyGen and Decaps through the crossing (Verilator).
 sim-cdc:
 	$(MAKE) -C testbench/cdc
@@ -74,9 +79,10 @@ lint:
 	verilator --lint-only -Wall -Wno-fatal hdl/core/uart_rx.sv
 	verilator --lint-only -Wall -Wno-fatal hdl/core/uart_tx.sv
 	verilator --lint-only -Wall -Wno-fatal --top-module keccak_f1600 hdl/core/keccak_f1600.sv hdl/core/keccak_round.sv
-	verilator --lint-only -Wall -Wno-fatal hdl/core/mod_reduce.sv
+	verilator --lint-only -Wall -Wno-fatal -Wno-DECLFILENAME hdl/core/status_leds.sv
+	verilator --lint-only -Wall -Wno-fatal -Wno-DECLFILENAME hdl/core/mlkem_word_fifo.sv
 
-regress: test sim-iverilog sim-link sim-units sim-cdc sim-bridge acvp-sim
+regress: test sim-iverilog sim-link sim-units sim-cdc sim-bridge sim-system acvp-sim
 
 # Simulation outputs only. build/vivado/ (Vivado projects) and data/ are never touched.
 clean:

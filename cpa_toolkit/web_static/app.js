@@ -97,20 +97,42 @@ function seg(id, onChange) {
 }
 
 // Sortable table. columns: [{key, label, num, sortable, value(row), render(row)}]
+// opts.checks: a Set of row keys -> a tick-box column (with select-all over the
+// visible rows); opts.onCheck() after every change. opts.onTag(tag): a click on
+// any [data-tag] chip in the table.
 function makeTable(tableId, columns, opts = {}) {
-  const t = $(tableId);
-  let rows = [], sortKey = opts.sortKey || null, dir = opts.dir || -1, selected = null;
-  t.querySelector("thead").innerHTML = "<tr>" + columns.map((c) =>
-    `<th data-k="${c.key}" class="${c.sortable === false ? "" : "sort"} ${c.num ? "num" : ""}">${esc(c.label)}</th>`).join("") + "</tr>";
+  const t = $(tableId), tb = t.querySelector("tbody"), checks = opts.checks;
+  let rows = [], list = [], sortKey = opts.sortKey || null, dir = opts.dir || -1, selected = null;
+  t.querySelector("thead").innerHTML = "<tr>" + (checks ? '<th class="chk-col"><input type="checkbox" class="chk-all" title="select all shown"></th>' : "") +
+    columns.map((c) => `<th data-k="${c.key}" class="${c.sortable === false ? "" : "sort"} ${c.num ? "num" : ""}">${esc(c.label)}</th>`).join("") + "</tr>";
   t.querySelectorAll("th.sort").forEach((th) => th.addEventListener("click", () => {
     const k = th.dataset.k;
     if (sortKey === k) dir = -dir; else { sortKey = k; dir = 1; }
     draw();
   }));
+  if (checks) t.querySelector(".chk-all").addEventListener("change", (e) => {
+    list.forEach((r) => (e.target.checked ? checks.add(opts.key(r)) : checks.delete(opts.key(r))));
+    draw(); opts.onCheck && opts.onCheck();
+  });
+  tb.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-tag]");
+    if (chip && opts.onTag) { e.stopPropagation(); opts.onTag(chip.dataset.tag); return; }
+    const box = e.target.closest("input.chk");
+    if (box) {
+      box.checked ? checks.add(box.dataset.key) : checks.delete(box.dataset.key);
+      syncAll(); opts.onCheck && opts.onCheck();
+    }
+  });
   function val(r, c) { return c.value ? c.value(r) : r[c.key]; }
+  function syncAll() {
+    if (!checks) return;
+    const all = t.querySelector(".chk-all"), n = list.filter((r) => checks.has(opts.key(r))).length;
+    all.checked = list.length > 0 && n === list.length;
+    all.indeterminate = n > 0 && n < list.length;
+  }
   function draw() {
     const col = columns.find((c) => c.key === sortKey);
-    const list = col ? rows.slice().sort((a, b) => {
+    list = col ? rows.slice().sort((a, b) => {
       const x = val(a, col), y = val(b, col);
       if (x === y) return 0;
       if (x === null || x === undefined) return 1;
@@ -119,17 +141,109 @@ function makeTable(tableId, columns, opts = {}) {
     }) : rows;
     t.querySelectorAll("th").forEach((th) => th.classList.remove("asc", "desc"));
     if (col) t.querySelector(`th[data-k="${sortKey}"]`).classList.add(dir > 0 ? "asc" : "desc");
-    const tb = t.querySelector("tbody");
-    if (!list.length) { tb.innerHTML = `<tr><td colspan="${columns.length}">${opts.empty || '<div class="empty">Nothing here.</div>'}</td></tr>`; return; }
-    tb.innerHTML = list.map((r) => `<tr data-key="${esc(opts.key ? opts.key(r) : "")}" class="${opts.key && opts.key(r) === selected ? "sel" : ""}">` +
-      columns.map((c) => `<td class="${c.num ? "num" : ""} ${c.cls || ""}">${c.render ? c.render(r) : esc(val(r, c) ?? "—")}</td>`).join("") + "</tr>").join("");
+    const span = columns.length + (checks ? 1 : 0);
+    if (!list.length) {
+      const empty = typeof opts.empty === "function" ? opts.empty() : opts.empty;
+      tb.innerHTML = `<tr><td colspan="${span}">${empty || '<div class="empty">Nothing here.</div>'}</td></tr>`; syncAll(); return;
+    }
+    tb.innerHTML = list.map((r) => {
+      const k = opts.key ? opts.key(r) : "";
+      return `<tr data-key="${esc(k)}" class="${k === selected ? "sel" : ""} ${checks && checks.has(k) ? "checked" : ""}">` +
+        (checks ? `<td class="chk-col"><input type="checkbox" class="chk" data-key="${esc(k)}" ${checks.has(k) ? "checked" : ""}></td>` : "") +
+        columns.map((c) => `<td class="${c.num ? "num" : ""} ${c.cls || ""}">${c.render ? c.render(r) : esc(val(r, c) ?? "—")}</td>`).join("") + "</tr>";
+    }).join("");
     if (opts.onRow) tb.querySelectorAll("tr[data-key]").forEach((tr) => tr.addEventListener("click", (e) => {
-      if (e.target.closest("button,a")) return;
+      if (e.target.closest("button,a,input,label,[data-tag]")) return;
       opts.onRow(list.find((r) => opts.key(r) === tr.dataset.key));
     }));
+    syncAll();
   }
-  return { set(r) { rows = r; draw(); }, select(k) { selected = k; draw(); }, rows: () => rows };
+  return { set(r) { rows = r; draw(); }, select(k) { selected = k; draw(); }, redraw: draw, rows: () => rows, visible: () => list };
 }
+
+// ---- tags: chips, an inline editor, the filter list, bulk actions ----
+// Chips; clickable ones (inside a makeTable with onTag) filter the list.
+const tagChips = (tags, click = true) => (tags || []).map((t) =>
+  `<span class="tag${click ? " click" : ""}"${click ? ` data-tag="${esc(t)}" title="show only #${esc(t)}"` : ""}>${esc(t)}</span>`).join("");
+const knownTags = new Set();          // every tag seen on campaigns and vector sets: editor suggestions
+function learnTags(rows) { rows.forEach((r) => (r?.tags || []).forEach((t) => knownTags.add(t))); }
+const tagSuggestions = () => [...knownTags].sort((a, b) => a.localeCompare(b));
+const splitTags = (v) => String(v).split(",").map((x) => x.trim()).filter(Boolean);
+// Count every tag over rows -> [[tag, n], ...] sorted by name.
+function tagCounts(rows) {
+  const m = new Map();
+  rows.forEach((r) => (r.tags || []).forEach((t) => m.set(t, (m.get(t) || 0) + 1)));
+  return [...m].sort((a, b) => a[0].localeCompare(b[0]));
+}
+function fillTagFilter(id, rows) {
+  const sel = $(id), keep = sel.value, counts = tagCounts(rows);
+  sel.innerHTML = `<option value="">all tags</option>` + counts.map(([t, n]) => `<option value="${esc(t)}">#${esc(t)} (${n})</option>`).join("");
+  sel.value = counts.some(([t]) => t === keep) ? keep : "";
+}
+// Chips with x plus an input: Enter, comma, leaving the field or picking a
+// suggestion adds; Backspace on an empty input removes the last tag.
+// onChange(newTags) saves and returns the tags as stored.
+function tagEditor(el, tags, suggestions, onChange) {
+  let cur = (tags || []).slice();
+  const listId = el.id + "-dl";
+  function render(focus) {
+    el.innerHTML = `<div class="tag-editor">${cur.map((t, i) => `<span class="tag">${esc(t)}<button data-i="${i}" title="remove #${esc(t)}">×</button></span>`).join("")}` +
+      `<input list="${listId}" maxlength="32" placeholder="${cur.length ? "add tag…" : "add tags: Enter or comma…"}"><datalist id="${listId}">` +
+      suggestions.filter((s) => !cur.some((c) => c.toLowerCase() === s.toLowerCase())).map((s) => `<option value="${esc(s)}">`).join("") + "</datalist></div>";
+    const inp = el.querySelector("input");
+    el.querySelectorAll("button[data-i]").forEach((b) => b.addEventListener("click", () => { cur.splice(+b.dataset.i, 1); commit(true); }));
+    inp.addEventListener("keydown", (e) => {
+      if ((e.key === "Enter" || e.key === ",") && inp.value.trim()) { e.preventDefault(); take(inp, true); }
+      else if (e.key === "Backspace" && !inp.value && cur.length) { cur.pop(); commit(true); }
+    });
+    // a picked suggestion, or a comma arriving without a keydown (paste, IME)
+    inp.addEventListener("input", (e) => { if (e.inputType === "insertReplacementText" || !e.inputType || inp.value.includes(",")) take(inp, true); });
+    inp.addEventListener("blur", () => inp.value.trim() && take(inp, false));
+    if (focus) inp.focus();
+  }
+  // Empty the input first: re-rendering removes it, and the blur that may fire
+  // then must not add (and re-render) a second time.
+  function take(inp, focus) {
+    const v = inp.value;
+    inp.value = "";
+    splitTags(v).forEach((t) => { if (!cur.some((c) => c.toLowerCase() === t.toLowerCase())) cur.push(t.slice(0, 32)); });
+    commit(focus);
+  }
+  async function commit(focus) {
+    try { const saved = await onChange(cur.slice()); if (Array.isArray(saved)) cur = saved; } catch (e) { err(e); }
+    render(focus);
+  }
+  render(false);
+}
+// Dialog: tags to add to / remove from several items -> {add, remove} or null.
+async function bulkTagDialog(rows) {
+  const present = tagCounts(rows);
+  const ok = await dialog({ title: `Tags of ${rows.length} item${rows.length > 1 ? "s" : ""}`, ok: "Apply", body:
+    `<label class="f">Add tags (comma-separated)</label><input id="dlg-add" type="text" list="dlg-add-dl" placeholder="e.g. em-probe, baseline">` +
+    `<datalist id="dlg-add-dl">${tagSuggestions().map((t) => `<option value="${esc(t)}">`).join("")}</datalist>` +
+    (present.length ? `<label class="f" style="margin-top:14px">Remove tags</label><div class="tag-pick">` +
+      present.map(([t, n]) => `<label class="tag"><input type="checkbox" value="${esc(t)}">${esc(t)} <span class="dim">${n}</span></label>`).join("") + "</div>" : "") });
+  if (!ok) return null;
+  const add = splitTags($("dlg-add").value), remove = [...$("modal-body").querySelectorAll(".tag-pick input:checked")].map((x) => x.value);
+  return add.length || remove.length ? { add, remove } : null;
+}
+// The bar above a table while rows are ticked: "n selected", actions [label, btn class, fn], Clear.
+function bulkBar(id, n, actions, onClear) {
+  const el = $(id);
+  el.classList.toggle("hidden", !n);
+  if (!n) return;
+  el.innerHTML = `<span><b>${n}</b> selected</span>` + actions.map(([label, cls], i) => `<button class="btn ${cls} sm" data-i="${i}">${label}</button>`).join("") +
+    `<span class="grow"></span><button class="btn ghost sm" data-clear>Clear</button>`;
+  el.querySelectorAll("button[data-i]").forEach((b) => b.addEventListener("click", actions[+b.dataset.i][2]));
+  el.querySelector("[data-clear]").addEventListener("click", onClear);
+}
+// Drop ticks of rows that are no longer listed (filtered out, moved, deleted).
+function pruneChecks(checks, rows, key) {
+  const keep = new Set(rows.map(key));
+  [...checks].forEach((k) => keep.has(k) || checks.delete(k));
+}
+const tagSuffix = (r) => (r.tags?.length ? "  #" + r.tags.join(" #") : "");     // for <option> text
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
 
 // =====================================================================================
 // console drawer
@@ -425,7 +539,8 @@ async function scopeSave() {
 // =====================================================================================
 // Test Vectors page
 // =====================================================================================
-let vgMode, vsSets = [], vsSel = null, vpOffset = 0, vpRow = null, vsTable;
+let vgMode, vsSets = [], vsTrashSets = [], vsTrash = false, vsChecks = new Set(), vsSel = null, vpOffset = 0, vpRow = null, vsTable;
+const vsRows = () => (vsTrash ? vsTrashSets : vsSets);
 const VP_PAGE = 50;
 const kindLabel = (m) => (m.mode === "tvla" ? (m.strategy === "invalid-random" ? "fixed vs random bytes" : "fixed vs random valid")
   : m.strategy === "structured" ? `structured (poly ${m.poly}, pair ${m.pair})` : m.strategy === "invalid" ? "random bytes" : "valid encapsulations");
@@ -461,28 +576,122 @@ async function vgGenerate() {
 }
 async function vsRefresh(selectPath) {
   try {
-    ({ sets: vsSets } = await api("GET", "/api/vectors/list"));
-    $("vs-count").textContent = vsSets.length ? `${vsSets.length} set(s)` : "";
+    const r = await api("GET", "/api/vectors/list"), st = r.storage;
+    vsSets = r.sets;
+    vsTrashSets = vsTrash ? (await api("GET", "/api/vectors/list?trash=1")).sets : [];
+    learnTags(vsSets); learnTags(vsTrashSets);
+    $("vs-title").textContent = vsTrash ? "Vector-set trash" : "Vector sets";
+    $("vs-count").textContent = vsTrash ? plural(vsTrashSets.length, "set") : vsSets.length ? `${plural(vsSets.length, "set")} · ${fmtBytes(st.bytes)}` : "";
+    $("vs-trash-toggle").textContent = vsTrash ? "← Back to sets" : `Trash${st.n_trash ? ` (${st.n_trash})` : ""}`;
+    $("vs-empty-trash").disabled = !vsTrashSets.length;
     $("nav-vectors").textContent = vsSets.length || "";
+    fillTagFilter("vs-tag", vsRows());
     vsFilter();
-    const want = selectPath || vsSel?.path || vsSets[0]?.path;
-    if (want && vsSets.some((m) => m.path === want)) vsSelect(want);
+    const rows = vsRows(), want = [selectPath, vsSel?.path, rows[0]?.path].find((x) => x && rows.some((m) => m.path === x)) || null;
+    if (want && want === vsSel?.path && !selectPath) { vsSel = rows.find((m) => m.path === want); vsTable.select(want); vsShowMeta(); }
+    else vsSelect(want);
     acqFillSets();
   } catch (e) { err(e); }
 }
 function vsFilter() {
-  const q = $("vs-search").value.trim().toLowerCase();
-  vsTable.set(vsSets.filter((m) => !q || [m.id, m.mode, m.strategy, kindLabel(m)].join(" ").toLowerCase().includes(q)));
+  const q = $("vs-search").value.trim().toLowerCase(), tag = $("vs-tag").value;
+  const rows = vsRows().filter((m) => (!tag || (m.tags || []).includes(tag)) &&
+    (!q || [m.id, m.label, m.mode, m.strategy, kindLabel(m), ...(m.tags || [])].join(" ").toLowerCase().includes(q)));
+  pruneChecks(vsChecks, rows, (m) => m.path);
+  vsTable.set(rows);
+  vsBulk();
+}
+function vsBulk() {
+  const sel = vsTable.visible().filter((m) => vsChecks.has(m.path));
+  bulkBar("vs-bulk", sel.length, vsTrash ? [
+    ["Restore", "secondary", () => vsRestore(sel)],
+    ["Delete permanently", "danger", () => vsPurge(sel)],
+  ] : [
+    ["Tags…", "secondary", async () => {
+      const t = await bulkTagDialog(sel);
+      if (!t) return;
+      try { await api("POST", "/api/vectors/tag", { paths: sel.map((m) => m.path), ...t }); toast(`Tags updated on ${plural(sel.length, "set")}`, "ok"); } catch (e) { err(e); }
+      vsRefresh();
+    }],
+    ["Move to trash", "ghost", () => vsDelete(sel)],
+  ], () => { vsChecks.clear(); vsTable.redraw(); vsBulk(); });
 }
 function vsSelect(path) {
-  vsSel = vsSets.find((m) => m.path === path) || null;
+  vsSel = vsRows().find((m) => m.path === path) || null;
   vsTable.select(path);
-  $("vs-selected").textContent = vsSel ? `${vsSel.filename} · ${fmtBytes(vsSel.size_bytes)}` : "no set selected";
+  vsShowMeta();
   vpOffset = 0; vpRow = null; $("vp-detail").innerHTML = "";
   vpLoad();
 }
+// Under the list: what is selected, its actions, its name and tags.
+function vsShowMeta() {
+  const m = vsSel;
+  $("vs-selected").textContent = $("vs-trash-selected").textContent = m ? `${m.filename} · ${fmtBytes(m.size_bytes)}` : "no set selected";
+  $("vs-actions").classList.toggle("hidden", vsTrash);
+  $("vs-trash-actions").classList.toggle("hidden", !vsTrash);
+  ["vs-verify-sw", "vs-download-btn", "vs-delete", "vs-use", "vs-purge", "vs-restore"].forEach((id) => ($(id).disabled = !m));
+  const el = $("vs-meta");
+  if (!m) { el.innerHTML = ""; return; }
+  if (vsTrash) { el.innerHTML = m.label || m.tags?.length ? `<div>${esc(m.label)} ${tagChips(m.tags, false)}</div>` : ""; return; }
+  el.innerHTML = `<div class="row"><input id="vs-label" type="text" class="grow" maxlength="120" placeholder="Name this set (optional)" value="${esc(m.label || "")}">` +
+    `<button class="btn secondary sm" id="vs-label-save">Save name</button></div><div id="vs-tags"></div>`;
+  const saveName = async () => {
+    try {
+      const a = await api("POST", "/api/vectors/update", { path: m.path, label: $("vs-label").value.trim() });
+      m.label = a.label; toast("Name saved", "ok"); vsAfterEdit();
+    } catch (e) { err(e); }
+  };
+  $("vs-label-save").addEventListener("click", saveName);
+  $("vs-label").addEventListener("keydown", (e) => e.key === "Enter" && saveName());
+  tagEditor($("vs-tags"), m.tags, tagSuggestions(), async (tags) => {
+    const a = await api("POST", "/api/vectors/update", { path: m.path, tags });
+    m.tags = a.tags; learnTags([m]); vsAfterEdit();
+    return a.tags;
+  });
+}
+// After a name/tag change of the selected set: list, tag filter, acquisition choices.
+function vsAfterEdit() { fillTagFilter("vs-tag", vsRows()); vsFilter(); acqFillSets(); }
+async function vsDelete(sets) {
+  if (!sets.length) return;
+  let used = 0;
+  try {        // only for the message: campaigns record the set by path (or id)
+    const { files } = await api("GET", "/api/traces/list"), names = new Set(sets.flatMap((m) => [m.filename, m.id]));
+    used = files.filter((f) => names.has(String(f.vector_set || "").split("/").pop())).length;
+  } catch (e) { /* ignore */ }
+  const what = sets.length === 1 ? `<b>${esc(sets[0].label || sets[0].id)}</b> moves` : `<b>${sets.length} vector sets</b> move`;
+  if (!(await dialog({ title: "Move to trash?", ok: "Move to trash", danger: true, body:
+    `${what} to <code>data/vectors/.trash/</code> together with ${sets.length === 1 ? "its" : "their"} name and tags; restore from the Trash view.` +
+    (used ? `<p class="help" style="margin:10px 0 0">${plural(used, "campaign")} in the library ${used === 1 ? "was" : "were"} captured with ${sets.length === 1 ? "this set" : "these sets"}. ` +
+      `They keep working: each campaign file stores its own ciphertexts, expected keys and the seed.</p>` : "") }))) return;
+  try { await api("POST", "/api/vectors/delete", { paths: sets.map((m) => m.path) }); toast(`Moved ${plural(sets.length, "vector set")} to the trash`, "ok"); } catch (e) { err(e); }
+  vsRefresh();
+}
+async function vsRestore(sets) {
+  if (!sets.length) return;
+  try { await api("POST", "/api/vectors/restore", { paths: sets.map((m) => m.path) }); toast(`Restored ${plural(sets.length, "vector set")}`, "ok"); } catch (e) { err(e); }
+  vsRefresh();
+}
+async function vsPurge(sets) {
+  if (!sets.length) return;
+  const what = sets.length === 1 ? `<b>${esc(sets[0].label || sets[0].id)}</b> is` : `<b>${sets.length} vector sets</b> are`;
+  if (!(await dialog({ title: "Delete permanently?", ok: "Delete permanently", danger: true, body:
+    `${what} deleted from disk. This cannot be undone, but a set can be generated again: the same settings and seed give the same vectors.` }))) return;
+  try { const r = await api("POST", "/api/vectors/purge", { paths: sets.map((m) => m.path) }); toast(`Deleted ${plural(r.deleted, "vector set")}`, "ok"); } catch (e) { err(e); }
+  vsRefresh();
+}
+async function vsEmptyTrash() {
+  if (!vsTrashSets.length) return;
+  if (!(await dialog({ title: "Empty the vector-set trash?", ok: "Delete all", danger: true,
+    body: `${vsTrashSets.length === 1 ? "The vector set" : `All ${vsTrashSets.length} vector sets`} in <code>data/vectors/.trash/</code> ${vsTrashSets.length === 1 ? "is" : "are"} deleted from disk. This cannot be undone.` }))) return;
+  try { const r = await api("POST", "/api/vectors/empty_trash", {}); toast(`Deleted ${plural(r.deleted, "vector set")}`, "ok"); } catch (e) { err(e); }
+  vsRefresh();
+}
 async function vpLoad() {
-  if (!vsSel) return;
+  if (!vsSel) {
+    $("vp-title").textContent = ""; $("vp-kpis").innerHTML = ""; $("vp-pager").textContent = "—";
+    $("vp-table").querySelector("tbody").innerHTML = "";
+    return;
+  }
   try {
     const r = await api("POST", "/api/vectors/view", { path: vsSel.path, offset: vpOffset, limit: VP_PAGE, class: $("vp-class").value });
     const m = r.meta;
@@ -547,21 +756,21 @@ async function vbRun() {
 let acqJob = null, acqT0 = 0, liveSeq = -1, liveLast = null, captures = [], acqLastFile = null;
 function acqFillSets() {
   const sel = $("acq-vector-set"), keep = sel.value || vsSel?.path;
-  sel.innerHTML = vsSets.length ? vsSets.map((m) => `<option value="${esc(m.path)}">${esc(m.id)} · ${m.mode.toUpperCase()} · ${m.n}</option>`).join("")
+  sel.innerHTML = vsSets.length ? vsSets.map((m) => `<option value="${esc(m.path)}">${esc(m.label || m.id)} · ${m.mode.toUpperCase()} · ${m.n}${tagSuffix(m)}</option>`).join("")
     : `<option value="">— generate a vector set first —</option>`;
   if (keep && vsSets.some((m) => m.path === keep)) sel.value = keep;
   acqSetHint();
 }
 function acqSetHint() {
   const m = vsSets.find((x) => x.path === $("acq-vector-set").value);
-  $("acq-vs-hint").textContent = m ? `${m.mode.toUpperCase()} · ${kindLabel(m)} · ${m.n} traces will be captured` : "";
+  $("acq-vs-hint").textContent = m ? `${m.label ? m.id + " · " : ""}${m.mode.toUpperCase()} · ${kindLabel(m)} · ${m.n} traces will be captured` : "";
 }
 async function acqRefreshResume() {
   try {
     const { files } = await api("GET", "/api/traces/list");
     const sel = $("acq-resume"), keep = sel.value;
     sel.innerHTML = `<option value="">— start a new campaign —</option>` + files.filter((f) => f.status === "resumable").map((f) =>
-      `<option value="${esc(f.path)}">${esc(f.label || f.filename)} (${f.n_completed}/${f.n_traces_planned})</option>`).join("");
+      `<option value="${esc(f.path)}">${esc(f.label || f.filename)} (${f.n_completed}/${f.n_traces_planned})${tagSuffix(f)}</option>`).join("");
     if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
   } catch (e) { /* ignore */ }
 }
@@ -681,7 +890,7 @@ function capDraw() {
 // =====================================================================================
 // Trace Library page
 // =====================================================================================
-let libFiles = [], libSel = null, libTrash = false, libTable, libMode, libDetail = null, tvData = null;
+let libFiles = [], libSel = null, libTrash = false, libChecks = new Set(), libTable, libMode, libDetail = null, tvData = null;
 const statusBadge = (st) => ({ complete: '<span class="badge ok">complete</span>', resumable: '<span class="badge warn">resumable</span>',
   recording: '<span class="badge info">● recording</span>', partial: '<span class="badge warn">partial</span>', unreadable: '<span class="badge bad">unreadable</span>' }[st] || esc(st));
 const modeBadge = (m) => `<span class="badge ${m === "cpa" ? "cpa" : m === "tvla" ? "tvla" : ""}">${esc((m || "?").toUpperCase())}</span>`;
@@ -693,16 +902,79 @@ async function libRefresh(quiet) {
     const st = r.storage;
     $("lib-storage").textContent = `${st.n_files} campaign(s) · ${fmtBytes(st.bytes)} · ${fmtBytes(st.disk_free)} free`;
     $("lib-trash-toggle").textContent = libTrash ? "← Back to library" : `Trash${st.n_trash ? ` (${st.n_trash})` : ""}`;
+    $("lib-empty-trash").classList.toggle("hidden", !libTrash || !libFiles.length);
     $("nav-library").textContent = st.n_files || "";
+    learnTags(libFiles);
+    fillTagFilter("lib-tag", libFiles);
     libFilter();
     if (libSel && !libFiles.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
     else if (libSel && !quiet) libShow(libSel);
   } catch (e) { if (!quiet) err(e); }
 }
 function libFilter() {
-  const q = $("lib-search").value.trim().toLowerCase(), m = libMode.get(), st = $("lib-status").value;
-  libTable.set(libFiles.filter((f) => (!m || f.mode === m) && (!st || f.status === st) &&
-    (!q || [f.filename, f.label, f.notes, f.vector_set, f.strategy].join(" ").toLowerCase().includes(q))));
+  const q = $("lib-search").value.trim().toLowerCase(), m = libMode.get(), st = $("lib-status").value, tag = $("lib-tag").value;
+  const rows = libFiles.filter((f) => (!m || f.mode === m) && (!st || f.status === st) && (!tag || (f.tags || []).includes(tag)) &&
+    (!q || [f.filename, f.label, f.notes, f.vector_set, f.strategy, ...(f.tags || [])].join(" ").toLowerCase().includes(q)));
+  pruneChecks(libChecks, rows, (f) => f.path);
+  libTable.set(rows);
+  libBulk();
+}
+function libBulk() {
+  // a campaign being recorded cannot be tagged or moved
+  const sel = libTable.visible().filter((f) => libChecks.has(f.path) && f.status !== "recording");
+  bulkBar("lib-bulk", sel.length, libTrash ? [
+    ["Restore", "secondary", () => libRestore(sel)],
+    ["Delete permanently", "danger", () => libPurge(sel)],
+  ] : [
+    ["Tags…", "secondary", async () => {
+      const ok = sel.filter((f) => f.status !== "unreadable"), t = await bulkTagDialog(ok);
+      if (!t) return;
+      try { await api("POST", "/api/traces/tag", { paths: ok.map((f) => f.path), ...t }); toast(`Tags updated on ${plural(ok.length, "campaign")}`, "ok"); } catch (e) { err(e); }
+      libRefresh();
+    }],
+    ["Move to trash", "ghost", () => libDelete(sel)],
+  ], () => { libChecks.clear(); libTable.redraw(); libBulk(); });
+}
+const libWhat = (rows, verb) => rows.length === 1 ? `<b>${esc(rows[0].label || rows[0].filename)}</b> ${verb}s` : `<b>${rows.length} campaigns</b> ${verb}`;
+async function libDelete(rows) {
+  if (!rows.length) return;
+  if (!(await dialog({ title: "Move to trash?", ok: "Move to trash", danger: true, body:
+    `${libWhat(rows, "move")} to <code>data/traces/.trash/</code> with ${rows.length === 1 ? "its" : "their"} name, notes and tags. Restore from the Trash view; analysis reports stay.` }))) return;
+  try { await api("POST", "/api/traces/delete", { paths: rows.map((f) => f.path) }); toast(`Moved ${plural(rows.length, "campaign")} to the trash`, "ok"); } catch (e) { err(e); }
+  if (rows.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
+  libRefresh(); acqRefreshResume();
+}
+async function libRestore(rows) {
+  if (!rows.length) return;
+  try { await api("POST", "/api/traces/restore", { paths: rows.map((f) => f.path) }); toast(`Restored ${plural(rows.length, "campaign")}`, "ok"); } catch (e) { err(e); }
+  if (rows.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
+  libRefresh(); acqRefreshResume();
+}
+function purgeText(rows) {
+  const bytes = rows.reduce((a, f) => a + (f.size_bytes || 0), 0), reps = rows.reduce((a, f) => a + (f.n_reports || 0), 0);
+  return ` (${fmtBytes(bytes)}) ${rows.length === 1 ? "is" : "are"} deleted from disk` +
+    (reps ? `, together with the ${plural(reps, "analysis report")} made from ${rows.length === 1 ? "it" : "them"}` : "") + ". This cannot be undone.";
+}
+async function libPurge(rows) {
+  if (!rows.length) return;
+  if (!(await dialog({ title: "Delete permanently?", ok: "Delete permanently", danger: true,
+    body: (rows.length === 1 ? `<b>${esc(rows[0].label || rows[0].filename)}</b>` : `<b>${rows.length} campaigns</b>`) + purgeText(rows) }))) return;
+  try {
+    const r = await api("POST", "/api/traces/purge", { paths: rows.map((f) => f.path) });
+    toast(`Deleted ${plural(r.deleted, "campaign")}${r.reports ? ` and ${plural(r.reports, "report")}` : ""}`, "ok");
+  } catch (e) { err(e); }
+  if (rows.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
+  libRefresh();
+}
+async function libEmptyTrash() {
+  if (!libTrash || !libFiles.length) return;
+  if (!(await dialog({ title: "Empty the trash?", ok: "Delete all", danger: true,
+    body: `${libFiles.length === 1 ? "The campaign" : `All ${libFiles.length} campaigns`} in <code>data/traces/.trash/</code>` + purgeText(libFiles) }))) return;
+  try {
+    const r = await api("POST", "/api/traces/empty_trash", {});
+    toast(`Deleted ${plural(r.deleted, "campaign")}${r.reports ? ` and ${plural(r.reports, "report")}` : ""}`, "ok");
+  } catch (e) { err(e); }
+  libSel = null; libDetailEmpty(); libRefresh();
 }
 function libDetailEmpty() {
   $("lib-detail").innerHTML = `<div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div>`;
@@ -714,11 +986,13 @@ async function libShow(path) {
   const f = libFiles.find((x) => x.path === path);
   if (!f) return;
   if (libTrash) {
-    $("lib-detail").innerHTML = `<div class="detail-head"><div><div class="title">${esc(f.label || f.filename)}</div><div class="file">${esc(f.filename)} · in trash</div></div></div>` +
-      `<div class="btn-row"><button class="btn primary" id="lib-restore">Restore to library</button></div>`;
-    $("lib-restore").addEventListener("click", async () => {
-      try { await api("POST", "/api/traces/restore", { path }); toast("Restored " + f.filename, "ok"); libRefresh(); } catch (e) { err(e); }
-    });
+    $("lib-detail").innerHTML = `<div class="detail-head"><div style="flex:1;min-width:0"><div class="title">${esc(f.label || f.filename)}</div><div class="file">${esc(f.filename)} · in trash</div></div>` +
+      `<div>${modeBadge(f.mode)}</div></div>` + (f.tags?.length ? `<div style="margin-top:8px">${tagChips(f.tags, false)}</div>` : "") +
+      `<div class="kv" style="margin-top:12px"><span class="k">Traces</span><span class="v">${f.n_completed ?? "—"}</span><span class="k">Size</span><span class="v">${fmtBytes(f.size_bytes)}</span>` +
+      `<span class="k">Captured</span><span class="v">${fmtDate(f.created_unix)}</span><span class="k">Analysis reports</span><span class="v">${f.n_reports || 0}</span></div>` +
+      `<div class="btn-row"><button class="btn primary" id="lib-restore">Restore to library</button><span class="grow"></span><button class="btn danger sm" id="lib-purge">Delete permanently</button></div>`;
+    $("lib-restore").addEventListener("click", () => libRestore([f]));
+    $("lib-purge").addEventListener("click", () => libPurge([f]));
     $("lib-viewer").classList.add("hidden");
     return;
   }
@@ -741,8 +1015,9 @@ async function libShow(path) {
           <a id="ld-dl-h5">Full campaign (.hdf5, ${fmtBytes(d.size_bytes)})</a><a id="ld-dl-npz">Slice of traces (.npz)…</a></div></div>
         <span class="grow"></span><button class="btn ghost sm" id="ld-delete">Move to trash</button></div>
       <div class="kpis compact" id="ld-kpis" style="margin-top:14px"></div>
-      <div class="section-title">Name &amp; notes</div>
-      <div class="row"><input id="ld-label" type="text" class="grow" placeholder="Name this campaign" value="${esc(d.label)}"><button class="btn secondary sm" id="ld-save">Save</button></div>
+      <div class="section-title">Name, tags &amp; notes</div>
+      <div class="row"><input id="ld-label" type="text" class="grow" maxlength="120" placeholder="Name this campaign" value="${esc(d.label)}"><button class="btn secondary sm" id="ld-save">Save</button></div>
+      <div id="ld-tags" style="margin-top:8px"></div>
       <textarea id="ld-notes" rows="2" placeholder="Notes: probe position, scope settings, observations…" style="margin-top:8px">${esc(d.notes)}</textarea>
       <div class="section-title">Mean ± σ of the first traces</div>
       <div class="chart" id="ld-preview"><div class="chart-empty">loading…</div></div>
@@ -771,9 +1046,13 @@ async function libShow(path) {
         `<p class="help" style="margin-top:10px">.npz with traces, time axis, ciphertexts, outputs, expected K, cycles, classes and the campaign metadata.</p>` });
       if (ok) download("/api/traces/export", { path, start: $("dlg-start").value, count: $("dlg-count").value });
     });
-    $("ld-delete").addEventListener("click", async () => {
-      if (!(await dialog({ title: "Move to trash?", body: `<b>${esc(d.label || d.filename)}</b> moves to <code>data/traces/.trash/</code>. You can restore it from the Trash view.`, ok: "Move to trash", danger: true }))) return;
-      try { await api("POST", "/api/traces/delete", { path }); toast("Moved to trash", "ok"); libSel = null; libDetailEmpty(); libRefresh(); } catch (e) { err(e); }
+    $("ld-delete").addEventListener("click", () => libDelete([f]));
+    tagEditor($("ld-tags"), d.tags, tagSuggestions(), async (tags) => {
+      const r = await api("POST", "/api/traces/update", { path, tags });
+      const row = libFiles.find((x) => x.path === path);       // the list may have been reloaded meanwhile
+      d.tags = r.tags; if (row) row.tags = r.tags; learnTags([d]);
+      fillTagFilter("lib-tag", libFiles); libFilter();
+      return r.tags;
     });
     $("ld-save").addEventListener("click", async () => {
       try {
@@ -857,12 +1136,13 @@ let anJob = null;        // running analysis job
 let anDrawn = new Set(); // tabs of the current report already drawn (Plotly needs a visible container)
 
 const chip = (k, v, cls = "") => `<span class="chip ${cls}">${esc(k)} <b>${esc(v)}</b></span>`;
-const fileOpt = (f) => `<option value="${esc(f.path)}">${esc(f.label || f.filename)} · ${f.mode.toUpperCase()} · ${f.n_completed} traces</option>`;
+const fileOpt = (f) => `<option value="${esc(f.path)}">${esc(f.label || f.filename)} · ${f.mode.toUpperCase()} · ${f.n_completed} traces${tagSuffix(f)}</option>`;
 function anFile() { return anFiles.find((f) => f.path === $("an-dataset").value); }
 
 async function anLoadFiles() {
   const { files } = await api("GET", "/api/traces/list");
   anFiles = files.filter((f) => !["recording", "unreadable"].includes(f.status));
+  learnTags(anFiles);
   const sel = $("an-dataset"), keep = sel.value;
   sel.innerHTML = anFiles.length ? anFiles.map(fileOpt).join("") : `<option value="">— no campaigns captured yet —</option>`;
   if (keep && anFiles.some((f) => f.path === keep)) sel.value = keep;
@@ -884,7 +1164,7 @@ function anMeta() {
   $("an-dataset-hint").innerHTML = f ? [modeBadge(f.mode), chip("traces", f.n_completed), chip("samples", f.n_samples),
     chip("K correct", pct(f.k_match_fraction), f.k_match_fraction === 1 ? "good" : f.k_match_fraction === null || f.k_match_fraction === undefined ? "" : "bad"),
     f.n_fixed !== null && f.n_fixed !== undefined ? chip("fixed / random", `${f.n_fixed} / ${f.n_random}`) : "",
-    f.has_recipe ? "" : chip("true key", "not stored", "warn"), chip("captured", fmtAgo(f.created_unix))].join("") : "";
+    f.has_recipe ? "" : chip("true key", "not stored", "warn"), chip("captured", fmtAgo(f.created_unix)), tagChips(f.tags, false)].join("") : "";
 }
 async function anDatasetChanged(reportPath) {
   const f = anFile();
@@ -1483,12 +1763,22 @@ async function init() {
   });
   $("vg-generate").addEventListener("click", vgGenerate);
   vsTable = makeTable("vs-table", [
-    { key: "id", label: "set", render: (m) => `<div class="name mono">${esc(m.id)}</div>` },
+    { key: "id", label: "set", value: (m) => (m.label || m.id).toLowerCase(),
+      render: (m) => (m.label ? `<div class="name">${esc(m.label)}</div><div class="sub">${esc(m.id)}</div>` : `<div class="name mono">${esc(m.id)}</div>`) +
+        (m.tags?.length ? `<div>${tagChips(m.tags)}</div>` : "") },
     { key: "mode", label: "purpose", render: (m) => modeBadge(m.mode) + ` <span class="muted" style="font-size:12px">${esc(kindLabel(m))}</span>` },
     { key: "n", label: "vectors", num: true }, { key: "created_unix", label: "created", render: (m) => fmtAgo(m.created_unix) },
-  ], { key: (m) => m.path, onRow: (m) => vsSelect(m.path), sortKey: "created_unix", dir: -1,
-       empty: '<div class="empty"><div class="t">No vector sets yet</div>Generate one with the form on the left.</div>' });
+  ], { key: (m) => m.path, onRow: (m) => vsSelect(m.path), sortKey: "created_unix", dir: -1, checks: vsChecks, onCheck: vsBulk,
+       onTag: (t) => { $("vs-tag").value = t; vsFilter(); },
+       empty: () => vsTrash ? '<div class="empty"><div class="t">Trash is empty</div>Deleted vector sets wait here until you delete them permanently.</div>'
+         : '<div class="empty"><div class="t">Nothing here</div>Generate a vector set with the form on the left (or clear the filters).</div>' });
   $("vs-search").addEventListener("input", vsFilter);
+  $("vs-tag").addEventListener("change", vsFilter);
+  $("vs-trash-toggle").addEventListener("click", () => { vsTrash = !vsTrash; vsChecks.clear(); vsSel = null; vsRefresh(); });
+  $("vs-delete").addEventListener("click", () => vsSel && vsDelete([vsSel]));
+  $("vs-restore").addEventListener("click", () => vsSel && vsRestore([vsSel]));
+  $("vs-purge").addEventListener("click", () => vsSel && vsPurge([vsSel]));
+  $("vs-empty-trash").addEventListener("click", vsEmptyTrash);
   $("vs-use").addEventListener("click", () => {
     if (!vsSel) return toast("Select a vector set first", "warn");
     acqFillSets(); $("acq-vector-set").value = vsSel.path; $("acq-resume").value = ""; acqSetHint(); showPage("acquire"); applyState(S);
@@ -1523,19 +1813,24 @@ async function init() {
   libMode = seg("lib-mode", libFilter);
   libTable = makeTable("lib-table", [
     { key: "label", label: "campaign", value: (f) => (f.label || f.filename).toLowerCase(),
-      render: (f) => `<div class="name">${esc(f.label || f.filename)}</div>${f.label ? `<div class="sub">${esc(f.filename)}</div>` : ""}${f.notes ? `<div class="sub" style="font-family:inherit">${esc(short(f.notes, 60))}</div>` : ""}` },
+      render: (f) => `<div class="name">${esc(f.label || f.filename)}</div>${f.label ? `<div class="sub">${esc(f.filename)}</div>` : ""}${f.notes ? `<div class="sub" style="font-family:inherit">${esc(short(f.notes, 60))}</div>` : ""}` +
+        (f.tags?.length ? `<div>${tagChips(f.tags)}</div>` : "") },
     { key: "mode", label: "mode", render: (f) => modeBadge(f.mode) },
     { key: "n_completed", label: "traces", num: true, render: (f) => `${f.n_completed}${f.n_traces_planned && f.n_traces_planned !== f.n_completed ? `<span class="dim">/${f.n_traces_planned}</span>` : ""}` },
     { key: "status", label: "status", render: (f) => statusBadge(f.status) },
     { key: "k_match_fraction", label: "K ✓", num: true, render: (f) => `<span class="${f.k_match_fraction === 1 ? "good" : f.k_match_fraction === null || f.k_match_fraction === undefined ? "dim" : "bad"}">${pct(f.k_match_fraction)}</span>` },
     { key: "size_bytes", label: "size", num: true, render: (f) => fmtBytes(f.size_bytes) },
     { key: "created_unix", label: "captured", render: (f) => fmtAgo(f.created_unix) },
-  ], { key: (f) => f.path, onRow: (f) => libShow(f.path), sortKey: "created_unix", dir: -1,
-       empty: '<div class="empty"><div class="t">No campaigns here</div>Captured campaigns appear here. Start one on the Acquisition page.</div>' });
+  ], { key: (f) => f.path, onRow: (f) => libShow(f.path), sortKey: "created_unix", dir: -1, checks: libChecks, onCheck: libBulk,
+       onTag: (t) => { $("lib-tag").value = t; libFilter(); },
+       empty: () => libTrash ? '<div class="empty"><div class="t">Trash is empty</div>Campaigns moved to the trash wait here until you delete them permanently.</div>'
+         : '<div class="empty"><div class="t">No campaigns here</div>Captured campaigns appear here (or clear the filters). Start one on the Acquisition page.</div>' });
   $("lib-search").addEventListener("input", libFilter);
+  $("lib-tag").addEventListener("change", libFilter);
+  $("lib-empty-trash").addEventListener("click", libEmptyTrash);
   $("lib-status").addEventListener("change", libFilter);
   $("lib-refresh").addEventListener("click", () => libRefresh());
-  $("lib-trash-toggle").addEventListener("click", () => { libTrash = !libTrash; libSel = null; libDetailEmpty(); libRefresh(); });
+  $("lib-trash-toggle").addEventListener("click", () => { libTrash = !libTrash; libChecks.clear(); libSel = null; libDetailEmpty(); libRefresh(); });
   $("tv-load").addEventListener("click", tvLoad);
   $("tv-prev").addEventListener("click", () => tvStep(-1));
   $("tv-next").addEventListener("click", () => tvStep(1));

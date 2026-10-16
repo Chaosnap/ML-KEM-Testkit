@@ -30,6 +30,7 @@ uart_tx ◄─┘   (100/125 MHz)                              ├─ CSR 寄存
 - **Arty Z7（纯 PL，`hdl/xilinx/arty_z7`）**：外接 3.3 V USB-UART 到 Pmod JA。
 - **Arty Z7（PS 版，`hdl/xilinx/arty_z7_ps`）**：板载 USB 串口只连到 PS 的 MIO，所以由 PS 上的 `sw/arty_z7_uart_fwd` 把字节在 PS UART0 和 PS UART1（经 EMIO 到 PL）之间原样转发。协议与 A7 完全相同，主机代码不区分。
 - **触发**：`trig_out = STATUS.busy`，从 START 到运算结束为高电平。A7 引脚是 Pmod JA1（G13），Z7 是 Pmod JA3（Y16）。示波器设为上升沿触发即可，设计细节和验证方法见第 5.1 节。
+- 图中从串口到核心、触发和板上 LED 的全部逻辑，在三块板上是同一个模块 `hdl/core/mlkem_uart_system.sv`。各板的顶层只负责时钟（MMCM）、复位和引脚，Z7 PS 版另外加上 PS。
 
 协议桥是**半双工、一问一答**的：主机发一帧，等到应答后再发下一帧。协议桥在处理命令、发送应答、等待运算（0x05）时不接收数据，这期间收到的字节会被丢弃。
 
@@ -104,7 +105,7 @@ FPGA        写 CTRL.start ─► 核心 busy=1 …… 运算中 …… busy=0
 1. 先校验整帧（CRC、`LEN = 12`、输出区间不越界），失败则回 `STATUS 0x01`，不写不启动。
 2. 把 u32 写入值写到 `ADDR`（`CTRL = 1` 即 START）。
 3. 等待 `RUN_GUARD`（16 个桥时钟），让 `core_busy` 经两级同步器到达本时钟域。
-4. 等到 `core_busy = 0`。如果超过 `RUN_TIMEOUT_CYCLES`（默认 10⁸ 周期：A7 上 1 s，Z7 上 0.8 s）还没结束，也停止等待。
+4. 等到 `core_busy = 0`。如果超过 `RUN_TIMEOUT_CYCLES`（板级设为 1 s）还没结束，也停止等待。
 5. 经 AXI 读回 `STATUS`、`CYCLE_COUNT`、`ERROR_CODE`。
 6. 回复 `LEN = 12 + n`：
 

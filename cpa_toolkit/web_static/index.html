@@ -138,16 +138,29 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>Vector sets</h2><span class="sub" id="vs-count"></span>
-              <div class="actions"><input type="search" id="vs-search" placeholder="Filter…" style="width:180px"></div></div>
+            <div class="card-head"><h2 id="vs-title">Vector sets</h2><span class="sub" id="vs-count"></span>
+              <div class="actions">
+                <select id="vs-tag" style="width:150px"><option value="">all tags</option></select>
+                <input type="search" id="vs-search" placeholder="Filter name, tag…" style="width:170px">
+                <button class="btn ghost sm" id="vs-trash-toggle">Trash</button>
+              </div></div>
+            <div class="bulk hidden" id="vs-bulk"></div>
             <div class="table-wrap short"><table class="t click" id="vs-table"><thead></thead><tbody></tbody></table></div>
-            <div class="btn-row">
+            <div class="btn-row" id="vs-actions">
               <span class="muted mono" id="vs-selected" style="flex:1">no set selected</span>
               <button class="btn secondary sm" id="vs-verify-sw">Verify in software</button>
               <div class="dropdown"><button class="btn secondary sm" id="vs-download-btn">Download ▾</button>
                 <div class="dropdown-menu" id="vs-download-menu"><a data-f="csv">CSV — all vectors</a><a data-f="json">JSON — vectors + key pair</a><a data-f="npz">NumPy .npz (as stored)</a><a data-f="dk">dk.bin (2400 B)</a><a data-f="ek">ek.bin (1184 B)</a></div></div>
+              <button class="btn ghost sm" id="vs-delete" title="Move this set to the trash">Delete</button>
               <button class="btn primary sm" id="vs-use">Use for acquisition →</button>
             </div>
+            <div class="btn-row hidden" id="vs-trash-actions">
+              <span class="muted mono" id="vs-trash-selected" style="flex:1">no set selected</span>
+              <button class="btn ghost sm" id="vs-empty-trash">Empty trash</button>
+              <button class="btn danger sm" id="vs-purge">Delete permanently</button>
+              <button class="btn primary sm" id="vs-restore">Restore</button>
+            </div>
+            <div class="meta-edit" id="vs-meta"></div>
           </div>
         </div>
 
@@ -225,16 +238,19 @@
       <!-- ============================ Trace Library ============================ -->
       <section class="page" id="page-library" data-title="Trace Library" data-desc="Every captured campaign: inspect, annotate, export, resume or remove">
         <div class="toolbar">
-          <input type="search" class="search" id="lib-search" placeholder="Search name, notes, vector set…">
+          <input type="search" class="search" id="lib-search" placeholder="Search name, notes, tag, vector set…">
           <div class="seg" id="lib-mode"><button data-v="" class="active">All</button><button data-v="cpa">CPA</button><button data-v="tvla">TVLA</button></div>
-          <select id="lib-status" style="width:160px"><option value="">any status</option><option value="complete">complete</option><option value="resumable">resumable</option><option value="recording">recording</option></select>
+          <select id="lib-status" style="width:132px"><option value="">any status</option><option value="complete">complete</option><option value="resumable">resumable</option><option value="recording">recording</option></select>
+          <select id="lib-tag" style="width:140px"><option value="">all tags</option></select>
           <span class="spacer"></span>
           <span class="muted" style="font-size:12px" id="lib-storage"></span>
+          <button class="btn danger sm hidden" id="lib-empty-trash">Empty trash</button>
           <button class="btn ghost sm" id="lib-trash-toggle">Trash</button>
           <button class="btn secondary sm icon" id="lib-refresh" title="Refresh">↻</button>
         </div>
         <div class="grid grid-side-r">
           <div class="card" style="padding:0">
+            <div class="bulk hidden" id="lib-bulk" style="margin:10px 10px 0"></div>
             <div class="table-wrap tall" style="border:none"><table class="t click" id="lib-table"><thead></thead><tbody></tbody></table></div>
           </div>
           <div class="card" id="lib-detail"><div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div></div>

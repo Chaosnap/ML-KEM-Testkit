@@ -6,12 +6,14 @@ module tb_word_fifo;
     logic [31:0] din=0, head0, head1;
     logic [1:0] pop_count=0;
     logic [2:0] count;
+    logic nonempty, two;
     mlkem_word_fifo dut(.*);
     logic [31:0] refq[0:5];
     int used=0, pushed=0, pairs=0, both=0, full=0, clears=0;
     logic [31:0] rng=32'h63e026;
     task automatic check_heads;
         if(count !== 3'(used)) $fatal(1,"count=%0d expected=%0d",count,used);
+        if(nonempty !== (used!=0) || two !== (used>=2)) $fatal(1,"flags nonempty=%0b two=%0b used=%0d",nonempty,two,used);
         if(used>0 && head0 !== refq[0]) $fatal(1,"head0 mismatch");
         if(used>1 && head1 !== refq[1]) $fatal(1,"head1 mismatch");
     endtask
