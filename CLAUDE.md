@@ -1,56 +1,49 @@
-# pqc-testkit
+# ML-KEM-Testkit
 
 ## Project overview
 
-Post-quantum cryptography test and benchmarking framework targeting FPGA hardware. Bridges the gap between NIST PQC standards (FIPS 203/204/205) and hardware validation - no existing open tool does this.
+ML-KEM-768 (FIPS 203) hardware core for Xilinx Arty boards plus the host tool chain around it: NIST ACVP functional testing (board over UART, or the RTL in Verilator), reproducible test vectors, oscilloscope trace acquisition and CPA/TVLA side-channel analysis, all reachable from a local web GUI.
 
 ## Architecture
 
-- **Go CLI** (`cmd/pqc-testkit/`) - cobra-based, commands: `bench`, `kat`, `fpga`
-- **Algorithm wrappers** (`pkg/algorithms/`) - unified `Suite` interface over ML-KEM (stdlib `crypto/mlkem`), ML-DSA and SLH-DSA (cloudflare/circl)
-- **KAT parser** (`pkg/kat/`) - NIST `.rsp` format parser
-- **FPGA comms** (`pkg/fpga/`) - transport-agnostic `Device` interface with PCIe XDMA, AXI UIO, UART implementations
-- **Benchmarking** (`pkg/bench/`) - statistical: median, p99, min/max, ops/sec
-- **SCA** (`pkg/sca/`) - TVLA test vector generation + Welch's t-test
-- **HDL** (`hdl/core/`) - vendor-agnostic SystemVerilog: Keccak-f1600, sponge, NTT butterfly, NTT engine
+- **HDL** (`hdl/core/`, vendor-agnostic SystemVerilog): `pqc_mlkem_top` (CSR + 8 KB data buffer + microcoded datapath: Keccak, NTT, BaseMul, CBD, (de)compress, pack/unpack), `uart_axi_bridge` (host protocol to AXI-Lite), `axil_cdc` (100/125 MHz bridge clock to the 206 MHz core clock).
+- **Board tops** (`hdl/xilinx/`): `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO). `trig_out = STATUS.busy` is the scope trigger.
+- **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference + leakage models), `testvectors`, `acquire_cpa` + `hdf5_trace_store`, `cpa_attack`, `tvla_analysis`, `scope` (VISA), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
+- **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs).
 
 ## Key design decisions
 
-- `Device` interface is the contract between host and FPGA. Any board/transport implements it without changing test logic.
-- CSR register map (offsets in `pkg/fpga/device.go`) is fixed across vendors. Vendor-specific code is only at the transport level.
-- NTT butterfly is parameterized for both q=3329 (ML-KEM) and q=8380417 (ML-DSA).
-- Papers bibliography is Go data (`docs/papers/index.go`), not markdown - queryable by category, algorithm, FPGA.
+- One host protocol for every board (`docs/UART_PROTOCOL.md`): CRC-32 frames, commands 0x01-0x04 (register / buffer access) and 0x05 Run (write CTRL.start, reply only after the core is idle with STATUS, CYCLE_COUNT, ERROR_CODE and the result). The link is silent while the core computes. 0x05 is the only way operations are started (no STATUS polling anywhere in the host code); `Target.probe_run()` detects bitstreams without 0x05 and operations on them raise `BitstreamError`. `trig_out` rises on the core clock edge an operation starts and stays high for exactly CYCLE_COUNT cycles (checked in `testbench/cdc/tb_bridge.sv`; on the bench: GUI Acquisition -> Check trigger).
+- CSR register map (`hdl/core/pqc_axi_csr.sv`, `uart_target.REG`) is fixed; board-specific code is only in the tops and the transport.
+- Test vectors are a deterministic function of a 64-byte seed; every trace is checked against its precomputed shared secret K and CYCLE_COUNT.
+- Campaign files are HDF5 (`/traces`, `/intermediates/ct`, `/intermediates/k_expected`, metadata incl. the vector-set recipe), resumable after a stop or link loss.
+- Arty Z7 changes must not affect the Arty A7 build.
 
 ## Build and test
 
 ```bash
-go build ./...
-go test ./... -v -race
-go run ./cmd/pqc-testkit bench -a ml-kem -n 100
+uv sync                    # + --extra scope for a real oscilloscope
+make test                  # Python unit tests (tests/)
+make sim-link sim-bridge   # UART link / host protocol on the real core
+make regress               # all simulations + unit tests
+make gui                   # web GUI on http://127.0.0.1:8765
 ```
 
-## What's done
+Vivado builds: `vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem` (see README.md for Z7). After any RTL change the bitstreams must be rebuilt.
 
-- Twiddle factor generation: `gen-twiddle` command produces hex files for NTT synthesis
-- Barrett reduction: proper modular arithmetic in `mod_reduce.sv` (no `%` operator)
-- KAT vector generation: `gen-vectors` produces .rsp files from software reference
-- End-to-end validation: `gen-vectors` -> `kat` validates generated vectors
-- FPGA simulation transport: `fpga --transport sim` demos full flow without hardware
-- Complete Arty A7 board wrapper with UART bridge, constraints, status LEDs
-- Keccak FSM race condition fixed (registered start pulse)
-- Status signals wired from core to board-level indicators
+## Data locations
 
-## Known gaps (next work items)
+- `build/` (Vivado projects, simulation outputs) and `data/` (vectors, traces, analysis, ACVP results) are generated and git-ignored. `make clean` removes simulation outputs only, never `build/vivado/`.
 
-1. No ACVP JSON format support (FIPS 140-3 labs need this)
-2. HDL cores have no cocotb simulation testbenches
-3. ML-KEM datapath FSM is structural (Keccak + NTT wired) but does not implement full algorithm math - integrate open-source cores (GMUCERG, KULeuven-COSIC) for algorithm-complete implementations
-4. UART bridge byte ordering needs simulation verification
+## Known gaps
+
+1. HDL cocotb testbenches exist only for Keccak and NTT (`testbench/keccak`, `testbench/ntt`).
+2. NTT/INTT cycle windows in `cpa_toolkit/config.py` are not measured yet (only BMUL windows are).
+3. `model_registry.py` plugins are display/self-test only; `cpa_attack.py` always uses `mlkem_ref`.
+4. Throughput at 115200 baud is bounded by the 1088-byte ciphertext upload (~94 ms/trace); 1 Mbaud needs `BAUD_RATE` in the tops and the Z7 forwarder divisors changed together.
 
 ## Conventions
 
-- MIT license
-- Proper godoc on all exported symbols
-- Tests in `_test.go` files alongside source
-- HDL is vendor-agnostic in `hdl/core/`, vendor wrappers in `hdl/xilinx/` and `hdl/intel/`
-- Board specs are data in `pkg/fpga/boards.go`, not code
+- MIT license; docs in `docs/` are written in Chinese, code comments and docstrings in English.
+- Python: docstrings on public functions, tests in `tests/` (`unittest`).
+- HDL: vendor-agnostic in `hdl/core/`, board-specific in `hdl/xilinx/<board>/`; simulation in `testbench/`.

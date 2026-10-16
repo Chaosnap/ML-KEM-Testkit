@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPA Toolkit</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <!-- ============================ sidebar ============================ -->
+  <aside class="sidebar">
+    <div class="brand">CPA <span>Toolkit</span></div>
+    <nav class="nav" id="nav">
+      <a data-page="connect" class="active">
+        <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>Connection</a>
+      <a data-page="vectors">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Test Vectors<span class="badge" id="nav-vectors"></span></a>
+      <a data-page="acquire">
+        <svg viewBox="0 0 24 24"><path d="M3 12h3l3-7 4 14 3-7h5"/></svg>Acquisition<span class="badge info hidden" id="nav-acq"></span></a>
+      <a data-page="library">
+        <svg viewBox="0 0 24 24"><path d="M4 5h6v14H4zM12 5h3v14h-3zM17 6l3 .8-3.4 12.6-3-.8z"/></svg>Trace Library<span class="badge" id="nav-library"></span></a>
+      <a data-page="analysis">
+        <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Analysis</a>
+      <div class="nav-sep"></div>
+      <a data-page="advanced">
+        <svg viewBox="0 0 24 24"><path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13 6l-2 12"/></svg>Advanced</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="mini-status" data-goto="connect"><span class="dot" id="mini-board"></span>Board <b id="mini-board-txt">disconnected</b></div>
+      <div class="mini-status" data-goto="connect"><span class="dot" id="mini-scope"></span>Scope <b id="mini-scope-txt">disconnected</b></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <!-- ============================ top bar ============================ -->
+    <header class="topbar">
+      <select id="mobile-nav" class="hidden"></select>
+      <h1 id="page-title">Connection</h1>
+      <span class="page-desc" id="page-desc"></span>
+      <div class="topbar-actions">
+        <button class="pill-btn hidden" id="pill-job" data-goto="acquire"><span class="dot warn pulse"></span><span id="pill-job-txt">acquiring</span><span class="bar"><i id="pill-job-bar"></i></span></button>
+        <button class="pill-btn" data-goto="connect"><span class="dot" id="pill-board"></span><span id="pill-board-txt">Board</span></button>
+        <button class="pill-btn" data-goto="connect"><span class="dot" id="pill-scope"></span><span id="pill-scope-txt">Scope</span></button>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+      <!-- ============================ Connection ============================ -->
+      <section class="page active" id="page-connect" data-title="Connection" data-desc="Connect the FPGA board and the oscilloscope">
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>FPGA board</h2><span class="sub">UART bridge to the ML-KEM-768 core</span></div>
+            <label class="f">Serial port</label>
+            <div class="row">
+              <select id="board-port" class="grow"></select>
+              <button class="btn secondary icon" id="board-refresh-ports" title="Rescan serial ports">↻</button>
+            </div>
+            <div class="hint" id="board-port-hint"></div>
+            <div class="cols-2">
+              <div><label class="f">Baud rate</label>
+                <input id="board-baud" type="text" value="115200" list="baud-options">
+                <datalist id="baud-options"><option value="115200"><option value="230400"><option value="460800"><option value="921600"><option value="1000000"></datalist>
+              </div>
+              <div><label class="f">&nbsp;</label><label class="check" style="margin-top:8px"><input type="checkbox" id="board-auto"> Reconnect automatically</label></div>
+            </div>
+            <div class="conn-state"><span class="dot" id="board-dot"></span><span class="txt" id="board-state-txt">Not connected</span>
+              <button class="btn primary" id="board-conn-btn">Connect</button></div>
+            <div class="conn-error hidden" id="board-error"></div>
+
+            <div class="section-title">Core</div>
+            <div class="kv" id="board-info"></div>
+            <div class="btn-row">
+              <button class="btn secondary sm" id="board-preflight">Run link self-test</button>
+              <span class="muted" style="font-size:12px" id="board-preflight-summary"></span>
+            </div>
+            <div class="table-wrap short hidden" id="board-preflight-wrap" style="margin-top:10px">
+              <table class="t" id="board-preflight-table"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Oscilloscope</h2><span class="sub">VISA / SCPI over the network</span></div>
+            <label class="f">IP address</label>
+            <input id="scope-ip" type="text" placeholder="e.g. 192.168.1.50">
+            <div class="hint" id="scope-hint"></div>
+            <div class="cols-2">
+              <div><label class="f">Channel</label><input id="scope-channel" type="text" list="channel-options">
+                <datalist id="channel-options"><option value="CHANnel1"><option value="CHANnel2"><option value="CHANnel3"><option value="CHANnel4"><option value="CH1"><option value="CH2"></datalist></div>
+              <div><label class="f">SCPI dialect</label><select id="scope-dialect"><option value="default">Keysight / Rigol / Siglent</option><option value="tektronix">Tektronix</option></select></div>
+              <div><label class="f">Points per trace</label><input id="scope-points" type="text" value="0" title="0 = the scope's current memory depth"></div>
+              <div><label class="f">Timeout (ms)</label><input id="scope-timeout" type="text" value="20000"></div>
+            </div>
+            <div class="conn-state"><span class="dot" id="scope-dot"></span><span class="txt" id="scope-state-txt">Not connected</span>
+              <button class="btn primary" id="scope-conn-btn">Connect</button></div>
+            <div class="conn-error hidden" id="scope-error"></div>
+
+            <div class="section-title">Instrument</div>
+            <div class="kv" id="scope-info"></div>
+            <div class="btn-row">
+              <button class="btn secondary sm" id="scope-list-resources">Find instruments</button>
+              <button class="btn ghost sm" id="scope-save-config">Save as default</button>
+            </div>
+            <div class="table-wrap short hidden" id="scope-resources-wrap" style="margin-top:10px">
+              <table class="t click" id="scope-resources-table"><thead><tr><th>VISA resource</th><th>*IDN?</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ Test Vectors ============================ -->
+      <section class="page" id="page-vectors" data-title="Test Vectors" data-desc="Key pair + ciphertexts + expected shared secrets, reproducible from a seed">
+        <div class="grid grid-side">
+          <div class="card">
+            <div class="card-head"><h2>New vector set</h2></div>
+            <label class="f">Purpose</label>
+            <div class="seg full" id="vg-mode"><button data-v="cpa" class="active">CPA · key recovery</button><button data-v="tvla">TVLA · leakage test</button></div>
+            <div class="cols-2">
+              <div><label class="f">Vectors</label><input id="vg-n" type="text" value="1000"></div>
+              <div><label class="f">Seed (hex)</label>
+                <div class="row"><input id="vg-seed" type="text" placeholder="random" class="grow"><button class="btn secondary icon" id="vg-seed-random" title="Random 64-byte seed">⚄</button></div></div>
+            </div>
+            <div id="vg-cpa-fields">
+              <label class="f">Ciphertexts</label>
+              <select id="vg-strategy"></select>
+              <div class="cols-2" id="vg-structured-fields">
+                <div><label class="f">Polynomial (0–2)</label><input id="vg-poly" type="text" value="0"></div>
+                <div><label class="f">BaseMul pair (0–127)</label><input id="vg-pair" type="text" value="0"></div>
+              </div>
+            </div>
+            <div id="vg-tvla-fields" class="hidden">
+              <label class="f">Random class</label>
+              <select id="vg-tvla-random"><option value="valid">valid encapsulations of random messages</option><option value="invalid">random bytes (implicit-rejection path)</option></select>
+              <p class="help" style="margin-top:8px">Half the vectors repeat one fixed ciphertext, half are random; the order is shuffled.</p>
+            </div>
+            <div class="btn-row"><button class="btn primary block" id="vg-generate">Generate vector set</button></div>
+            <div class="progress hidden" id="vg-progress"><div class="fill"></div><div class="txt"></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Vector sets</h2><span class="sub" id="vs-count"></span>
+              <div class="actions"><input type="search" id="vs-search" placeholder="Filter…" style="width:180px"></div></div>
+            <div class="table-wrap short"><table class="t click" id="vs-table"><thead></thead><tbody></tbody></table></div>
+            <div class="btn-row">
+              <span class="muted mono" id="vs-selected" style="flex:1">no set selected</span>
+              <button class="btn secondary sm" id="vs-verify-sw">Verify in software</button>
+              <div class="dropdown"><button class="btn secondary sm" id="vs-download-btn">Download ▾</button>
+                <div class="dropdown-menu" id="vs-download-menu"><a data-f="csv">CSV — all vectors</a><a data-f="json">JSON — vectors + key pair</a><a data-f="npz">NumPy .npz (as stored)</a><a data-f="dk">dk.bin (2400 B)</a><a data-f="ek">ek.bin (1184 B)</a></div></div>
+              <button class="btn primary sm" id="vs-use">Use for acquisition →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-side-r">
+          <div class="card">
+            <div class="card-head"><h2>Contents</h2><span class="sub" id="vp-title"></span>
+              <div class="actions">
+                <select id="vp-class" style="width:150px"><option value="">all rows</option><option value="0">fixed class</option><option value="1">random class</option></select>
+                <div class="pager"><button class="btn ghost sm" id="vp-prev">‹</button><span id="vp-pager">—</span><button class="btn ghost sm" id="vp-next">›</button></div>
+              </div></div>
+            <div class="kpis compact" id="vp-kpis"></div>
+            <div class="table-wrap"><table class="t click mono" id="vp-table"><thead><tr><th class="num">#</th><th>class</th><th>ciphertext c</th><th>message m</th><th>expected K</th><th>FO check</th></tr></thead><tbody></tbody></table></div>
+            <div id="vp-detail"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Verify on the board</h2></div>
+            <p class="help">Runs vectors of the selected set through the FPGA's Decaps and compares each output with its expected shared secret.</p>
+            <div class="row"><label class="muted" style="font-size:12px">first</label><input id="vb-count" type="text" value="20" style="width:80px"><label class="muted" style="font-size:12px">vectors</label>
+              <span class="grow"></span><button class="btn primary" id="vb-run">Run on board</button><button class="btn danger hidden" id="vb-stop">Stop</button></div>
+            <div class="progress hidden" id="vb-progress"><div class="fill"></div><div class="txt"></div></div>
+            <div class="verdict" id="vb-verdict"></div>
+            <div class="table-wrap short" style="margin-top:12px"><table class="t" id="vb-table"><thead><tr><th class="num">#</th><th>class</th><th>K</th><th class="num">cycles</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ Acquisition ============================ -->
+      <section class="page" id="page-acquire" data-title="Acquisition" data-desc="Capture one trace per vector, checked against the expected shared secret">
+        <div class="grid grid-side">
+          <div class="card">
+            <div class="card-head"><h2>Campaign</h2></div>
+            <ul class="checklist" id="acq-checklist"></ul>
+            <label class="f">Test-vector set</label>
+            <select id="acq-vector-set"></select>
+            <div class="hint" id="acq-vs-hint"></div>
+            <div class="cols-2">
+              <div><label class="f">Samples per trace</label><input id="acq-samples" type="text" value="0" title="0 = the scope's memory depth"></div>
+              <div><label class="f">Resend dk every</label><input id="acq-resend-dk" type="text" value="50"></div>
+            </div>
+            <details class="adv"><summary>Resume a stopped campaign</summary><div class="body">
+              <select id="acq-resume"><option value="">— start a new campaign —</option></select></div></details>
+            <div class="btn-row">
+              <button class="btn primary" id="acq-start" style="flex:1">Start acquisition</button>
+              <button class="btn danger hidden" id="acq-stop">Stop</button>
+            </div>
+            <div class="progress hidden" id="acq-progress"><div class="fill"></div><div class="txt"></div></div>
+            <div class="kpis compact" id="acq-kpis" style="margin-top:12px"></div>
+            <div class="btn-row hidden" id="acq-done-actions"><button class="btn secondary sm" id="acq-open-library">Open in Trace Library</button><button class="btn secondary sm" id="acq-open-analysis">Analyse</button></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Live preview</h2><span class="sub" id="live-sub"></span>
+              <div class="actions">
+                <label class="check"><input type="checkbox" id="live-show-last" checked> latest</label>
+                <label class="check"><input type="checkbox" id="live-show-mean" checked> mean</label>
+                <label class="check"><input type="checkbox" id="live-show-diff"> fixed − random</label>
+              </div></div>
+            <div class="chart tall" id="live-chart"><div class="chart-empty">The latest trace and the running mean appear here while a campaign runs.</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Setup capture</h2><span class="sub">one Decaps of a fresh valid vector — for trigger, vertical scale and timebase</span>
+            <div class="actions"><button class="btn ghost sm" id="cap-clear">Clear</button><button class="btn secondary" id="trig-check">Check trigger</button><button class="btn primary" id="cap-one">Capture</button></div></div>
+          <div class="hidden" id="trig-wrap">
+            <div class="table-wrap short" style="margin-bottom:12px"><table class="t"><thead><tr><th>trigger check</th><th>result</th><th>detail</th></tr></thead><tbody id="trig-table"></tbody></table></div>
+          </div>
+          <div class="hint" style="margin:0 0 10px">Trigger: <b>trig_out</b> = STATUS.busy on Pmod JA1 (Arty A7) / JA3 (Arty Z7) — rises when the Decaps starts, high for CYCLE_COUNT core cycles. Scope: NORMAL/SINGLE mode, rising edge, ≈ 1.6 V.</div>
+          <div class="kpis compact" id="cap-kpis"></div>
+          <div class="chart tall" id="cap-chart"><div class="chart-empty">No capture yet. The last 5 captures are overlaid for comparison.</div></div>
+        </div>
+      </section>
+
+      <!-- ============================ Trace Library ============================ -->
+      <section class="page" id="page-library" data-title="Trace Library" data-desc="Every captured campaign: inspect, annotate, export, resume or remove">
+        <div class="toolbar">
+          <input type="search" class="search" id="lib-search" placeholder="Search name, notes, vector set…">
+          <div class="seg" id="lib-mode"><button data-v="" class="active">All</button><button data-v="cpa">CPA</button><button data-v="tvla">TVLA</button></div>
+          <select id="lib-status" style="width:160px"><option value="">any status</option><option value="complete">complete</option><option value="resumable">resumable</option><option value="recording">recording</option></select>
+          <span class="spacer"></span>
+          <span class="muted" style="font-size:12px" id="lib-storage"></span>
+          <button class="btn ghost sm" id="lib-trash-toggle">Trash</button>
+          <button class="btn secondary sm icon" id="lib-refresh" title="Refresh">↻</button>
+        </div>
+        <div class="grid grid-side-r">
+          <div class="card" style="padding:0">
+            <div class="table-wrap tall" style="border:none"><table class="t click" id="lib-table"><thead></thead><tbody></tbody></table></div>
+          </div>
+          <div class="card" id="lib-detail"><div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div></div>
+        </div>
+        <div class="card hidden" id="lib-viewer">
+          <div class="card-head"><h2>Trace viewer</h2><span class="sub" id="tv-sub"></span>
+            <div class="actions"><button class="btn ghost sm" id="tv-export-csv">CSV</button></div></div>
+          <div class="toolbar">
+            <label class="muted" style="font-size:12px">from #</label><input id="tv-start" type="text" value="0" style="width:80px">
+            <label class="muted" style="font-size:12px">count</label><input id="tv-count" type="text" value="4" style="width:64px">
+            <select id="tv-cls" style="width:120px"><option value="">any class</option><option value="0">fixed</option><option value="1">random</option></select>
+            <input id="tv-indices" type="text" placeholder="or indices: 0, 17, 250" style="width:200px">
+            <button class="btn ghost sm" id="tv-prev">‹ prev</button><button class="btn ghost sm" id="tv-next">next ›</button>
+            <label class="check"><input type="checkbox" id="tv-stats" checked> mean ± σ</label>
+            <label class="check"><input type="checkbox" id="tv-bands" checked> BMUL windows</label>
+            <button class="btn primary sm" id="tv-load">Plot</button>
+          </div>
+          <div class="chart tall" id="tv-chart"></div>
+          <div class="chart-note" id="tv-note"></div>
+        </div>
+      </section>
+
+      <!-- ============================ Analysis ============================ -->
+      <section class="page" id="page-analysis" data-title="Analysis" data-desc="CPA key recovery and TVLA leakage assessment on captured campaigns">
+        <!-- What is analysed, and which saved report is shown -->
+        <div class="card an-bar">
+          <div class="an-bar-row">
+            <div class="an-field"><label class="f">Campaign</label><select id="an-dataset"></select></div>
+            <div class="an-field"><label class="f">Report</label><select id="an-report"></select></div>
+            <div class="an-actions">
+              <button class="btn primary" id="an-new">New analysis</button>
+              <div class="dropdown" id="an-more"><button class="btn secondary" id="an-more-btn" title="Report actions">Report ▾</button><div class="dropdown-menu">
+                <a data-act="rerun">Re-run with these settings…</a><a data-act="json">Download report (.json)</a>
+                <a data-act="csv">Download results (.csv)</a><a data-act="delete" class="danger">Delete report</a></div></div>
+            </div>
+          </div>
+          <div class="an-meta" id="an-dataset-hint"></div>
+        </div>
+
+        <!-- New analysis: configuration and run -->
+        <div class="card hidden" id="an-config">
+          <div class="card-head"><h2 id="an-config-title">New analysis</h2><span class="sub" id="an-config-sub"></span>
+            <div class="actions"><button class="btn ghost sm" id="an-config-close">Close</button></div></div>
+          <div class="an-config-grid">
+            <div id="an-cpa-setup">
+              <div class="step-title"><span class="n">1</span>Leakage model</div>
+              <select id="an-preset"></select>
+              <div class="model-detail hidden" id="an-model-detail"></div>
+              <div class="cols-2" id="an-target-row">
+                <div><label class="f">Target register</label><select id="an-target"></select></div>
+                <div id="an-rprev-wrap"><label class="f">R_prev</label><select id="an-rprev"></select></div>
+              </div>
+              <details class="adv"><summary>Model plugins</summary><div class="body">
+                <div class="row"><select id="model-select" class="grow"></select><button class="btn secondary sm" id="model-load">Load</button></div>
+                <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test</button><button class="btn ghost sm" id="model-save-default">Save as CLI default</button></div>
+                <div class="hint" id="model-status"></div></div></details>
+            </div>
+            <div>
+              <div id="an-cpa-scoring">
+                <div class="step-title"><span class="n">2</span>Scoring</div>
+                <div class="seg full" id="an-oracle"><button data-v="" class="active">Blind attack</button><button data-v="vector_set">Score with campaign key</button><button data-v="file">dk file</button></div>
+                <input id="an-dkref" type="text" class="hidden" placeholder="path to a 2400-byte dk file" style="margin-top:8px">
+                <div class="hint" id="an-oracle-warn"></div>
+                <label class="check" id="an-curve-wrap"><input type="checkbox" id="an-curve"> Key rank vs trace count (MTD) — slower</label>
+              </div>
+              <div class="step-title" id="an-run-step"><span class="n" id="an-run-n">3</span>Run</div>
+              <div class="row"><label class="f" style="margin:0">Traces to use</label><input id="an-max-traces" type="text" value="0" title="0 = all" style="width:110px"><span class="hint" style="margin:0">0 = all</span></div>
+              <div class="btn-row"><button class="btn primary" id="an-run">Run analysis</button><span class="hint" id="an-status" style="margin:0"></span></div>
+              <div class="progress indet hidden" id="an-progress"><div class="fill"></div><div class="txt"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="an-results"></div>
+      </section>
+
+      <!-- ============================ Advanced ============================ -->
+      <section class="page" id="page-advanced" data-title="Advanced" data-desc="Link settings, protocol steps and raw register / buffer access">
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>Link settings</h2><span class="sub">host side, applied to the connected board and every reconnect</span></div>
+            <div class="hint" style="margin-top:0">Every operation is one 0x05 Run frame: the FPGA writes CTRL.start, stays silent until the core
+              is done, then replies with STATUS, CYCLE_COUNT, ERROR_CODE and the result. There is no STATUS polling.</div>
+            <div class="cols-2">
+              <div><label class="f">Operation timeout (s)</label><input id="ls-timeout" type="text" value="5"></div>
+              <div><label class="f">&nbsp;</label><button class="btn secondary" id="ls-save">Apply</button></div>
+            </div>
+            <div class="kv" id="ls-info" style="margin-top:14px"></div>
+            <div class="btn-row"><button class="btn ghost sm" id="ls-reprobe">Probe 0x05 again</button><span class="hint" style="margin:0">Protocol reference: docs/UART_PROTOCOL.md</span></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Buffer layout</h2><span class="sub">byte offsets in the 8 KB data buffer (cpa_toolkit/config.py)</span></div>
+            <table class="t"><thead><tr><th>region</th><th class="num">offset</th><th class="num">bytes</th><th></th></tr></thead><tbody id="ls-layout"></tbody></table>
+            <div class="hint">Click a row to read that region in the Data buffer panel below.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Protocol steps</h2><span class="sub">one operation step by step — the SimpleSerial commands x / m / s / c / e / a</span>
+            <div class="actions"><button class="btn ghost sm" id="op-fill">Load selected test vector</button></div></div>
+          <div class="steps">
+            <div class="step"><span class="key">x</span><div class="grow"><b>Reset</b><div class="sub">CTRL ← RESET</div></div><button class="btn secondary sm" data-step="reset">Reset</button></div>
+            <div class="step"><span class="key">m</span><div class="grow"><b>Set mode</b><div class="sub">SEC_LEVEL, OP_MODE, DATA_IN/OUT</div></div>
+              <select id="op-mode" style="width:130px"><option value="2">Decaps</option><option value="1">Encaps</option><option value="0">KeyGen</option></select>
+              <button class="btn secondary sm" data-step="configure">Configure</button></div>
+            <div class="step"><span class="key">s</span><div class="grow"><b>Send secret key</b><div class="sub">dk → 0x0000 (2400 B)</div></div><button class="btn secondary sm" data-step="load_sk">Send dk</button></div>
+            <div class="step"><span class="key">c</span><div class="grow"><b>Send ciphertext</b><div class="sub">c → 0x0960 (1088 B)</div></div><button class="btn secondary sm" data-step="load_ct">Send c</button></div>
+            <div class="step"><span class="key">e</span><div class="grow"><b>Run and wait</b><div class="sub" id="op-run-sub">START, reply when done</div></div>
+              <input id="op-out-len" type="text" value="32" title="output bytes returned with the reply" style="width:70px"><button class="btn primary sm" data-step="run">Run</button></div>
+            <div class="step"><span class="key">a</span><div class="grow"><b>Get result</b><div class="sub">read the output at 0x0E00</div></div><button class="btn secondary sm" data-step="read_output">Read</button></div>
+          </div>
+          <div class="grid grid-2" style="margin-top:12px">
+            <div><label class="f">dk (2400 bytes, hex)</label><textarea id="op-dk" rows="3"></textarea></div>
+            <div><label class="f">c (1088 bytes, hex)</label><textarea id="op-ct" rows="3"></textarea></div>
+          </div>
+          <div class="btn-row"><span class="hint" id="op-expected" style="margin:0"></span><span class="grow"></span>
+            <label class="check"><input type="checkbox" id="op-resend-dk" checked> resend dk</label>
+            <button class="btn primary" id="op-run">Run full Decaps &amp; check K</button></div>
+          <div class="op-result" id="op-result"></div>
+          <div class="section-title">Step log</div>
+          <pre class="hexbox steplog" id="op-log">—</pre>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>Registers</h2><div class="actions"><button class="btn secondary sm" id="reg-read-all">Read all</button></div></div>
+            <div class="table-wrap short"><table class="t click" id="reg-table"><thead><tr><th>register</th><th>addr</th><th class="num">value</th><th>decoded</th></tr></thead>
+              <tbody><tr><td colspan="4" class="muted">Press “Read all”.</td></tr></tbody></table></div>
+            <label class="f">Write register</label>
+            <div class="row"><select id="reg-name" style="width:160px"></select><input id="reg-value" type="text" value="0x0" class="grow"><button class="btn secondary" id="reg-read">Read</button><button class="btn danger" id="reg-write">Write</button></div>
+            <div class="hint" id="reg-result"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Data buffer</h2></div>
+            <div class="row"><input id="buf-read-offset" type="text" value="0x0000" style="width:110px" title="offset"><input id="buf-read-len" type="text" value="64" style="width:90px" title="length"><button class="btn secondary" id="buf-read">Read</button></div>
+            <pre class="hexbox" id="buf-read-result" style="margin-top:10px">—</pre>
+            <label class="f">Write hex at offset</label>
+            <div class="row"><input id="buf-write-offset" type="text" value="0x0000" style="width:110px"><input id="buf-write-data" type="text" placeholder="a5 5a 00 11 …" class="grow"><button class="btn danger" id="buf-write">Write</button></div>
+            <div class="hint" id="buf-write-result"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="drawer" id="drawer">
+  <div class="drawer-bar" id="drawer-bar">▴ Console <span class="last" id="drawer-last"></span></div>
+  <pre id="log"></pre>
+</div>
+<div class="toasts" id="toasts"></div>
+<div class="modal-back" id="modal-back"><div class="modal"><h3 id="modal-title"></h3><div class="body" id="modal-body"></div>
+  <div class="btn-row"><button class="btn ghost" id="modal-cancel">Cancel</button><button class="btn primary" id="modal-ok">OK</button></div></div></div>
+
+<script src="/static/vendor/plotly-2.35.2.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

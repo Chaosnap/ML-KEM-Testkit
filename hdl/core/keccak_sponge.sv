@@ -101,6 +101,16 @@ module keccak_sponge (
     // state -> nx2 feedback path. Shifts to zero beyond the rate lanes.
     (* max_fanout = 32 *) logic [20:0] fetch_sel;
     logic [4:0]  nlanes;        // rate / 8.
+    // Registered (li_p1 == nlanes). The take -> nx1/nx2/squeeze_data enable
+    // is the worst clk_core path (squeeze_take arrives late, through unpack
+    // and ctrl); comparing li_p1 with nlanes there put a 5-bit compare
+    // behind it. Both are registers, so the compare is done one cycle
+    // ahead instead. Exact, no extra cycle: li_last is only read under
+    // do_take (squeeze_valid = 1), squeeze_valid only rises in sq_load,
+    // which sets li_last for li_p1 = 1, and while squeeze_valid = 1 nlanes
+    // is constant (it changes only on init, which clears squeeze_valid) and
+    // every li_p1 increment updates li_last with it.
+    logic        li_last;
     logic        sq_load;       // Load lanes 0, 1, 2 after a permutation.
     logic [63:0] nx1, nx2;
 
@@ -159,6 +169,7 @@ module keccak_sponge (
             init_q        <= 1'b0;
             ab_rdy        <= 1'b0;
             li_p1         <= 5'd1;
+            li_last       <= 1'b0;          // li_p1 = 1 != nlanes = 17.
             fetch_sel     <= 21'b1000;
             nlanes        <= 5'd17;
             sq_load       <= 1'b0;
@@ -202,10 +213,11 @@ module keccak_sponge (
                 squeeze_avail <= 4'd8;
                 squeeze_valid <= 1'b1;
                 li_p1         <= 5'd1;
+                li_last       <= (nlanes == 5'd1);
                 fetch_sel     <= 21'b1000;
             end else if (do_take) begin
                 if (squeeze_n == squeeze_avail) begin   // Lane used up.
-                    if (li_p1 == nlanes) begin
+                    if (li_last) begin
                         squeeze_valid <= 1'b0;
                         running       <= 1'b1;          // Next block.
                         round         <= '0;
@@ -216,6 +228,7 @@ module keccak_sponge (
                         nx2           <= fetch_lane;
                         squeeze_avail <= 4'd8;
                         li_p1         <= li_p1 + 5'd1;
+                        li_last       <= (li_p1 + 5'd1 == nlanes);
                         fetch_sel     <= {fetch_sel[19:0], 1'b0};
                     end
                 end else begin                          // Low half taken.

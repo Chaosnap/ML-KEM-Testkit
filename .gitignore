@@ -1,27 +1,14 @@
-# Binaries
-/pqc-testkit
+# Build outputs: Vivado projects/bitstreams (build/vivado), simulations (build/sim, build/cdc)
 /build/
 
-# Go
-*.exe
-*.test
-*.out
-*.prof
+# Run-time data written by the tools: test vectors, traces, analysis reports, ACVP results
+/data/
 
-# Vivado
+# Vivado / Quartus side files
 *.jou
 *.log
 *.str
-*.xpr
-*.runs/
-*.cache/
-*.srcs/
-*.sim/
-*.ip_user_files/
-*.hw/
 .Xil/
-
-# Quartus
 *.qpf
 *.qsf
 *.sof
@@ -30,34 +17,23 @@ db/
 incremental_db/
 output_files/
 
-# KAT vectors (downloaded, not committed)
-vectors/**/*.rsp
-vectors/**/.downloaded
+# Simulation
+obj_dir/
+sim_build/
+results.xml
+*.vcd
+*.vvp
 
-# IDE
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Verilator
-obj_dir/
-
-# cocotb / Python
-sim_build/
-results.xml
-__pycache__/
-
-# Full failing-path dumps (tens of MB); timing_groups.txt summarises them
-reports/*/timing_failing.rpt
-
-# Simulation results: keep reports and figures, not the VCD waveforms (~65 MB each)
-sim_result/**/vcd/
-# Captured side-channel traces: large binary data, not source.
-sim_result/traces/
-hostlab/**/__pycache__/

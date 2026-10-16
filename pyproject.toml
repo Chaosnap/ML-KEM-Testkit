@@ -1,25 +1,21 @@
 [project]
 name = "ml-kem-testkit"
-version = "0.1.0"
+version = "0.2.0"
+description = "ML-KEM-768 FPGA core: ACVP testing, test vectors, side-channel trace acquisition and CPA/TVLA analysis"
 requires-python = ">=3.9"
 dependencies = [
+    "h5py>=3.11",
     "matplotlib>=3.9.4",
     "numpy>=2.0.2",
     "pyserial==3.5",
 ]
 
-# Instrument control for hostlab/ (only needed with a real oscilloscope):
+# Oscilloscope control over VISA/SCPI (only needed with a real scope):
 #   uv sync --extra scope
+# scripts/board/boot_arty_z7_ps.py declares its own dependency (pyftdi) inline;
+# `uv run` installs it on demand.
 [project.optional-dependencies]
 scope = [
-    "pyvisa>=1.14",
-    "pyvisa-py>=0.7",
-]
-
-# Interactive bench console (includes instrument backends).
-gui = [
-    "streamlit>=1.37,<2",
-    "plotly>=5.24,<7",
     "pyvisa>=1.14",
     "pyvisa-py>=0.7",
 ]

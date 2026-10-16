@@ -1,104 +1,83 @@
-.PHONY: build test bench lint vectors twiddle ucode tvla-sim sim-iverilog acvp-sim acvp-uart \
-	capture-check capture-dry capture regress simulate clean
+.PHONY: help setup gui test vectors ucode sim-iverilog sim-link sim-bridge sim-cdc sim-units \
+	acvp-sim acvp-uart check lint regress clean
+
+# Python of the project environment (pyproject.toml / uv.lock).
+PY ?= uv run python
 
 # ML-KEM levels in the microcode ROM (the core supports 768 only).
 MLKEM_LEVELS ?= 768
 
-# Python of the project environment (pyproject.toml: pyserial, matplotlib, numpy).
-PY ?= uv run python
+help:
+	@echo "make setup         install the Python environment (uv sync; + --extra scope for a real scope)"
+	@echo "make gui           web GUI on http://127.0.0.1:8765 (cpa_toolkit/web_gui.py)"
+	@echo "make test          Python unit tests (FIPS 203 reference, test vectors, UART host driver)"
+	@echo "make vectors       one CPA test-vector set into data/vectors/ (N=1000 STRATEGY=valid)"
+	@echo "make check PORT=   board link self-test over UART (no scope needed)"
+	@echo "make acvp-uart PORT=  NIST ACVP vectors on the board;  make acvp-sim: same on the RTL"
+	@echo "make sim-link      UART link + 0x05 Run (Icarus);  make sim-bridge: host protocol on the real core"
+	@echo "make regress       all simulation and unit tests"
+	@echo "make ucode         regenerate the microcode / zeta ROMs"
+	@echo "Protocol: docs/UART_PROTOCOL.md   ACVP: docs/ACVP_TEST.md   CPA/TVLA: cpa_toolkit/README.md"
 
-# Build the CLI binary.
-build:
-	go build -o pqc-testkit ./cmd/pqc-testkit
+setup:
+	uv sync
 
-# Run all Go tests.
+gui:
+	$(PY) cpa_toolkit/web_gui.py
+
 test:
-	go test ./... -v -race -count=1
+	$(PY) -m unittest discover -s tests -v
 
-# Run PQC benchmarks (quick smoke test).
-bench:
-	go run ./cmd/pqc-testkit bench -a ml-kem -n 100
-	go run ./cmd/pqc-testkit bench -a ml-dsa -n 20
-	go run ./cmd/pqc-testkit bench -a slh-dsa -n 2
-
-# Generate KAT test vectors from software reference.
 vectors:
-	go run ./cmd/pqc-testkit gen-vectors -a ml-kem -o vectors/ -n 10
-	go run ./cmd/pqc-testkit gen-vectors -a ml-dsa -o vectors/ -n 5
+	$(PY) cpa_toolkit/testvectors.py gen --mode cpa -n $(or $(N),1000) --strategy $(or $(STRATEGY),valid)
 
-# Generate NTT twiddle factor hex files for HDL synthesis.
-twiddle:
-	go run ./cmd/pqc-testkit gen-twiddle -o hdl/core
+check:
+	@test -n "$(PORT)" || (echo "usage: make check PORT=<serial port>"; exit 2)
+	$(PY) cpa_toolkit/acquire_cpa.py check -p $(PORT)
 
 # Regenerate the ML-KEM microcode and zeta ROMs.
 ucode:
-	python3 scripts/gen_mlkem_ucode.py --levels $(MLKEM_LEVELS)
+	$(PY) scripts/gen/gen_mlkem_ucode.py --levels $(MLKEM_LEVELS)
 
-# Simulated TVLA of the RTL, plots and report in sim_result/tvla/ (docs/TVLA_SIM.md).
-tvla-sim:
-	$(PY) scripts/tvla_sim.py
-
-# Icarus Verilog testbenches for UART + NTT, VCDs in build/sim/.
+# Icarus Verilog: UART byte loopback + NTT, VCDs in build/sim/.
 sim-iverilog:
 	$(MAKE) -C testbench/iverilog
 
-# NIST ACVP ML-KEM-768 vectors on the RTL in Verilator, report in
-# sim_result/acvp/ (docs/ACVP_TEST.md).
-acvp-sim:
-	$(PY) scripts/acvp_test.py sim
+# Full UART host link incl. 0x05 Run against a core model (Icarus, 1 Mbaud for speed).
+sim-link:
+	$(MAKE) -C testbench/iverilog uart-link BAUD=1000000
 
-# The same vectors on the FPGA board over UART:  make acvp-uart PORT=/dev/cu.usbserial-XXXX1
+# Host protocol -> uart_axi_bridge -> axil_cdc -> real core, ACVP Decaps via 0x05 (Verilator).
+sim-bridge:
+	$(MAKE) -C testbench/cdc bridge
+
+# axil_cdc + real core: registers, KeyGen and Decaps through the crossing (Verilator).
+sim-cdc:
+	$(MAKE) -C testbench/cdc
+
+# Unit benches (modmul, pack/unpack, FIFO, Keccak) and the sponge.
+sim-units:
+	$(MAKE) -C testbench/units all
+	$(MAKE) -C testbench/sponge
+
+# NIST ACVP ML-KEM-768 vectors on the RTL in Verilator, report in data/acvp/ (docs/ACVP_TEST.md).
+acvp-sim:
+	$(PY) scripts/test/acvp_test.py sim
+
+# The same vectors on the board over UART:  make acvp-uart PORT=/dev/cu.usbserial-XXXX1
 acvp-uart:
 	@test -n "$(PORT)" || (echo "usage: make acvp-uart PORT=<serial port>"; exit 2)
-	$(PY) scripts/acvp_test.py uart -p $(PORT)
+	$(PY) scripts/test/acvp_test.py uart -p $(PORT)
 
-# Side-channel trace acquisition on the board (hostlab/README.md):
-#   make capture-check PORT=/dev/cu.usbserial-XXXXB
-#   make capture-dry   PORT=...                     # no instrument needed
-#   make capture       PORT=... SCOPE=TCPIP0::192.168.1.50::INSTR N=5000
-capture-check:
-	@test -n "$(PORT)" || (echo "usage: make capture-check PORT=<serial port>"; exit 2)
-	$(PY) hostlab/capture.py check -p $(PORT)
-
-capture-dry:
-	@test -n "$(PORT)" || (echo "usage: make capture-dry PORT=<serial port>"; exit 2)
-	$(PY) hostlab/capture.py dry-run -p $(PORT) -n $(or $(N),200) --detection-curve
-
-capture:
-	@test -n "$(PORT)" || (echo "usage: make capture PORT=<serial port> SCOPE=<visa resource>"; exit 2)
-	@test -n "$(SCOPE)" || (echo "usage: make capture PORT=<serial port> SCOPE=<visa resource>"; exit 2)
-	$(PY) hostlab/capture.py run -p $(PORT) -r $(SCOPE) -n $(or $(N),5000) --detection-curve
-
-# All simulation tests: Go, Icarus benches, unit tests, sponge, CDC system
-# test, TVLA model build, ACVP on the core.
-regress:
-	go test ./... -count=1
-	$(MAKE) -C testbench/iverilog all
-	$(MAKE) -C testbench/iverilog uart-link BAUD=1000000
-	$(MAKE) -C testbench/sponge
-	$(MAKE) -C testbench/units all
-	$(MAKE) -C testbench/cdc
-	$(MAKE) -C testbench/tvla_sim
-	$(PY) scripts/acvp_test.py sim
-
-# Run FPGA validation in simulation mode (no hardware needed).
-simulate:
-	go run ./cmd/pqc-testkit fpga --transport sim
-
-# Lint HDL cores with Verilator.
 lint:
-	verilator --lint-only -Wall hdl/core/keccak_f1600.sv
-	verilator --lint-only -Wall hdl/core/uart_rx.sv
-	verilator --lint-only -Wall hdl/core/uart_tx.sv
-	verilator --lint-only -Wall hdl/core/mod_reduce.sv
+	verilator --lint-only -Wall -Wno-fatal -Wno-DECLFILENAME hdl/core/uart_axi_bridge.sv
+	verilator --lint-only -Wall -Wno-fatal hdl/core/uart_rx.sv
+	verilator --lint-only -Wall -Wno-fatal hdl/core/uart_tx.sv
+	verilator --lint-only -Wall -Wno-fatal --top-module keccak_f1600 hdl/core/keccak_f1600.sv hdl/core/keccak_round.sv
+	verilator --lint-only -Wall -Wno-fatal hdl/core/mod_reduce.sv
 
-# Vet Go code.
-vet:
-	go vet ./...
+regress: test sim-iverilog sim-link sim-units sim-cdc sim-bridge acvp-sim
 
-# Clean build artifacts.
+# Simulation outputs only. build/vivado/ (Vivado projects) and data/ are never touched.
 clean:
-	rm -f pqc-testkit
-	rm -rf build/
-	rm -f hdl/core/twiddle_*.hex
-	rm -f vectors/**/*.rsp
+	rm -rf build/sim build/cdc testbench/core_sim/obj_dir

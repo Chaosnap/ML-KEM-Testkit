@@ -5,11 +5,14 @@
 // Part B: the Arty A7 host link, exactly as wired in arty_a7_top.sv:
 //
 //   host (this TB) --serial--> uart_rx -> uart_axi_bridge -> AXI-Lite slave
-//   host (this TB) <--serial-- uart_tx <-/
+//   host (this TB) <--serial-- uart_tx <-/                   + core model
 //
-// The TB plays the role of the Go host (pkg/fpga/uart/serial.go): it
+// The TB plays the role of the host (cpa_toolkit/uart_target.py): it
 // builds command frames with CRC-32/IEEE, bit-bangs them onto the RX line,
 // decodes the TX line independently and checks every response frame.
+// Part C: 0x05 Run against a small core model (busy for RUN_CYCLES after
+// CTRL.start, then done; error / hang modes) - the reply must come only
+// after the operation, and the UART must stay idle while the core is busy.
 //
 // Run:   make -C testbench/iverilog uart-link
 // Wave:  build/sim/tb_uart_link.vcd
@@ -23,6 +26,11 @@ module tb_uart_link;
 
     localparam int CPB       = CLK_FREQ / BAUD_RATE;  // Clocks per bit.
     localparam int DATA_BASE = 16'h4000;
+
+    // Core model for 0x05 Run (Part C).
+    localparam int RUN_CYCLES  = 3000;    // Busy time of one operation.
+    localparam int BUSY_LAT    = 3;       // CTRL.start -> busy (CDC + ctrl FSM).
+    localparam int RUN_TIMEOUT = 50_000;  // Bridge gives up after this.
 
     // ---------------------------------------------------------------------
     // Clock / reset
@@ -103,8 +111,10 @@ module tb_uart_link;
         .data(tx_byte), .valid(tx_valid), .ready(tx_ready)
     );
 
-    uart_axi_bridge #(.TIMEOUT_CYCLES(CLK_FREQ / 10)) u_bridge (
-        .clk(clk), .rst_n(rst_n),
+    logic core_busy = 1'b0;          // Core model (below) -> bridge.
+
+    uart_axi_bridge #(.TIMEOUT_CYCLES(CLK_FREQ / 10), .RUN_TIMEOUT_CYCLES(RUN_TIMEOUT)) u_bridge (
+        .clk(clk), .rst_n(rst_n), .core_busy(core_busy),
         .rx_byte(rx_byte), .rx_valid(rx_valid),
         .tx_byte(tx_byte), .tx_valid(tx_valid), .tx_ready(tx_ready),
         .m_axi_awaddr(awaddr), .m_axi_awvalid(awvalid), .m_axi_awready(awready),
@@ -126,6 +136,14 @@ module tb_uart_link;
     assign bresp   = 2'b00;
     assign rresp   = 2'b00;
 
+    integer      start_lat = 0;
+    logic [31:0] busy_left = '0;
+
+    // While the core is busy the FPGA must not transmit (0x05 keeps the
+    // link silent during the operation).
+    integer tx_edges_while_busy = 0;
+    always @(host_rx_line) if (core_busy) tx_edges_while_busy = tx_edges_while_busy + 1;
+
     // Last write seen on the bus (handy in the VCD).
     logic [15:0] axi_last_waddr;
     logic [31:0] axi_last_wdata;
@@ -138,6 +156,22 @@ module tb_uart_link;
         end else begin
             bvalid <= 1'b0;
             rvalid <= 1'b0;
+            // Core model: CTRL bit0 = start, bit1 = reset; OP_MODE 3 = bad
+            // parameter (error at once, never busy), OP_MODE 7 = hangs.
+            if (start_lat > 0) start_lat <= start_lat - 1;
+            if (start_lat == 1) begin
+                core_busy <= 1'b1;
+                csr[1]    <= 32'h1;                       // STATUS = busy
+                busy_left <= (csr[4] == 32'd7) ? 32'hFFFF_FFFF : RUN_CYCLES;
+            end
+            if (core_busy && busy_left != 32'hFFFF_FFFF) begin
+                busy_left <= busy_left - 1;
+                if (busy_left == 1) begin
+                    core_busy <= 1'b0;
+                    csr[1]    <= 32'h2;                   // STATUS = done
+                    csr[5]    <= RUN_CYCLES;              // CYCLE_COUNT
+                end
+            end
             if (awvalid && wvalid) begin
                 for (int i = 0; i < 4; i++)
                     if (wstrb[i]) begin
@@ -147,6 +181,22 @@ module tb_uart_link;
                 axi_last_waddr <= awaddr;
                 axi_last_wdata <= wdata;
                 bvalid <= 1'b1;
+                if (awaddr == 16'h0000 && wdata[1]) begin           // CTRL.reset
+                    core_busy <= 1'b0;
+                    start_lat <= 0;
+                    csr[1]    <= 32'h0;
+                    csr[7]    <= 32'h0;
+                end else if (awaddr == 16'h0000 && wdata[0] && !core_busy) begin  // CTRL.start
+                    csr[5] <= 32'h0;
+                    csr[7] <= 32'h0;
+                    if (csr[4] == 32'd3) begin
+                        csr[1] <= 32'h4;                  // STATUS = error, never busy
+                        csr[7] <= 32'h1;                  // ERROR_CODE = 1
+                    end else begin
+                        csr[1]    <= 32'h0;
+                        start_lat <= BUSY_LAT;
+                    end
+                end
             end
             if (arvalid) begin
                 rdata  <= (araddr >= DATA_BASE) ? dbuf[araddr[7:2]] : csr[araddr[7:2]];
@@ -231,6 +281,25 @@ module tb_uart_link;
     // ---------------------------------------------------------------------
     logic [7:0] payload [0:255];
     logic [7:0] exp_data [0:255];
+    integer     resp_extra = 0;    // Extra cycles a response may take (0x05 waits).
+
+    // 0x05 Run payload: CTRL value, out offset, out count.
+    task automatic run_payload(input logic [31:0] value, input logic [31:0] off, input logic [31:0] count);
+        for (int i = 0; i < 4; i++) begin
+            payload[i]     = value[8*i +: 8];
+            payload[4 + i] = off[8*i +: 8];
+            payload[8 + i] = count[8*i +: 8];
+        end
+    endtask
+
+    // Expected 12-byte status block of a 0x05 reply.
+    task automatic exp_block(input logic [31:0] st, input logic [31:0] cyc, input logic [31:0] err);
+        for (int i = 0; i < 4; i++) begin
+            exp_data[i]     = st[8*i +: 8];
+            exp_data[4 + i] = cyc[8*i +: 8];
+            exp_data[8 + i] = err[8*i +: 8];
+        end
+    endtask
 
     // Send [CMD][ADDR:4][LEN:4][DATA:LEN][CRC:4]. corrupt=1 flips the CRC.
     task automatic send_frame(input logic [7:0] cmd, input logic [31:0] addr,
@@ -264,7 +333,7 @@ module tb_uart_link;
         logic [31:0] got_len, got_crc, crc;
         n = 1 + 4 + exp_len + 4;
         timeout = 0;
-        while (rx_wr < base + n && timeout < CPB * 10 * (n + 4)) begin
+        while (rx_wr < base + n && timeout < CPB * 10 * (n + 4) + resp_extra) begin
             @(posedge clk);
             timeout = timeout + 1;
         end
@@ -368,6 +437,74 @@ module tb_uart_link;
         send_frame(8'h02, 32'h0000_0010, 32'd4, 1'b1);
         expect_response(base, 8'h01, 32'd0);
         check("AXI csr[0x10] unchanged", csr[8'h10 >> 2], 32'hDEAD_BEEF);
+
+        // ---------------- Part C: 0x05 Run ----------------
+        resp_extra = RUN_TIMEOUT + 1000;
+
+        test_name = "C1_run_probe";
+        $display("--- C1: 0x05 with CTRL = 0 starts nothing -> immediate status block ---");
+        base = rx_wr;
+        run_payload(32'h0, 32'h0, 32'd0);
+        exp_block(32'h0, 32'h0, 32'h0);
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h00, 32'd12);
+
+        test_name = "C2_run_decaps";
+        $display("--- C2: 0x05 CTRL.start, out = buffer[0..5]: reply only after the operation ---");
+        base = rx_wr;
+        tx_edges_while_busy = 0;
+        run_payload(32'h1, 32'h0, 32'd6);
+        exp_block(32'h2, RUN_CYCLES, 32'h0);
+        exp_data[12] = 8'h11; exp_data[13] = 8'h22; exp_data[14] = 8'h33;
+        exp_data[15] = 8'h44; exp_data[16] = 8'h55; exp_data[17] = 8'h66;
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h00, 32'd18);
+        check("FPGA TX edges while the core was busy", tx_edges_while_busy, 0);
+
+        test_name = "C3_run_unaligned";
+        $display("--- C3: 0x05 again, out = buffer[2..4] (unaligned offset) ---");
+        base = rx_wr;
+        run_payload(32'h1, 32'h2, 32'd3);
+        exp_block(32'h2, RUN_CYCLES, 32'h0);
+        exp_data[12] = 8'h33; exp_data[13] = 8'h44; exp_data[14] = 8'h55;
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h00, 32'd15);
+
+        test_name = "C4_run_error";
+        $display("--- C4: 0x05 with a bad OP_MODE -> STATUS error, no output bytes ---");
+        base = rx_wr;
+        payload[0] = 8'd3; payload[1] = 8'd0; payload[2] = 8'd0; payload[3] = 8'd0;
+        send_frame(8'h02, 32'h0000_0010, 32'd4, 1'b0);       // OP_MODE = 3
+        expect_response(base, 8'h00, 32'd0);
+        base = rx_wr;
+        run_payload(32'h1, 32'h0, 32'd6);
+        exp_block(32'h4, 32'h0, 32'h1);
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h00, 32'd12);
+
+        test_name = "C5_run_bad_args";
+        $display("--- C5: 0x05 with out offset + count past the buffer -> STATUS 0x01 ---");
+        base = rx_wr;
+        run_payload(32'h1, 32'd16380, 32'd8);
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h01, 32'd0);
+
+        test_name = "C6_run_timeout";
+        $display("--- C6: 0x05 on a hung core -> reply after RUN_TIMEOUT with STATUS busy ---");
+        base = rx_wr;
+        payload[0] = 8'd7; payload[1] = 8'd0; payload[2] = 8'd0; payload[3] = 8'd0;
+        send_frame(8'h02, 32'h0000_0010, 32'd4, 1'b0);       // OP_MODE = 7: hangs
+        expect_response(base, 8'h00, 32'd0);
+        base = rx_wr;
+        run_payload(32'h1, 32'h0, 32'd6);
+        exp_block(32'h1, 32'h0, 32'h0);
+        send_frame(8'h05, 32'h0000_0000, 32'd12, 1'b0);
+        expect_response(base, 8'h00, 32'd12);
+        base = rx_wr;
+        payload[0] = 8'd2; payload[1] = 8'd0; payload[2] = 8'd0; payload[3] = 8'd0;
+        send_frame(8'h02, 32'h0000_0000, 32'd4, 1'b0);       // CTRL.reset
+        expect_response(base, 8'h00, 32'd0);
+        check("core idle after CTRL.reset", {31'h0, core_busy}, 32'h0);
 
         test_name = "done";
         repeat (CPB) @(posedge clk);

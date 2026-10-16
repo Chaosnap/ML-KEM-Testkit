@@ -22,10 +22,10 @@
 //     constraints.xdc for the citation.
 //
 // Build:
-//   vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
+//   vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem
 //
-// Test:
-//   ./pqc-testkit fpga -T uart -d /dev/ttyUSB0 -b 115200
+// Test (host protocol: docs/UART_PROTOCOL.md):
+//   uv run python scripts/test/acvp_test.py uart -p <serial port>
 
 module arty_a7_top #(
     parameter int CLK_FREQ  = 100_000_000,
@@ -42,7 +42,8 @@ module arty_a7_top #(
     // High for the whole core operation (= status_busy), so the scope arms
     // on the rising edge and captures the computation window. Same signal as
     // LED0, but on a clean header pin a probe can reach (the LEDs are not
-    // broken out). Jitter is ~1 core clock; see hostlab trigger option A.
+    // broken out). Driven by a core-clock register: the edge is locked to the
+    // computation (fixed pad delay only, no jitter against it).
     output logic       trig_out,
 
     // LEDs for status indication.
@@ -122,6 +123,9 @@ module arty_a7_top #(
     logic [1:0]  axi_rresp;
     logic        axi_rvalid, axi_rready;
 
+    // Core status (clk_core domain): LEDs, trig_out and the bridge's 0x05 Run.
+    logic status_busy, status_done, status_error;
+
     logic [7:0]  rx_byte;
     logic        rx_valid;
     logic [7:0]  tx_byte;
@@ -150,6 +154,7 @@ module arty_a7_top #(
     ) u_bridge (
         .clk           (clk),
         .rst_n         (rst_n),
+        .core_busy     (status_busy),     // 0x05 Run: synchronised inside.
         .rx_byte       (rx_byte),
         .rx_valid      (rx_valid),
         .tx_byte       (tx_byte),
@@ -177,8 +182,6 @@ module arty_a7_top #(
     // =========================================================================
     // PQC ML-KEM accelerator core
     // =========================================================================
-
-    logic status_busy, status_done, status_error;
 
     // AXI-Lite in the core clock domain.
     logic [15:0] c_awaddr, c_araddr;

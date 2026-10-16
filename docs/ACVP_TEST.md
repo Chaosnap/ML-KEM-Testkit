@@ -1,15 +1,15 @@
 # ACVP 功能测试：上板（UART）与 RTL 仿真
 
-`scripts/acvp_test.py` 用 NIST ACVP-Server 的 ML-KEM 官方向量（`acvp/` 下的 `internalProjection.json`，带有 NIST 给出的正确答案）检查 ML-KEM-768 核心是否符合 FIPS 203。
+`scripts/test/acvp_test.py` 用 NIST ACVP-Server 的 ML-KEM 官方向量（`acvp/` 下的 `internalProjection.json`，带有 NIST 给出的正确答案）检查 ML-KEM-768 核心是否符合 FIPS 203。
 
 同一套向量、同一套判定规则可以跑在两个目标上：
 
 | 目标 | 命令 | 用途 |
 | ---- | ---- | ---- |
-| `uart` | `uv run python scripts/acvp_test.py uart -p <串口>` | **上板测试**：通过 Arty A7 的 USB-UART 驱动 FPGA 上的核心 |
-| `sim` | `uv run python scripts/acvp_test.py sim` | RTL 仿真（Verilator），不需要板子；改 RTL 后先在这里确认 |
+| `uart` | `uv run python scripts/test/acvp_test.py uart -p <串口>` | **上板测试**：通过 Arty A7 的 USB-UART 驱动 FPGA 上的核心 |
+| `sim` | `uv run python scripts/test/acvp_test.py sim` | RTL 仿真（Verilator），不需要板子；改 RTL 后先在这里确认 |
 
-结果写到 `sim_result/acvp/<日期_时间>_<目标>/`，主要看其中的 `summary.md`。
+结果写到 `data/acvp/<日期_时间>_<目标>/`，主要看其中的 `summary.md`。
 
 ---
 
@@ -55,16 +55,16 @@ Verilator ≥ 5.0（`verilator --version`）。`sim` 模式会自动执行 `make
 
 ### 3.1 先在仿真里确认 RTL
 ```bash
-uv run python scripts/acvp_test.py sim
+uv run python scripts/test/acvp_test.py sim
 ```
 应看到 `required ACVP vectors: 60/60` 和 `ACVP PASS`。仿真不通过就不要上板，问题一定在 RTL。
 
 ### 3.2 生成 bitstream
 在 Vivado 环境里（Docker 容器的终端或 Linux 主机），从仓库根目录运行：
 ```bash
-vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
+vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem
 ```
-- 也可以在 Vivado GUI 的 Tcl Console 里执行 `source -notrace <仓库路径>/scripts/vivado_build.tcl`，不带参数时默认就是 `arty-a7-100t mlkem`。
+- 也可以在 Vivado GUI 的 Tcl Console 里执行 `source -notrace <仓库路径>/scripts/vivado/build_arty_a7.tcl`，不带参数时默认就是 `arty-a7-100t mlkem`。
 - 输出：`build/vivado/arty-a7-100t_mlkem/pqc_mlkem.runs/impl_1/arty_a7_top.bit`
 - **先确认时序收敛**：打开 `build/vivado/arty-a7-100t_mlkem/timing_impl.rpt`，`Design Timing Summary` 里的 WNS 和 WHS 都必须 ≥ 0。时序不收敛的 bitstream 在 206 MHz 下可能出现随机错误，ACVP 结果没有意义。
 
@@ -73,7 +73,7 @@ vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-100t mlkem
 - Vivado GUI：Open Hardware Manager → Open Target → Auto Connect → Program Device，选上面的 `.bit`。
 - 命令行：
   ```bash
-  vivado -mode batch -source scripts/program.tcl \
+  vivado -mode batch -source scripts/vivado/program_bitstream.tcl \
       -tclargs build/vivado/arty-a7-100t_mlkem/pqc_mlkem.runs/impl_1/arty_a7_top.bit
   ```
 
@@ -90,7 +90,7 @@ BTN0 是复位键：按下会复位 UART 桥和核心，MMCM 也会重新锁定�
 
 ### 3.4 找到串口
 ```bash
-uv run python scripts/acvp_test.py ports
+uv run python scripts/test/acvp_test.py ports
 ```
 Arty 上的 FTDI 芯片有两个接口：第一个是 JTAG，第二个才是 UART。
 - macOS：`/dev/cu.usbserial-XXXXXXXX1`，名字以 **1** 结尾的那个
@@ -101,20 +101,20 @@ Arty 上的 FTDI 芯片有两个接口：第一个是 JTAG，第二个才是 UAR
 
 ### 3.5 运行
 ```bash
-uv run python scripts/acvp_test.py uart -p /dev/cu.usbserial-XXXXXXXX1
+uv run python scripts/test/acvp_test.py uart -p /dev/cu.usbserial-XXXXXXXX1
 ```
 脚本先做 7 项上板自检（见第 5 节），通过后依次运行 80 个用例。每个用例要通过 UART 传几 KB 数据：Decaps 写入 3488 字节，KeyGen 读出 3584 字节。115200 波特率下每个用例约 0.3–0.6 秒，全部大约 1 分钟。
 
 只跑部分组：
 ```bash
-uv run python scripts/acvp_test.py uart -p /dev/cu.usbserial-XXXXXXXX1 --groups keygen decaps
+uv run python scripts/test/acvp_test.py uart -p /dev/cu.usbserial-XXXXXXXX1 --groups keygen decaps
 ```
 
 ### 3.6 看结果
 终端最后一行是结论和报告路径，例如：
 ```
 required ACVP vectors: 60/60
-ACVP PASS   report: sim_result/acvp/20261006_150212_uart/summary.md
+ACVP PASS   report: data/acvp/20261006_150212_uart/summary.md
 ```
 在 VS Code 里打开 `summary.md`（Markdown 预览：⇧⌘V）。退出码：0 = 全部通过，1 = 有用例失败，2 = 自检或环境出错。
 
@@ -122,7 +122,7 @@ ACVP PASS   report: sim_result/acvp/20261006_150212_uart/summary.md
 
 ## 4. 输出文件
 
-`sim_result/acvp/<YYYYmmdd_HHMMSS>_<uart|sim>/`
+`data/acvp/<YYYYmmdd_HHMMSS>_<uart|sim>/`
 
 | 文件 | 内容 |
 | ---- | ---- |
@@ -182,10 +182,10 @@ ACVP PASS   report: sim_result/acvp/20261006_150212_uart/summary.md
 ## 8. 命令行参数
 
 ```
-uv run python scripts/acvp_test.py ports
-uv run python scripts/acvp_test.py uart -p PORT [-b 115200] [--timeout 2] [--op-timeout 5]
+uv run python scripts/test/acvp_test.py ports
+uv run python scripts/test/acvp_test.py uart -p PORT [-b 115200] [--timeout 2] [--op-timeout 5]
                                         [--no-preflight] [--groups ...] [--vectors DIR] [--out DIR] [-v]
-uv run python scripts/acvp_test.py sim  [--groups ...] [--vectors DIR] [--out DIR] [-v]
+uv run python scripts/test/acvp_test.py sim  [--groups ...] [--vectors DIR] [--out DIR] [-v]
 ```
 
 | 参数 | 默认 | 说明 |
@@ -197,14 +197,14 @@ uv run python scripts/acvp_test.py sim  [--groups ...] [--vectors DIR] [--out DI
 | `--no-preflight` | 关 | 跳过上板自检 |
 | `--groups` | 全部 | `keygen encaps decaps ekcheck errors` 中的任意几个 |
 | `--vectors` | `acvp/` | 包含 `ML-KEM-keyGen-FIPS203/` 和 `ML-KEM-encapDecap-FIPS203/` 的目录。从 ACVP-Server 下载新的 `internalProjection.json` 放进去即可换一套向量 |
-| `--out` | `sim_result/acvp` | 结果目录 |
+| `--out` | `data/acvp` | 结果目录 |
 | `-v` | 关 | 通过的用例也打印说明 |
 
 ---
 
 ## 9. 参考：主机协议
 
-脚本内置的协议与 `hdl/core/uart_axi_bridge.sv`、`pkg/fpga/uart` 一致，字段都是小端：
+脚本内置的协议与 `hdl/core/uart_axi_bridge.sv` 一致（完整说明见 [`UART_PROTOCOL.md`](UART_PROTOCOL.md)），字段都是小端：
 
 ```
 主机 → FPGA  [CMD:1][ADDR:4][LEN:4][DATA:LEN][CRC32:4]

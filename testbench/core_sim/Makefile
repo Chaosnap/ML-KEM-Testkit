@@ -3,7 +3,7 @@
 #   make            build obj_dir/Vtb_core
 #   make clean
 #
-# Normally driven by scripts/acvp_test.py (sim target), which rebuilds it
+# Normally driven by scripts/test/acvp_test.py (sim target), which rebuilds it
 # as needed.
 
 VERILATOR ?= verilator

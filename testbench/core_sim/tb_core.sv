@@ -2,7 +2,7 @@
 //
 // Runs a list of ML-KEM operations through the AXI-Lite interface exactly
 // as the host does, and writes every result to a file. Driven by
-// scripts/acvp_test.py (sim target).
+// scripts/test/acvp_test.py (sim target).
 //
 // Plusargs:
 //   +jobs=<file>   job list (below)

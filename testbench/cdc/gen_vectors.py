@@ -21,9 +21,9 @@ def write(path, data):
 def main():
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(ROOT, "acvp", "ML-KEM-keyGen-FIPS203", "internalProjection.json")) as f:
+    with open(os.path.join(ROOT, "tests", "acvp", "ML-KEM-keyGen-FIPS203", "internalProjection.json")) as f:
         kg = next(g for g in json.load(f)["testGroups"] if g["parameterSet"] == "ML-KEM-768")["tests"][0]
-    with open(os.path.join(ROOT, "acvp", "ML-KEM-encapDecap-FIPS203", "internalProjection.json")) as f:
+    with open(os.path.join(ROOT, "tests", "acvp", "ML-KEM-encapDecap-FIPS203", "internalProjection.json")) as f:
         dc = next(g for g in json.load(f)["testGroups"]
                   if g["parameterSet"] == "ML-KEM-768" and g.get("function") == "decapsulation")["tests"][0]
     h = bytes.fromhex

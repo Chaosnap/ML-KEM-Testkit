@@ -1,177 +1,105 @@
-# pqc-testkit
+# ML-KEM-Testkit
 
-An open-source toolkit for testing and validating post-quantum cryptography implementations on FPGA hardware.
+ML-KEM-768（FIPS 203）的 FPGA 硬件核心，以及围绕它的测试与侧信道评估工具链：
 
-Brings together software PQC validation, FPGA-in-the-loop testing, HDL building blocks, side-channel analysis, and a curated research bibliography in one place. Built for hardware engineers, security researchers, and anyone working on PQC hardware adoption.
+- NIST ACVP 功能测试，可在板上（UART）或 RTL 仿真中运行；
+- 可复现的测试向量；
+- 示波器 trace 采集；
+- CPA / TVLA 分析；
+- 一个本地 Web GUI，把以上步骤串起来。
 
-## ML-KEM-768 core on the Arty A7
+![FPGA – PC – 示波器](docs/diagrams/FPGA_PC_Oscilloscope.png)
 
-The core runs at 206 MHz (MMCM); the UART bridge stays at 100 MHz. Round 2
-passes routed timing at 206 MHz (WNS +0.093 ns, WHS +0.036 ns); the core
-uses 7248 LUTs, 4623 FFs, 3 RAMB36s and 2 DSPs.
+## 目录结构
 
-| Test | Command | Guide |
-|------|---------|-------|
-| NIST ACVP vectors on the board (UART) | `uv run python scripts/acvp_test.py uart -p <port>` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
-| NIST ACVP vectors on the RTL (Verilator) | `uv run python scripts/acvp_test.py sim` | [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
-| Simulated TVLA (plots + report) | `uv run python scripts/tvla_sim.py` | [docs/TVLA_SIM.md](docs/TVLA_SIM.md) |
-| Measured side-channel traces (board + scope) | `uv run python hostlab/capture.py run -p <port> -r <visa>` | [hostlab/README.md](hostlab/README.md) |
+```
+hdl/core/               厂商无关的 SystemVerilog：ML-KEM-768 核心、AXI-Lite CSR、UART 协议桥、axil_cdc
+hdl/xilinx/arty_a7/     Arty A7-35T/100T 顶层与约束（板载 USB 串口）
+hdl/xilinx/arty_z7/     Arty Z7-20 纯 PL 版（外接 3.3 V USB-UART 到 Pmod JA）
+hdl/xilinx/arty_z7_ps/  Arty Z7-20 PS 版（板载 USB 串口经 PS 转发到 PL）
+sw/arty_z7_uart_fwd/    Z7 PS 上运行的裸机 UART 字节转发程序
+cpa_toolkit/            Python 主机端：UART 驱动、FIPS 203 参考实现、测试向量、采集、CPA/TVLA、Web GUI
+scripts/vivado/         Vivado 构建 / 烧写 Tcl
+scripts/board/          Arty Z7 PS 版上电启动（JTAG 下载 bit + ps7_init + 转发程序）
+scripts/test/           ACVP 测试（板上 / Verilator）
+scripts/gen/            微码与 zeta ROM 生成器
+testbench/              Icarus / Verilator / cocotb 测试平台
+tests/                  Python 单元测试；tests/acvp/ 为 NIST ACVP 向量
+docs/                   协议、ACVP、攻击模型文档；diagrams/ 框图；results/ 实现报告
+build/                  生成物（Vivado 工程、仿真），不入库
+data/                   运行时输出（测试向量、trace、分析报告、ACVP 结果），不入库
+```
 
-Results are written to `sim_result/acvp/`, `sim_result/tvla/` and `sim_result/traces/`.
+## 快速开始
 
-## What's in the box
-
-| Layer | What you get |
-|-------|-------------|
-| **CLI** | `bench`, `kat`, `fpga`, `gen-vectors`, `gen-twiddle` - one binary, all operations |
-| **Algorithms** | ML-KEM (FIPS 203), ML-DSA (FIPS 204), SLH-DSA (FIPS 205) - software reference via Go stdlib + circl |
-| **FPGA transports** | PCIe XDMA, AXI UIO (Zynq), UART, simulation mode - one `Device` interface |
-| **HDL cores** | 15 SystemVerilog modules: Keccak-f[1600], NTT engine with Barrett reduction, AXI-Lite CSR, UART bridge, ML-KEM building blocks (CBD, compress, encode) |
-| **Side-channel** | TVLA test vector generation + Welch's t-test for leakage detection |
-| **Board support** | Arty A7, Nexys A7, ZCU102, Alveo U250 (Xilinx) + DE10-Nano, DE10-Agilex, Stratix 10 (Intel) |
-| **Research** | 94-paper bibliography as queryable Go data - ML-KEM, ML-DSA, SLH-DSA, NTT, side-channel, industry |
-| **CI** | GitHub Actions: Go tests + HDL lint via Verilator |
-
-## Get started (2 minutes)
+需要 [uv](https://docs.astral.sh/uv/)（Python ≥ 3.9）。
 
 ```bash
-git clone https://github.com/akhilesharora/pqc-testkit.git
-cd pqc-testkit
-make test        # 40 tests, all algorithms, all pass
-make bench       # ML-KEM ~93us keygen, ML-DSA ~375us sign, SLH-DSA ~15ms sign
-make simulate   # Simulate full FPGA validation flow, no hardware needed
-make vectors     # Generate KAT test vectors from software reference
-make twiddle     # Generate NTT twiddle factors for FPGA synthesis
+uv sync                      # 接真实示波器时用：uv sync --extra scope
+make test                    # Python 单元测试
+make gui                     # Web GUI：http://127.0.0.1:8765
 ```
 
-## Validate on real hardware
+GUI 左侧导航对应一次实验的完整流程：
 
-The ML-KEM core implements ML-KEM-768 only, so its resource usage compares
-fairly with single-level designs; any other SEC_LEVEL fails with
-ERROR_CODE 1. Regenerate the microcode ROM with `make ucode`.
+1. **Connection**：连接板子（串口）和示波器（VISA/LAN），可运行链路自检。
+2. **Test Vectors**：生成 CPA 或 TVLA 向量集。每条密文的期望 K 都由软件 FIPS 203 预先算好，可以先在软件或板上核对。
+3. **Acquisition**：采集，实时显示最新 trace 和均值。每条 trace 都校验 K 和 CYCLE_COUNT，可随时停止，之后能续采。
+4. **Trace Library**：管理已采集的 campaign，包括命名、备注、查看波形、导出（.hdf5 / .npz）、移入回收站和恢复。
+5. **Analysis**：CPA 分析提供 3×256 系数热力图、逐系数相关曲线、key rank / MTD；TVLA 分析提供 |t| 曲线、类均值和检测曲线。
+
+命令行用法与实验方法见 [cpa_toolkit/README.md](cpa_toolkit/README.md)。
+
+## 硬件
+
+| 板子 | 顶层 | 时钟 | 主机串口 | 示波器触发 |
+| ---- | ---- | ---- | -------- | ---------- |
+| Arty A7-100T / 35T | `hdl/xilinx/arty_a7` | 协议桥 100 MHz，核心 206 MHz | 板载 USB 的 `…1` 接口 | Pmod JA1 |
+| Arty Z7-20（纯 PL） | `hdl/xilinx/arty_z7` | 125 MHz / 206.25 MHz | 外接 USB-UART 到 Pmod JA | Pmod JA3 |
+| Arty Z7-20（PS 版） | `hdl/xilinx/arty_z7_ps` | 125 MHz / 206.25 MHz | 板载 USB 的 `…1` 接口，每次上电后先运行 `uv run scripts/board/boot_arty_z7_ps.py` | Pmod JA3 |
+
+示波器触发引脚输出 `trig_out = STATUS.busy`：在运算开始的那个核心时钟沿上升，保持 CYCLE_COUNT 个周期后下降，只有真正开始运算时才出现。GUI 的 Acquisition → *Check trigger* 可以在板上验证触发是否正确（见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md) 第 5.1 节）。
 
 ```bash
-# 1. Synthesize for your board
-vivado -mode batch -source scripts/vivado_build.tcl -tclargs arty-a7-35t mlkem
-
-# 2. Program the FPGA
-vivado -mode batch -source scripts/program.tcl -tclargs path/to/bitstream.bit
-
-# 3. Run validation (KATs at the levels built into the bitstream, default 768)
-./pqc-testkit fpga -T uart -d /dev/ttyUSB1 --levels 768
-
-# Output:
-# [1/4] Connecting to FPGA... OK (uart)
-# [2/4] Reading core identification... OK
-#        Algorithm:      ML-KEM (ID=1)
-#        Security Level: 768
-#        Core Version:   1.0.0
-# [3/4] Register read/write test... OK
-# [4/4] Operation cycle test... OK (42000 hardware cycles)
+vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem
+vivado -mode batch -source scripts/vivado/build_arty_z7.tcl -tclargs mlkem
+vivado -mode batch -source scripts/vivado/build_arty_z7_ps.tcl
+vivado -mode batch -source scripts/vivado/program_bitstream.tcl -tclargs <bitstream.bit>
 ```
 
-No hardware? Use `--transport sim` to run the full flow on any machine.
+**核心参数**
 
-## Simulate HDL (no board needed)
+- 只实现 ML-KEM-768，支持 KeyGen、Encaps 和 Decaps（含隐式拒绝），其他 SEC_LEVEL 返回 ERROR_CODE 1。
+- Decaps 约 26 300 个核心周期（≈ 128 µs）。密钥固定时，周期数与密文无关；不同密钥之间略有差异（26 270–26 363），因为矩阵 Â 的拒绝采样取决于公开种子 ρ。采集时会逐条检查 CYCLE_COUNT 是否恒定。
+- Arty A7-100T 在 206 MHz 下布线后时序满足（WNS +0.093 ns，WHS +0.036 ns）。
+- 核心资源：7248 LUT、4623 FF、3 个 RAMB36、2 个 DSP，详见 [docs/results/arty-a7-100t_206MHz](docs/results/arty-a7-100t_206MHz/)。
 
-```bash
-# Lint all cores
-make lint
+## 主机 ↔ FPGA 协议
 
-# Run cocotb testbenches (requires Verilator + cocotb)
-cd testbench/keccak && make SIM=verilator
-cd testbench/ntt && make SIM=verilator
-```
+协议基于 UART（8N1，115200），使用带 CRC-32 的二进制帧，只有 5 条命令：读/写寄存器、读/写数据缓冲，以及 **`0x05` Run**。
 
-## Supported algorithms
+运算只能用 `0x05` 启动：FPGA 在核心算完之前不发送任何字节，算完后一次回复 STATUS、CYCLE_COUNT、ERROR_CODE 和结果 K。主机不轮询 STATUS，运算期间链路完全静默。没有 `0x05` 的旧 bitstream 不能运行运算，需要重新生成。
 
-| Algorithm | Standard | Type | Security levels | Software | HDL building blocks |
-|-----------|----------|------|-----------------|----------|-------------------|
-| ML-KEM | FIPS 203 | Key encapsulation | 768, 1024 | Go stdlib `crypto/mlkem` | Keccak, NTT (q=3329), CBD, compress, encode |
-| ML-DSA | FIPS 204 | Digital signatures | 44, 65, 87 | cloudflare/circl | Keccak, NTT (q=8380417) |
-| SLH-DSA | FIPS 205 | Hash-based signatures | 128s/f, 192s/f, 256s/f | cloudflare/circl | Keccak |
+每条 trace 只需 6 次往返（5 帧密文 + 1 帧 Run）。完整说明，以及与论文中 SimpleSerial 命令（x/m/s/c/e/a）的对应关系，见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md)。
 
-## HDL modules
+## 测试
 
-All vendor-agnostic SystemVerilog in `hdl/core/`. No Xilinx or Intel primitives.
+| 命令 | 内容 |
+| ---- | ---- |
+| `make test` | Python：FIPS 203 参考实现、测试向量、UART 主机驱动（在软件板模型上测试：只用 `0x05`、从不轮询 STATUS，旧 bitstream 被拒绝） |
+| `make sim-link` | Icarus：UART 链路与协议桥全部命令，包括 `0x05` 的超时、错误，以及运算期间 TX 静默 |
+| `make sim-bridge` | Verilator：协议桥 + CDC + 真实核心，用 `0x05` 跑 ACVP Decaps |
+| `make sim-cdc` / `make sim-units` | CDC 系统测试；各运算单元的单元测试 |
+| `make acvp-sim` / `make acvp-uart PORT=…` | NIST ACVP 向量，分别在 RTL 和板上运行，见 [docs/ACVP_TEST.md](docs/ACVP_TEST.md) |
+| `make regress` | 运行以上全部仿真和单元测试 |
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `keccak_f1600.sv` | 190 | 24-round Keccak-f[1600] permutation, 1 round/cycle |
-| `keccak_absorb_squeeze.sv` | 150 | Sponge construction for SHA3/SHAKE with configurable rate |
-| `ntt_engine.sv` | 260 | 256-point NTT/INTT with Barrett reduction, twiddle ROM |
-| `ntt_butterfly.sv` | 140 | Parameterized CT/GS butterfly, 2-cycle pipelined |
-| `mod_reduce.sv` | 100 | Barrett reduction for q=3329 and q=8380417, mod_add, mod_sub |
-| `pqc_axi_csr.sv` | 160 | AXI4-Lite CSR slave implementing the standard register map |
-| `pqc_data_buffer.sv` | 50 | Dual-port BRAM for host/datapath data exchange |
-| `pqc_mlkem_top.sv` | 280 | ML-KEM accelerator top-level integrating all cores |
-| `mlkem_cbd.sv` | 60 | Centered Binomial Distribution sampler (eta=2/3) |
-| `mlkem_compress.sv` | 60 | Compress_d / Decompress_d for ciphertext encoding |
-| `mlkem_encode.sv` | 90 | ByteEncode / ByteDecode streaming serialization |
-| `uart_rx.sv` | 80 | 8N1 UART receiver with 16x oversampling |
-| `uart_tx.sv` | 60 | 8N1 UART transmitter |
-| `uart_axi_bridge.sv` | 200 | Protocol bridge: pqc-testkit UART frames to AXI-Lite transactions |
-| `arty_a7_top.sv` | 170 | Arty A7 board wrapper with constraints |
+## 文档
 
-## FPGA register map
-
-Any PQC core that implements this register map works with pqc-testkit:
-
-```
-0x00 CTRL        RW  bit 0=start, bit 1=reset
-0x04 STATUS      RO  bit 0=busy, bit 1=done, bit 2=error
-0x08 ALG_ID      RO  1=ML-KEM, 2=ML-DSA, 3=SLH-DSA
-0x0C SEC_LEVEL   RW  security level
-0x10 OP_MODE     RW  0=keygen, 1=encaps/sign, 2=decaps/verify
-0x14 CYCLE_COUNT RO  latches on done
-0x18 VERSION     RO  packed major.minor.patch
-```
-
-Full specification in `pkg/fpga/doc.go`. AXI-Lite implementation in `hdl/core/pqc_axi_csr.sv`.
-
-## Side-channel testing
-
-```go
-// Generate TVLA fixed-vs-random test patterns
-cfg := sca.TVLAConfig{NumTraces: 10000, KeySize: 32, MessageSize: 32}
-vectors, _ := sca.GenerateTVLA(cfg)
-
-// After capturing power traces from your FPGA...
-result, _ := sca.WelchTTest(fixedTraces, randomTraces)
-// result.Leakage == true if |t| > 4.5 at any sample point
-```
-
-## Research bibliography
-
-94 papers indexed as structured Go data in `docs/papers/index.go`:
-
-```go
-// Query papers by category
-for _, p := range papers.Index {
-    if p.Category == "Side-Channel Attack" && p.Year >= 2024 {
-        fmt.Printf("%s (%d) - %s\n", p.Title, p.Year, p.URL)
-    }
-}
-```
-
-Categories: ML-KEM implementations, ML-DSA implementations, SLH-DSA implementations, NTT architectures, unified multi-algorithm, side-channel attacks (15 papers), side-channel defenses (11 papers), HW/SW co-design, code-based PQC, frameworks, surveys, standards.
-
-## Contributing
-
-Three paths depending on what you have:
-
-1. **I have an FPGA board** - synthesize, program, run `./pqc-testkit fpga`, report results
-2. **I have a PQC hardware core** - wrap it behind `pqc_axi_csr.sv`, validate with the test kit
-3. **I don't have hardware** - add ACVP JSON support, new algorithms, better benchmarking, SCA tooling
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details. Issue templates for [board support](.github/ISSUE_TEMPLATE/board-support.md) and [algorithm cores](.github/ISSUE_TEMPLATE/algorithm-core.md).
-
-## Full documentation
-
-- **[docs/ACVP_TEST.md](docs/ACVP_TEST.md)** - board bring-up and NIST ACVP testing over UART (and on the RTL)
-- **[docs/TVLA_SIM.md](docs/TVLA_SIM.md)** - simulated TVLA of the RTL
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - how to add boards, cores, or software features
-- **[CLAUDE.md](CLAUDE.md)** - project context for AI-assisted development
+- [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md)：主机 ↔ FPGA 通信协议、寄存器表、采集流程、吞吐量
+- [docs/ACVP_TEST.md](docs/ACVP_TEST.md)：ACVP 功能测试（上板 / 仿真）
+- [docs/ATTACK_MODEL.md](docs/ATTACK_MODEL.md)：CPA 攻击模型（目标寄存器、时钟拍、RTL 行号）
+- [cpa_toolkit/README.md](cpa_toolkit/README.md)：采集与 CPA/TVLA 的用法和实验方法
+- [docs/diagrams/](docs/diagrams/)：系统框图与数据通路
 
 ## License
 
