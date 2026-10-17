@@ -1481,10 +1481,13 @@ function anModel(rprev) {
   const m = anModelOf($("an-model").value);
   $("model-selftest-wrap").classList.add("hidden");
   if (!m) { $("an-model-detail").innerHTML = ""; return; }
-  $("an-model-detail").innerHTML = [["Equation", m.equation], ["Register", `${m.register} (${m.bits} bit)${m.rtl_register ? " · " + m.rtl_register : ""}`],
+  $("an-model-detail").innerHTML = [["Equation", m.equation],
+    [m.aligned ? "Flops" : "Register", m.aligned ? `${m.bits} across the pipeline${m.rtl_register ? " · " + m.rtl_register : ""}`
+                                                 : `${m.register} (${m.bits} bit)${m.rtl_register ? " · " + m.rtl_register : ""}`],
     ["Stage", m.pipeline_stage], ["Needs", m.required_inputs], ["Limits", m.limitations], ["File", "cpa_toolkit/" + m.file]].filter(([, v]) => v)
     .map(([k, v]) => `<div class="md-row"><span class="md-k">${k}</span><span class="md-v${k === "Limits" || k === "Needs" ? " prose" : ""}">${esc(v)}</span></div>`).join("");
   $("an-rprev-wrap").classList.toggle("hidden", !m.rprevs.length);
+  $("an-aligned-wrap").classList.toggle("hidden", !m.aligned);
   $("an-rprev").innerHTML = m.rprevs.map((x) => `<option value="${esc(x.name)}" title="${esc(x.desc)}">${esc(x.name)} — ${esc(x.desc.replace(/^R_prev = /, ""))}</option>`).join("");
   if (typeof rprev === "string" && m.rprevs.some((x) => x.name === rprev)) $("an-rprev").value = rprev;
 }
@@ -1505,7 +1508,9 @@ async function anRun() {
   const kind = f.mode === "cpa" ? "cpa" : "tvla";
   if (kind === "cpa" && anOracle.get() === "file" && !$("an-dkref").value.trim()) return toast("Enter the path of the dk file", "warn");
   const body = kind === "cpa" ? { file: f.path, model: $("an-model").value, rprev: anRprev(),
-      max_traces: $("an-max-traces").value, dk_ref: anDkRef(), curve: $("an-curve").checked } : { file: f.path, max_traces: $("an-max-traces").value };
+      max_traces: $("an-max-traces").value, dk_ref: anDkRef(), curve: $("an-curve").checked,
+      coeffs: $("an-coeffs").value, features: $("an-features").value, offsets: $("an-offsets").value.trim() }
+    : { file: f.path, max_traces: $("an-max-traces").value };
   const pr = $("an-progress"), t0 = Date.now();
   try {
     const { job_id } = await api("POST", `/api/analysis/${kind}/start`, body);
@@ -1544,10 +1549,22 @@ function showTab(kind, t, draw) {
   if (!anDrawn.has(t)) { anDrawn.add(t); draw(t); }
   else window.dispatchEvent(new Event("resize"));
 }
+// The cycle offset most coefficients agreed on, with how strong that agreement was: a real
+// alignment piles up on one value, noise spreads over the whole search.
+function bestOffset(f) {
+  const h = Object.entries(f.offset_histogram || {}).sort((a, b) => b[1] - a[1]);
+  if (!h.length) return "—";
+  const total = h.reduce((a, [, n]) => a + n, 0);
+  return `${+h[0][0] >= 0 ? "+" : ""}${h[0][0]} (${Math.round((100 * h[0][1]) / total)}% of coefficients)`;
+}
 function reportHead(r) {
   const mc = r.model_config || {};
   const chips = r.kind === "cpa"
-    ? [chip("model", r.model || "?"), chip("register / R_prev", `${r.target} / ${r.rprev || "—"}`),
+    ? [chip("model", r.model || "?"),
+       ...(r.features
+         ? [chip("feature", `${r.features.mode} · ${r.features.rows} cycles/coefficient`),
+            chip("cycle offset", bestOffset(r.features))]
+         : [chip("register / R_prev", `${r.target} / ${r.rprev || "—"}`)]),
        chip("scoring", r.oracle_assisted ? "true key (oracle-assisted)" : "blind", r.oracle_assisted ? "warn" : ""), chip("traces", r.n_traces_used)]
     : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold)];
   chips.push(chip("analysed", fmtDate(r.analysis_timestamp_unix)));
@@ -1559,7 +1576,12 @@ function detailsKv(r) {
   const common = [["Campaign", String(r.file || d.path || "").split("/").pop()], ["Traces in file", d.n_completed], ["Samples / trace", d.n_samples],
     ["Sample rate", rateTxt(d.sample_rate_hz || r.sample_rate_hz)], ["K correct (acquisition)", pct(d.k_match_fraction)]];
   const specific = r.kind === "cpa"
-    ? [["Leakage model", r.model || "?"], ["Equation", m ? m.equation : "—"], ["Register / R_prev", `${r.target} / ${r.rprev || "—"}`],
+    ? [["Leakage model", r.model || "?"], ["Equation", m ? m.equation : "—"],
+       ...(r.features ? [["Trace feature", `${r.features.mode}, one per core clock cycle (${r.features.rows} cycles per coefficient)`],
+                         ["Cycle offset", Object.entries(r.features.offset_histogram || {}).sort((a, b) => b[1] - a[1])
+                           .slice(0, 3).map(([o, n]) => `${o >= 0 ? "+" : ""}${o} (${n})`).join(", ") +
+                           ` of ${(r.features.offsets_searched || []).length} searched`]]
+                      : [["Register / R_prev", `${r.target} / ${r.rprev || "—"}`]]),
        ["Scoring", r.oracle_assisted ? "oracle-assisted (true key)" : "blind"], ["Traces used", r.n_traces_used], ["Candidates", r.n_candidates],
        ["Coefficients", r.coefficients_attacked ?? (r.results || []).length], ["Chance rank (mean)", r.chance_rank_mean], ["Model version", r.model_version]]
     : [["Fixed / random", `${r.n_fixed} / ${r.n_random}`], ["Threshold", "|t| > " + r.leakage_threshold], ["max |t|", r.max_abs_t?.toFixed(3)]];
@@ -1577,7 +1599,7 @@ function renderCPA(r) {
   const t = tabsHtml("cpa", [["map", "Key map"], ["conv", r.curve ? "Convergence" : "Distribution"], ["table", "Coefficients"], ["models", "Compare models"], ["details", "Details"]]);
   const pan = (id, html) => `<div class="tab-panel ${id === t.active ? "active" : ""}" data-t="${id}">${html}</div>`;
   $("an-results").innerHTML = reportHead(r) + `<div class="kpis" id="cpa-kpis"></div>` + t.html +
-    pan("map", `<div class="card"><div class="card-head"><h2>ŝ coefficients</h2><span class="sub">3 polynomials × 256 — click a cell to inspect it</span>
+    pan("map", `<div class="card"><div class="card-head"><h2>ŝ coefficients</h2><span class="sub">3 polynomials × ${r.coefficients_per_poly ?? 256}${(r.coefficients_per_poly ?? 256) < 256 ? " of 256 (partial run)" : ""} — click a cell to inspect it</span>
         <div class="actions"><div class="seg" id="heat-metric"><button data-v="corr">peak |ρ|</button>${oracle ? '<button data-v="rank">true-key rank</button><button data-v="ok">recovered</button>' : ""}</div></div></div>
         <div class="chart" id="cpa-heat"></div></div>
       <div class="split">
@@ -1698,15 +1720,23 @@ async function selectCoef(poly, coeff) {
     if (!c) {
       const f = anFiles.find((x) => x.path === cur.file) || {};
       c = await api("POST", "/api/analysis/correlation_curve", { file: cur.file, model: cur.model, target: cur.target, rprev: cur.rprev || "", poly, coeff,
-        max_traces: cur.model_config?.max_traces_requested || 0, dk_ref: cur.oracle_assisted && f.has_recipe ? "vector_set" : "" });
+        max_traces: cur.model_config?.max_traces_requested || 0, dk_ref: cur.oracle_assisted && f.has_recipe ? "vector_set" : "",
+        features: cur.model_config?.features || "auto", offsets: (cur.model_config?.offsets || []).join(",") });
       ccCache.set(key, c);
     }
     if (!insp || insp.poly !== poly || insp.coeff !== coeff) return;
-    const xs = c.best_curve.map((v, i) => i);
+    // a pipeline model gives one correlation per clock cycle of the word's own schedule, a register
+    // model one per sample of the whole BMUL window
+    const rows = c.unit === "row", xs = rows ? c.rows : c.best_curve.map((v, i) => i);
     const tr = [line(`best guess ${c.best_guess}`, C.s[0], xs, c.best_curve), peak("best", C.s[0], xs, c.best_curve)];
     if (c.oracle_assisted) tr.push(line(`true key ${c.true_value}`, C.s[1], xs, c.true_curve), peak("true", C.s[1], xs, c.true_curve));
-    chart("in-chart", tr, { height: vh(0.30, 240, 380), yRange: [-1, 1], xTitle: "sample within the BMUL " + poly + " window", yTitle: "ρ" });
-    $("in-note").textContent = `${c.n_traces} traces · ${c.n_samples} samples in the window` + (c.oracle_assisted ? ` · true key rank ${c.true_rank} of 3329` : "");
+    chart("in-chart", tr, { height: vh(0.30, 240, 380), yRange: [-1, 1], yTitle: "ρ",
+      xTitle: rows ? `core clock cycle after the read of word ${coeff >> 1} (ŝ${poly}[${coeff}])` : "sample within the BMUL " + poly + " window",
+      xaxis: rows ? { dtick: 1 } : {} });
+    $("in-note").textContent = `${c.n_traces} traces · ` +
+      (rows ? `${c.n_samples} clock cycles carry this coefficient · cycle offset ${c.offset >= 0 ? "+" : ""}${c.offset}`
+            : `${c.n_samples} samples in the window`) +
+      (c.oracle_assisted ? ` · true key rank ${c.true_rank} of 3329` : "");
   } catch (e) { chartEmpty("in-chart", e.message); }
 }
 document.addEventListener("keydown", (e) => {

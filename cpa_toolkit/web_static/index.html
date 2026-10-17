@@ -313,6 +313,19 @@
                 <button class="btn ghost sm icon" id="an-model-reload" title="Re-read cpa_toolkit/models/ (new or edited model files)">↻</button></div>
               <div class="model-detail" id="an-model-detail"></div>
               <div id="an-rprev-wrap"><label class="f">R_prev — what the register held before</label><select id="an-rprev"></select></div>
+              <div id="an-aligned-wrap" class="hidden">
+                <div class="cols-2">
+                  <div><label class="f">Trace feature — one value per core clock cycle</label>
+                    <select id="an-features">
+                      <option value="auto">pca — the probe's per-cycle shape, learned from the traces</option>
+                      <option value="energy">energy — sum of squares (no shape assumed)</option>
+                      <option value="abs">abs — sum of absolute values</option>
+                    </select></div>
+                  <div><label class="f">Cycle offsets to search</label>
+                    <input id="an-offsets" type="text" placeholder="-6:6" title="integer cycles between the RTL schedule and sample 0 of the record; a range (-6:6), a list (-2,0,2) or one value once it is known"></div>
+                </div>
+                <div class="hint">This model has one hypothesis per clock cycle, so it needs the campaign's sample rate and the cycle the record starts at. The offset that wins for most coefficients is reported with the result — put it in here afterwards to make the run faster and the result cleaner.</div>
+              </div>
               <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test this model</button>
                 <button class="btn ghost sm" id="model-save-default">Save as CLI default</button><span class="hint" id="model-status" style="margin:0"></span></div>
               <div class="table-wrap short hidden" id="model-selftest-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody id="model-selftest-table"></tbody></table></div>
@@ -327,6 +340,7 @@
               </div>
               <div class="step-title" id="an-run-step"><span class="n" id="an-run-n">3</span>Run</div>
               <div class="row"><label class="f" style="margin:0">Traces to use</label><input id="an-max-traces" type="text" value="0" title="0 = all" style="width:110px"><span class="hint" style="margin:0">0 = all</span></div>
+              <div class="row" id="an-coeffs-row"><label class="f" style="margin:0">Coefficients per polynomial</label><input id="an-coeffs" type="text" value="0" title="0 = all 256; a smaller number is a quick look at the model before the full 768" style="width:110px"><span class="hint" style="margin:0">0 = all 256</span></div>
               <div class="btn-row"><button class="btn primary" id="an-run">Run analysis</button><span class="hint" id="an-status" style="margin:0"></span></div>
               <div class="progress indet hidden" id="an-progress"><div class="fill"></div><div class="txt"></div></div>
             </div>

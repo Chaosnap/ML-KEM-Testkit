@@ -1569,14 +1569,24 @@ def _dk_ref(file: str, source: str) -> bytes | None:
     return Path(source).read_bytes()
 
 
-def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str,
-                          max_traces: int, dk_source: str, curve: bool) -> None:
+def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str, max_traces: int, dk_source: str,
+                          curve: bool, features: str = "auto", offsets: str = "", coeffs: int = 0) -> None:
     try:
         dk_ref = _dk_ref(file, dk_source)
+        aligned = LM.get(model).aligned
         _update_job(job_id, message="running CPA analysis (%s%s)..." % (model, ", R_prev " + rprev if rprev else ""))
-        summary = CA.run_attack(file, model, rprev, max_traces, None, dk_ref)
+
+        def progress(done, total):
+            _update_job(job_id, progress=done, total=total,
+                        message="correlating %d / %d coefficients" % (done, total))
+
+        summary = CA.run_attack(file, model, rprev, max_traces, None, dk_ref, features, offsets, progress, coeffs)
         summary["model_config"] = {"model": model, "target": summary["target"], "rprev": rprev,
-                                   "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None}
+                                   "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None,
+                                   "coeffs": coeffs}
+        if aligned:
+            summary["model_config"].update(features=summary["features"]["mode"],
+                                           offsets=list(summary["features"]["offsets_searched"]))
         results_csv, curve_csv = _csv_paths(file, job_id)
         CA.write_results_csv(summary["results"], str(results_csv))
         summary["results_csv"] = str(results_csv)
@@ -1584,7 +1594,7 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str,
             if dk_ref is None:
                 raise ValueError("the key-rank curve needs the true key (oracle-assisted evaluation)")
             _update_job(job_id, message="computing key-rank-vs-trace-count curve...")
-            c = CA.run_curve(file, model, rprev, max_traces, dk_ref)
+            c = CA.run_curve(file, model, rprev, max_traces, dk_ref, features=features, offsets=offsets)
             CA.write_curve_csv(c, str(curve_csv))
             c["curve_csv"] = str(curve_csv)
             summary["curve"] = c
@@ -1614,10 +1624,16 @@ def api_analysis_cpa_start(body: dict) -> dict:
         raise ValueError("no such file: %s" % file)
     model, rprev = _model_of(body)
     dk_source = str(body.get("dk_ref", body.get("dk_ref_path", ""))).strip()
+    features = str(body.get("features", "auto") or "auto")
+    offsets = str(body.get("offsets", "") or "")
+    coeffs = int(body.get("coeffs", 0) or 0)
+    if LM.get(model).aligned:          # fail here, not inside the job, on a setting we can check now
+        CA.feature_mode(LM.get(model), features)
+        CA.parse_offsets(offsets)
     job_id = _new_job("cpa_analysis")
     threading.Thread(target=_run_cpa_analysis_job, daemon=True,
                      args=(job_id, file, model, rprev, int(body.get("max_traces", 0) or 0),
-                           dk_source, bool(body.get("curve", False)))).start()
+                           dk_source, bool(body.get("curve", False)), features, offsets, coeffs)).start()
     log("started CPA analysis job %s: %s model=%s%s%s" % (job_id, Path(file).name, model,
         " R_prev=" + rprev if rprev else "", " (oracle-assisted)" if dk_source else ""))
     return {"job_id": job_id}
@@ -1655,7 +1671,8 @@ def api_analysis_correlation_curve(body: dict) -> dict:
         model, rprev = _model_of(body)
         return CA.correlation_curve_for_coefficient(
             file, model, rprev, int(body.get("poly", 0) or 0), int(body.get("coeff", 0) or 0),
-            int(body.get("max_traces", 0) or 0), _dk_ref(file, dk_source))
+            int(body.get("max_traces", 0) or 0), _dk_ref(file, dk_source),
+            str(body.get("features", "auto") or "auto"), str(body.get("offsets", "") or ""))
     except SystemExit as e:
         raise ValueError(str(e))
 
