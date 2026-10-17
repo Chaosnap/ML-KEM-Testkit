@@ -182,6 +182,24 @@ def _series(y: np.ndarray, rate: float, max_points: int) -> dict:
     return {"x": np.round(x, 6).tolist(), "y": np.round(val, 6).tolist()}
 
 
+def _phase_bands(rate: float, n_samples: int) -> list[dict]:
+    """The Decaps phases (config.DECAPS_PHASES, core cycles) mapped onto the
+    captured record, each clipped to it, as ``{label, x, samples}`` (``x`` in the axis unit:
+    microseconds, or samples when the rate is unknown). Lets the
+    charts name a feature outside the BMUL windows (e.g. a TVLA |t| peak in
+    J(z||c) / the re-encryption Keccak, not in a decryption BMUL)."""
+    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
+    scale = (1e6 / rate) if rate else 1.0
+    out = []
+    for label, c0, c1 in getattr(C, "DECAPS_PHASES", []) or []:
+        s0 = min(n_samples, max(0, A.cycle_to_sample(c0, sr)))
+        s1 = min(n_samples, A.cycle_to_sample(c1, sr))
+        if s1 > s0:  # a phase wholly past the record end is not drawn
+            out.append({"label": label, "x": [round(s0 * scale, 6), round(s1 * scale, 6)],
+                        "samples": [int(s0), int(s1)]})
+    return out
+
+
 def _axis(rate: float, n_samples: int) -> dict:
     windows = A.window_sample_ranges(rate, n_samples)
     scale = (1e6 / rate) if rate else 1.0
@@ -190,6 +208,7 @@ def _axis(rate: float, n_samples: int) -> dict:
             "bmul_windows": [[round(a * scale, 6), round(b * scale, 6)] for a, b in shown],
             "bmul_windows_samples": [[int(a), int(b)] for a, b in shown],
             "bmul_outside": len(windows) - len(shown),
+            "phases": _phase_bands(rate, n_samples),
             "duration_us": round(n_samples / rate * 1e6, 3) if rate else None,
             "needed_us": round((C.BMUL_WINDOWS[-1][1] + C.TRIGGER_SLACK_CYCLES) / C.CORE_MHZ, 2)}
 

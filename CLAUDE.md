@@ -10,7 +10,7 @@ ML-KEM-768 (FIPS 203) hardware core for Xilinx Arty boards plus the host tool ch
 - **Board tops** (`hdl/xilinx/`): clocking (MMCM), reset synchronisers and pins only: `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO), `sakura_x` (SAKURA-X / SASEBO-GIII Kintex-7 XC7K160T, 200 MHz diff. clock, external 2.5 V USB-UART on CN8 -- the board USB only reaches the Spartan-6; `scripts/vivado/build_sakura_x.tcl`, `program_sakura_x.tcl`, docs/SAKURA_X.md). `trig_out = STATUS.busy` is the scope trigger.
 - **Timing at 206 MHz**: the core-clock critical paths ran from the read FIFO (`mlkem_word_fifo`) into the sponge / unpack; the FIFO now registers its bank addresses and fill flags (cycle-exact). Any RTL change must keep ACVP cycle counts identical (`make acvp-sim`, compare `data/acvp/*/results.csv`) unless a cycle change is intended.
 - **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference), `models/` (CPA leakage models, one file per model, shared code in `models/base.py`; `cpa_attack.py --model <file name>` and the GUI pick from it), `testvectors`, `acquire_cpa` + `hdf5_trace_store`, `cpa_attack`, `tvla_analysis`, `scope` (VISA: `LeCroyScope` for Teledyne LeCroy MAUI over VICP/VXI-11, `VisaScope` for SCPI; `open_scope()` picks by `SCOPE_DIALECT`, transport by `SCOPE_TRANSPORT`), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
-- **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs).
+- **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs), `scripts/sim/` (analyses of the RTL simulation: `bmul_timing.py` measures the Decaps windows that go into `cpa_toolkit/config.py`).
 
 ## Key design decisions
 
@@ -39,8 +39,7 @@ Vivado builds: `vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tcl
 ## Known gaps
 
 1. The only cocotb testbench is Keccak (`testbench/keccak`); everything else is Icarus / Verilator (`testbench/iverilog`, `units`, `sponge`, `cdc`, `core_sim`).
-2. NTT/INTT cycle windows in `cpa_toolkit/config.py` are not measured yet (only BMUL windows are).
-3. Throughput at 115200 baud is bounded by the 1088-byte ciphertext upload (~94 ms/trace); 1 Mbaud needs `BAUD_RATE` in the tops and the Z7 forwarder divisors changed together.
+2. Throughput at 115200 baud is bounded by the 1088-byte ciphertext upload (~94 ms/trace); 1 Mbaud needs `BAUD_RATE` in the tops and the Z7 forwarder divisors changed together.
 
 ## Conventions
 

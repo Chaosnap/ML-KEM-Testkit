@@ -8,6 +8,12 @@
 //   +jobs=<file>   job list (below)
 //   +out=<file>    results
 //   +prof=<file>   optional: per-instruction cycle profile of every job
+//   +trace=<file>  optional: instruction timeline of every job
+//   +bmul=<file>   optional: BMUL datapath registers, every cycle a BMUL runs
+//   +hd=<file>     optional: toggle count (Hamming distance to the previous
+//                  cycle) of every register in bmul_regs.svh, every cycle a
+//                  BMUL runs; +until=<cycle> stops the +bmul / +hd dumps at
+//                  that busy cycle (4800 = just the three decryption BMULs)
 //
 // Job file (whitespace separated, hex bytes without 0x):
 //   <njobs>
@@ -21,6 +27,26 @@
 // Every busy cycle is counted exactly once: C_FETCH / C_DECODE / C_NEXT are
 // sequencer overhead, all other states are execution of the instruction at
 // pc. pc = all-ones is the start-up C_NEXT that loads the program entry.
+//
+// Timeline file, one line per pc change (cycle = busy cycles before it, so
+// cycle 0 is the cycle trig_out = STATUS.busy rises in, and CYCLE_COUNT
+// counts the same cycles), plus one line per poly ALU start:
+//   I <job> <cycle> <pc> <op>
+//   A <job> <cycle> <alu_op> <slot_a> <slot_b> <slot_c> <acc>
+//
+// BMUL file, one line per busy cycle in which the poly ALU runs a BMUL
+// (register values during that cycle, hex):
+//   B <job> <cycle> <ra_en> <ra_addr> <rb_en> <rb_we> <rb_addr> <la> <lb>
+//     <mul0 a> <mul0 b> <mul0 p1> <mul1 a> <mul1 b> <mul1 p1>
+//     <p00> <p11> <h0> <h1d4> <wb> <wbd> <rb_din>
+// Used by scripts/sim/bmul_timing.py to measure the BMUL windows and the
+// pipeline stage of every register the leakage models name.
+//
+// HD file: "REG <i> <name> <bits>" header lines, then one line per BMUL cycle
+//   H <job> <cycle> <hd of reg 0> <hd of reg 1> ...
+// (the cycle's register values against the previous cycle's, i.e. the flops
+// that toggle at the clock edge ending that cycle). Used by
+// scripts/sim/register_leakage.py.
 //
 // Input and output offsets are taken from the reset values of DATA_IN_ADDR
 // and DATA_OUT_ADDR, so the testbench follows the buffer layout of the RTL.
@@ -118,10 +144,70 @@ module tb_core;
     end
 
     // ---------------------------------------------------------------------
+    // Instruction timeline and BMUL datapath dump (same busy cycles).
+    // ---------------------------------------------------------------------
+    int          ft = 0, fb = 0, fh = 0, job_idx = 0;
+    int unsigned busy_cyc = 0;
+    int          last_pc = -1;
+    int unsigned dump_until = 32'hFFFF_FFFF;
+
+    // The registers of bmul_regs.svh as 64-bit values (NREG of them).
+    localparam int NREG = 0
+`define R(NAME, EXPR, W) + 1
+`include "bmul_regs.svh"
+`undef R
+    ;
+    logic [63:0] reg_prev [NREG];
+
+    function automatic void get_regs(output logic [63:0] v [NREG]);
+        int k = 0;
+`define R(NAME, EXPR, W) v[k] = 64'(EXPR); k++;
+`include "bmul_regs.svh"
+`undef R
+    endfunction
+
+    task automatic write_reg_header(input int f);
+        int k = 0;
+`define R(NAME, EXPR, W) $fwrite(f, "REG %0d %s %0d\n", k, NAME, W); k++;
+`include "bmul_regs.svh"
+`undef R
+    endtask
+
+    always @(posedge clk) begin
+        if (profiling && dut.u_ctrl.status_busy) begin
+            if (ft != 0 && int'(dut.u_ctrl.pc) != last_pc) begin
+                last_pc = int'(dut.u_ctrl.pc);
+                $fwrite(ft, "I %0d %0d %0d %0d\n", job_idx, busy_cyc, last_pc, dut.u_ctrl.i_op);
+            end
+            if (ft != 0 && dut.u_alu.start)
+                $fwrite(ft, "A %0d %0d %0d %0d %0d %0d %0d\n", job_idx, busy_cyc, dut.u_alu.op,
+                        dut.u_alu.slot_a, dut.u_alu.slot_b, dut.u_alu.slot_c, dut.u_alu.acc);
+            if (fh != 0 && busy_cyc < dump_until && dut.u_alu.is_bmul && (dut.u_alu.running || dut.u_alu.pv != '0)) begin
+                logic [63:0] cur [NREG];
+                get_regs(cur);
+                $fwrite(fh, "H %0d %0d", job_idx, busy_cyc);
+                for (int i = 0; i < NREG; i++)
+                    $fwrite(fh, " %0d", $countones(cur[i] ^ reg_prev[i]));
+                $fwrite(fh, "\n");
+            end
+            if (fh != 0) get_regs(reg_prev);
+            if (fb != 0 && busy_cyc < dump_until && dut.u_alu.is_bmul && (dut.u_alu.running || dut.u_alu.pv != '0))
+                $fwrite(fb, "B %0d %0d %0d %h %0d %0d %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h\n",
+                        job_idx, busy_cyc, dut.u_alu.ra_en, dut.u_alu.ra_addr, dut.u_alu.rb_en,
+                        dut.u_alu.rb_we, dut.u_alu.rb_addr, dut.u_alu.la, dut.u_alu.lb,
+                        dut.u_alu.u_mul0.a0, dut.u_alu.u_mul0.b0, dut.u_alu.u_mul0.p1,
+                        dut.u_alu.u_mul1.a0, dut.u_alu.u_mul1.b0, dut.u_alu.u_mul1.p1,
+                        dut.u_alu.p00, dut.u_alu.p11, dut.u_alu.h0, dut.u_alu.h1d[4],
+                        dut.u_alu.wb, dut.u_alu.wbd, dut.u_alu.rb_din);
+            busy_cyc++;
+        end
+    end
+
+    // ---------------------------------------------------------------------
     // Job runner.
     // ---------------------------------------------------------------------
     logic [7:0]  in_bytes [0:MAX_IN-1];
-    string       jobs_file, out_file, prof_file, hex;
+    string       jobs_file, out_file, prof_file, trace_file, bmul_file, hd_file, hex;
     int          fj, fo, fp, njobs, op, level, in_len, r, t;
     logic [31:0] in_addr, out_addr, status, cycles, err, out_len, w;
     bit          do_prof;
@@ -132,6 +218,13 @@ module tb_core;
             $fatal(1);
         end
         do_prof = $value$plusargs("prof=%s", prof_file);
+        if ($value$plusargs("trace=%s", trace_file)) ft = $fopen(trace_file, "w");
+        if ($value$plusargs("bmul=%s", bmul_file)) fb = $fopen(bmul_file, "w");
+        if ($value$plusargs("hd=%s", hd_file)) begin
+            fh = $fopen(hd_file, "w");
+            write_reg_header(fh);
+        end
+        if ($value$plusargs("until=%d", dump_until)) ;
         fj = $fopen(jobs_file, "r");
         fo = $fopen(out_file, "w");
         if (fj == 0 || fo == 0) begin
@@ -171,7 +264,10 @@ module tb_core;
                 prof_ovh[i]  = 0;
                 prof_op[i]   = 8'h00;
             end
-            profiling = do_prof;
+            job_idx   = j;
+            busy_cyc  = 0;
+            last_pc   = -1;
+            profiling = do_prof || ft != 0 || fb != 0 || fh != 0;
             axi_write(16'h0000, 32'h1);
             t = 0;
             do begin
@@ -208,6 +304,9 @@ module tb_core;
 
         $fclose(fo);
         if (do_prof) $fclose(fp);
+        if (ft != 0) $fclose(ft);
+        if (fb != 0) $fclose(fb);
+        if (fh != 0) $fclose(fh);
         $display("TB_CORE DONE %0d jobs", njobs);
         $finish;
     end

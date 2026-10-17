@@ -322,6 +322,9 @@ function layout(o = {}) {
 }
 // Plots go into an inner div with an explicit CSS height: with responsive: true, Plotly's resize
 // handler drops layout.height and autosizes to the div, so the div itself must carry the height.
+// Chart height follows the window (a fraction of its height, clamped), so a 1080p screen
+// uses its height and a laptop does not need a scroll to see a whole card.
+const vh = (frac, min, max) => Math.round(Math.max(min, Math.min(max, window.innerHeight * frac)));
 function plotDiv(el) {
   if (typeof el === "string") el = $(el);
   let gd = el.querySelector(":scope > .plot");
@@ -362,6 +365,34 @@ function windowBands(windows) {
     annotations.push({ x: (w[0] + w[1]) / 2, y: 1, yref: "paper", text: "BMUL " + i, showarrow: false, yanchor: "top", font: { size: 9, color: C.sub } });
   });
   return { shapes, annotations };
+}
+// Decaps phases (axis.phases from the server): faint dotted dividers + a label
+// along the bottom, so a feature outside the BMUL windows can be named (the
+// decryption BMULs are the CPA target; a TVLA |t| peak falls in J(z‖c) / the
+// re-encryption Keccak). `key` is "x" (the axis unit: µs, or samples when the rate
+// is unknown) or "samples" (TVLA charts, whose x is the sample index).
+function phaseBands(phases, key) {
+  const shapes = [], annotations = [];
+  const span = Math.max(0, ...(phases || []).map((p) => p[key][1]));   // the visible record
+  (phases || []).forEach((p) => {
+    const a = p[key][0], b = p[key][1];
+    shapes.push({ type: "line", xref: "x", x0: a, x1: a, yref: "paper", y0: 0, y1: 1, line: { color: C.grid, width: 1, dash: "dot" }, layer: "below" });
+    // a phase too narrow to hold its name on this record keeps its divider but not its label
+    if (b - a >= 0.05 * span)
+      annotations.push({ x: (a + b) / 2, y: 0.015, yref: "paper", text: p.label, showarrow: false, yanchor: "bottom", xanchor: "center", font: { size: 8.5, color: C.sub } });
+  });
+  return { shapes, annotations };
+}
+// BMUL windows + Decaps phases of a trace axis, for charts whose x is the axis unit.
+const axisBands = (axis) => mergeBands(windowBands(axis.bmul_windows), phaseBands(axis.phases, "x"));
+// Merge any number of {shapes, annotations}.
+function mergeBands(...bs) {
+  return { shapes: bs.flatMap((b) => b.shapes || []), annotations: bs.flatMap((b) => b.annotations || []) };
+}
+// The phase (axis.phases label) a sample index falls in, or "".
+function phaseAt(phases, sample) {
+  const p = (phases || []).find((q) => sample >= q.samples[0] && sample <= q.samples[1]);
+  return p ? p.label : "";
 }
 const xTitle = (axis) => (axis && axis.unit === "us" ? "time after trigger (µs)" : "sample");
 // First sample relative to the trigger (seconds) -> "+0.0 ns" / "−1.000 µs".
@@ -898,9 +929,9 @@ function liveDraw(r) {
   if ($("live-show-last").checked) tr.push(line(`trace #${r.index}`, C.s[0], r.last.x, r.last.y, { width: 1, opacity: 0.8 }));
   const diff = tvla && $("live-show-diff").checked && r.mean_diff;
   if (diff) tr.push(line("fixed − random", C.s[3], r.mean_diff.x, r.mean_diff.y, { yaxis: "y2" }));
-  const wb = windowBands(r.axis.bmul_windows);
+  const wb = axisBands(r.axis);
   $("live-sub").textContent = `trace #${r.index}${r.n_bad ? ` · ${r.n_bad} failed check(s)` : ""}`;
-  chart("live-chart", tr, { height: 380, xTitle: xTitle(r.axis), yTitle: "amplitude", y2: !!diff, y2Title: "mean difference",
+  chart("live-chart", tr, { height: vh(0.36, 280, 480), xTitle: xTitle(r.axis), yTitle: "amplitude", y2: !!diff, y2Title: "mean difference",
     shapes: wb.shapes, annotations: wb.annotations, uirevision: "live" });
 }
 let trigOk = null;   // last trigger check of this session: true / false / null (not run)
@@ -939,8 +970,8 @@ function capDraw() {
   const last = captures[captures.length - 1];
   const tr = captures.map((c, i) => line(`capture ${i + 1} · ${new Date(c.captured_unix * 1000).toLocaleTimeString()}`, C.s[(i + 4) % 8],
     c.trace.x, c.trace.y, { width: c === last ? 1.5 : 1, opacity: c === last ? 1 : 0.5 }));
-  const wb = windowBands(last.axis.bmul_windows);
-  chart("cap-chart", tr, { height: 340, xTitle: xTitle(last.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations, uirevision: "cap" });
+  const wb = axisBands(last.axis);
+  chart("cap-chart", tr, { height: vh(0.34, 260, 440), xTitle: xTitle(last.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations, uirevision: "cap" });
 }
 
 // =====================================================================================
@@ -1133,7 +1164,7 @@ async function libPreview(path) {
     const tr = [];
     const col = { all: ["#38bdf82e", C.s[0]], fixed: ["#4ade802e", C.s[1]], random: ["#f871712e", C.s[2]] };
     Object.entries(r.stats || {}).forEach(([n, s]) => { const [f, c] = col[n] || col.all; tr.push(...band(`${n} ±σ`, f, s.x, s.lo, s.hi), line(`${n} mean (n=${s.n})`, c, s.x, s.mean)); });
-    const wb = windowBands(r.axis.bmul_windows);
+    const wb = axisBands(r.axis);
     chart("ld-preview", tr, { height: 220, xTitle: xTitle(r.axis), shapes: wb.shapes, annotations: wb.annotations, margin: { l: 48, r: 10, t: 6, b: 38 } });
   } catch (e) { chartEmpty("ld-preview", e.message); }
 }
@@ -1161,8 +1192,8 @@ function tvDraw() {
   const tr = [], col = { all: ["#38bdf826", C.s[0]], fixed: ["#4ade8026", C.s[1]], random: ["#f8717126", C.s[2]] };
   Object.entries(r.stats || {}).forEach(([n, s]) => { const [f, c] = col[n] || col.all; tr.push(...band(`${n} ±σ (n=${s.n})`, f, s.x, s.lo, s.hi), line(`${n} mean`, c, s.x, s.mean, { width: 1.8 })); });
   r.traces.forEach((t, i) => tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[(i + 3) % 8], t.x, t.y, { width: 1, opacity: 0.85 })));
-  const wb = $("tv-bands").checked ? windowBands(r.axis.bmul_windows) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: 420, xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
+  const wb = $("tv-bands").checked ? axisBands(r.axis) : { shapes: [], annotations: [] };
+  chart("tv-chart", tr, { height: vh(0.44, 300, 560), xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
   $("tv-note").textContent = `${r.traces.length} trace(s) of ${r.n_completed} · ${rateTxt(r.axis.sample_rate_hz)} · each line is a min/max envelope (narrow peaks are kept) · ` +
     r.traces.map((t) => `#${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"}`).join(", ");
 }
@@ -1238,8 +1269,8 @@ function tvFrame(p) {
   const prev = p.buf.get(p.pos - 1);   // the previous frame, faint: a little persistence, like a scope
   if (prev) tr.push(line(`#${prev.index}`, C.s[0], prev.x, prev.y, { width: 1, opacity: 0.18 }));
   tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[0], t.x, t.y, { width: 1.1 }));
-  const wb = $("tv-bands").checked ? windowBands(p.axis.bmul_windows) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: 420, xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
+  const wb = $("tv-bands").checked ? axisBands(p.axis) : { shapes: [], annotations: [] };
+  chart("tv-chart", tr, { height: vh(0.44, 300, 560), xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
     annotations: wb.annotations, uirevision: "tv-play:" + p.file });
   const n = p.end !== null ? p.end : p.n;
   $("tv-pos").max = Math.max(0, n - 1); $("tv-pos").value = p.pos;
@@ -1548,9 +1579,11 @@ function renderCPA(r) {
   $("an-results").innerHTML = reportHead(r) + `<div class="kpis" id="cpa-kpis"></div>` + t.html +
     pan("map", `<div class="card"><div class="card-head"><h2>ŝ coefficients</h2><span class="sub">3 polynomials × 256 — click a cell to inspect it</span>
         <div class="actions"><div class="seg" id="heat-metric"><button data-v="corr">peak |ρ|</button>${oracle ? '<button data-v="rank">true-key rank</button><button data-v="ok">recovered</button>' : ""}</div></div></div>
-        <div class="chart" id="cpa-heat"></div>
-        <table class="t poly-sum" id="cpa-poly" style="margin-top:10px"></table></div>
-      <div class="card" id="cpa-insp"><div class="empty"><div class="t">Coefficient inspector</div>Click a cell above (then use ← → ↑ ↓) to see that coefficient's correlation over time.</div></div>`) +
+        <div class="chart" id="cpa-heat"></div></div>
+      <div class="split">
+        <div class="card"><div class="card-head"><h3>Per polynomial</h3></div><table class="t poly-sum" id="cpa-poly"></table></div>
+        <div class="card" id="cpa-insp"><div class="empty"><div class="t">Coefficient inspector</div>Click a cell above (then use ← → ↑ ↓) to see that coefficient's correlation over time.</div></div>
+      </div>`) +
     pan("conv", `<div class="card"><div class="card-head"><h2>${r.curve ? "Key rank vs trace count" : "Peak |ρ| of the best guess"}</h2>
         <span class="sub">${r.curve ? "how many traces the attack needs (oracle-assisted)" : "blind run: no key to rank against — enable scoring + MTD for a convergence curve"}</span>
         ${r.curve ? '<div class="actions"><button class="btn ghost sm" id="cpa-dl-curve">CSV</button></div>' : ""}</div><div class="chart" id="cpa-side"></div></div>
@@ -1672,7 +1705,7 @@ async function selectCoef(poly, coeff) {
     const xs = c.best_curve.map((v, i) => i);
     const tr = [line(`best guess ${c.best_guess}`, C.s[0], xs, c.best_curve), peak("best", C.s[0], xs, c.best_curve)];
     if (c.oracle_assisted) tr.push(line(`true key ${c.true_value}`, C.s[1], xs, c.true_curve), peak("true", C.s[1], xs, c.true_curve));
-    chart("in-chart", tr, { height: 240, yRange: [-1, 1], xTitle: "sample within the BMUL " + poly + " window", yTitle: "ρ" });
+    chart("in-chart", tr, { height: vh(0.30, 240, 380), yRange: [-1, 1], xTitle: "sample within the BMUL " + poly + " window", yTitle: "ρ" });
     $("in-note").textContent = `${c.n_traces} traces · ${c.n_samples} samples in the window` + (c.oracle_assisted ? ` · true key rank ${c.true_rank} of 3329` : "");
   } catch (e) { chartEmpty("in-chart", e.message); }
 }
@@ -1732,27 +1765,33 @@ async function renderTVLA(r) {
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
   const th = r.leakage_threshold, leak = r.leakage_detected;
   const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz) * 1e6 : null);
-  kpis("tv-kpis", [["max |t|", r.max_abs_t.toFixed(2), `threshold ${th}`, leak ? "bad" : "good"],
-    ["leakage", leak ? "detected" : "not detected", leak ? "first-order leakage present" : "at this trace count", leak ? "bad" : "good"],
-    ["peak at", `sample ${r.max_abs_t_sample}`, toUs(r.max_abs_t_sample) !== null ? toUs(r.max_abs_t_sample).toFixed(3) + " µs" : ""],
-    ["traces to detection", r.traces_to_detection ?? "not reached"], ["classes", `${r.n_fixed} / ${r.n_random}`, "fixed / random"]]);
   try { r._axis = (await api("POST", "/api/analysis/raw_traces", { file: r.file, count: 1, max_points: 500 })).axis; } catch (e) { r._axis = null; }
   if (cur !== r) return;   // another report was opened meanwhile
+  r._peakPhase = r._axis ? phaseAt(r._axis.phases, r.max_abs_t_sample) : "";
+  kpis("tv-kpis", [["max |t|", r.max_abs_t.toFixed(2), `threshold ${th}`, leak ? "bad" : "good"],
+    ["leakage", leak ? "detected" : "not detected", leak ? "first-order leakage present" : "at this trace count", leak ? "bad" : "good"],
+    ["peak at", `sample ${r.max_abs_t_sample}`, (toUs(r.max_abs_t_sample) !== null ? toUs(r.max_abs_t_sample).toFixed(3) + " µs" : "") + (r._peakPhase ? " · " + r._peakPhase : "")],
+    ["traces to detection", r.traces_to_detection ?? "not reached"], ["classes", `${r.n_fixed} / ${r.n_random}`, "fixed / random"]]);
   $("an-tabs").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => showTab("tvla", b.dataset.t, drawTVLATab)));
   anDrawn.add(t.active); drawTVLATab(t.active);
 }
 function drawTVLATab(t) {
   const r = cur, th = r.leakage_threshold;
   const wins = r._axis ? r._axis.bmul_windows_samples || [] : [];
-  const wb = windowBands(wins);
+  const phases = r._axis ? r._axis.phases || [] : [];
+  const wb = mergeBands(windowBands(wins), phaseBands(phases, "samples"));
   const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz) * 1e6 : null);
   if (t === "t") {
     const tEl = $("tvla-t"), absT = r.t_curve.map(Math.abs);
-    const zooms = [["all", "All"]].concat(wins.map((w, i) => [String(i), "BMUL " + i]));
-    $("tvla-zoom").innerHTML = zooms.map(([v, l], i) => `<button data-v="${v}" class="${i === 0 ? "active" : ""}">${l}</button>`).join("");
-    seg("tvla-zoom", (v) => Plotly.relayout(plotDiv(tEl), v === "all" ? { "xaxis.autorange": true } : { "xaxis.range": [wins[+v][0], wins[+v][1]] }));
+    // zoom targets: the whole record, each BMUL window (the CPA target), or a Decaps phase
+    const zr = { all: null };
+    wins.forEach((w, i) => { zr["b" + i] = w; });
+    const zooms = [["all", "All"]].concat(wins.map((w, i) => ["b" + i, "BMUL " + i]));
+    phases.filter((p) => /^(J|re-enc)/.test(p.label)).forEach((p, i) => { zr["p" + i] = p.samples; zooms.push(["p" + i, p.label]); });
+    $("tvla-zoom").innerHTML = zooms.map(([v, l], i) => `<button data-v="${v}" class="${i === 0 ? "active" : ""}">${esc(l)}</button>`).join("");
+    seg("tvla-zoom", (v) => Plotly.relayout(plotDiv(tEl), zr[v] ? { "xaxis.range": zr[v] } : { "xaxis.autorange": true }));
     chart(tEl, [line("|t|", C.s[0], r.sample_indices, absT), peak("|t|", C.s[2], r.sample_indices, absT)],
-      { height: 300, xTitle: "sample", yTitle: "|t|", showlegend: false, hovermode: "x",
+      { height: vh(0.44, 300, 600), xTitle: "sample", yTitle: "|t|", showlegend: false, hovermode: "x",
         shapes: wb.shapes.concat([hLine(th, C.s[3])]), annotations: wb.annotations.concat([hLabel(th, C.s[3], "|t| = " + th)]) })
       .then((gd) => gd.on("plotly_click", (e) => {
         const pt = e.points.find((p) => p.curveNumber === 0);
@@ -1760,18 +1799,19 @@ function drawTVLATab(t) {
         const i = pt.pointIndex, s = r.sample_indices[i], fm = r.fixed_mean_curve[i], rm = r.random_mean_curve[i];
         if (fm === undefined) return;
         const inWin = wins.findIndex((w) => s >= w[0] && s <= w[1]);
-        $("tvla-readout").textContent = `sample ${s}${toUs(s) !== null ? ` (${toUs(s).toFixed(3)} µs)` : ""}${inWin >= 0 ? ` · inside BMUL ${inWin}` : ""} · t = ${r.t_curve[i].toFixed(2)}` +
+        const ph = phaseAt(phases, s);
+        $("tvla-readout").textContent = `sample ${s}${toUs(s) !== null ? ` (${toUs(s).toFixed(3)} µs)` : ""}${inWin >= 0 ? ` · inside BMUL ${inWin}` : ph ? ` · in ${ph}` : ""} · t = ${r.t_curve[i].toFixed(2)}` +
           ` · fixed mean ${fm.toPrecision(4)} · random mean ${rm.toPrecision(4)} · difference ${(fm - rm).toPrecision(3)}`;
       }));
   } else if (t === "means") {
     const diff = r.fixed_mean_curve.map((v, i) => v - r.random_mean_curve[i]);
     chart("tvla-means", [line("fixed", C.s[1], r.sample_indices, r.fixed_mean_curve), line("random", C.s[2], r.sample_indices, r.random_mean_curve),
       line("fixed − random", C.s[3], r.sample_indices, diff, { yaxis: "y2" })],
-      { height: 300, xTitle: "sample", y2: true, y2Title: "difference", shapes: wb.shapes, annotations: wb.annotations });
+      { height: vh(0.44, 300, 600), xTitle: "sample", y2: true, y2Title: "difference", shapes: wb.shapes, annotations: wb.annotations });
   } else if (t === "det") {
     const det = r.detection_curve || [];
     chart("tvla-det", [line("max |t|", C.s[0], det.map((c) => c.n_traces), det.map((c) => c.max_abs_t))],
-      { height: 300, xTitle: "trace count", yTitle: "max |t|", showlegend: false, shapes: [hLine(th, C.s[3])], annotations: [hLabel(th, C.s[3], "threshold")] });
+      { height: vh(0.40, 280, 520), xTitle: "trace count", yTitle: "max |t|", showlegend: false, shapes: [hLine(th, C.s[3])], annotations: [hLabel(th, C.s[3], "threshold")] });
   } else if (t === "details") kv("an-details-kv", detailsKv(r));
 }
 

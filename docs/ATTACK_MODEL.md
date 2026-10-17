@@ -161,18 +161,23 @@ c1 = a0·b1 + a1·b0 = (a0+a1)(b0+b1) − a0·b0 − a1·b1
 
 ### 4.3 三条攻击窗口在核心周期里的具体位置
 
-每条 BMUL 处理 128 个字（256 个系数两两一对），每 2 个周期发一个字的读请求，加上
-21 拍流水线深度排空，总长 128×2 + 21 ≈ 281 个周期。这三条窗口不是猜的，是跑一次
-Decaps 的周期精确 Verilator 仿真（`testbench/core_sim`）、从波形的微码 `pc` 列里数出来的：
+每条 BMUL 处理 128 个字（256 个系数两两一对），每 2 个周期发一个字的读请求，再加上流水线排空，数据通路连续活动 276 个周期。这三条窗口不是猜的，是跑一次 Decaps 的周期精确 Verilator 仿真（`testbench/core_sim`，`+trace=` 指令时间线和 `+bmul=` 数据通路转储）量出来的，用 `scripts/sim/bmul_timing.py` 解析，两次不同 Decaps 的结果逐周期一致（核心是常数时间）：
 
 ```
-  cycle 1289-1570: BMUL s7*s6->s3        (ŝ₀∘û₀, poly=0)
-  cycle 2855-3136: BMUL s7*s6->s3 (acc)  (ŝ₁∘û₁, poly=1)
-  cycle 4421-4702: BMUL s7*s6->s3 (acc)  (ŝ₂∘û₂, poly=2)
+  BMUL s7*s6->s3        (ŝ₀∘û₀, poly=0)   数据通路活动 1289-1564，第一个字的读地址在周期 1290
+  BMUL s7*s6->s3 (acc)  (ŝ₁∘û₁, poly=1)   数据通路活动 2855-3130，第一个字的读地址在周期 2856
+  BMUL s7*s6->s3 (acc)  (ŝ₂∘û₂, poly=2)   数据通路活动 4421-4696，第一个字的读地址在周期 4422
 ```
 
-抄进了 `config.py: BMUL_WINDOWS`，核心时钟 206.25 MHz。RTL 或微码改了之后必须重新
-跑一次 `tvla_sim.py` 核对（这三个数字和 `mlkem_ucode_rom.sv` 的内容是绑定的）。
+周期从 0 数起：周期 0 就是 `trig_out`（= STATUS.busy）升起的那个核心时钟周期，和 CYCLE_COUNT 数的是同一批周期。抄进了 `config.py: BMUL_WINDOWS`（窗口比活动多留了几个周期给写回的尾巴），核心时钟 206.25 MHz。同一次测量还给出：
+
+```
+  NTT û₀ 146-1143, NTT û₁ 1712-2709, NTT û₂ 3278-4275   （config.NTT_WINDOWS_CYCLES）
+  INTT   4701-5841                                         （config.INTT_WINDOW_CYCLES）
+  G(m′‖h) 6519-6623, J(z‖c) 6623-7375, 重加密 7375-25795, 比较/选择 25795-26367   （config.DECAPS_PHASES）
+```
+
+这些不是 CPA 的目标（û 是公开的，ŝ 不是 NTT/INTT 的操作数），记下来是为了在 trace 上**给任何一个特征命名**：例如 TVLA 的最强峰几乎一定在 J(z‖c)（整条密文被 Keccak 吸收）或重加密里，不在解密的 BMUL 里（见 [TRACE_ACQUISITION.md](TRACE_ACQUISITION.md) 1.3 节）。RTL 或微码改了之后要重新跑一次 `scripts/sim/bmul_timing.py`，把它打印的 config.py 块抄进去（这几个数字和 `mlkem_ucode_rom.sv` 的内容是绑定的）。
 
 ---
 
