@@ -1195,6 +1195,7 @@ dependencies = [
 
 [package.optional-dependencies]
 scope = [
+    { name = "pyvicp" },
     { name = "pyvisa", version = "1.14.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pyvisa", version = "1.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pyvisa-py", version = "0.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1207,6 +1208,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9.4" },
     { name = "numpy", specifier = ">=2.0.2" },
     { name = "pyserial", specifier = "==3.5" },
+    { name = "pyvicp", marker = "extra == 'scope'", specifier = ">=1.1" },
     { name = "pyvisa", marker = "extra == 'scope'", specifier = ">=1.14" },
     { name = "pyvisa-py", marker = "extra == 'scope'", specifier = ">=0.7" },
 ]
@@ -1780,6 +1782,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload_time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload_time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
+name = "pyvicp"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/a8/435c745cc104d5dc9cb9616f91460afa81ef61fb93f96e575355bc93e8be/pyvicp-1.1.0.tar.gz", hash = "sha256:0ceab011ee904a9b1cf9b7e017195ba36907180e9fbf390fe4a716c09d8310bb", size = 22847, upload_time = "2022-10-11T22:23:15.56Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/24/54cd0c7ae6558dd8b593a84a4a01e1b8cf809a2dbe55556017cabdc90ac0/pyvicp-1.1.0-py3-none-any.whl", hash = "sha256:9f97b316f3550841f81f924048f53a0fb4b04a6e9f5b2c862489ea8cca1e4601", size = 22080, upload_time = "2022-10-11T22:23:13.732Z" },
 ]
 
 [[package]]

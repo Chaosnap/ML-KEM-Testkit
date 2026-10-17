@@ -10,12 +10,14 @@ dependencies = [
     "pyserial==3.5",
 ]
 
-# Oscilloscope control over VISA/SCPI (only needed with a real scope):
+# Oscilloscope control over VISA (only needed with a real scope):
 #   uv sync --extra scope
+# pyvicp: Teledyne LeCroy's VICP transport for pyvisa-py ("VICP::<ip>::INSTR").
 # scripts/board/boot_arty_z7_ps.py declares its own dependency (pyftdi) inline;
 # `uv run` installs it on demand.
 [project.optional-dependencies]
 scope = [
     "pyvisa>=1.14",
     "pyvisa-py>=0.7",
+    "pyvicp>=1.1",
 ]

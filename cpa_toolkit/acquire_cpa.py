@@ -267,10 +267,9 @@ def _open_board_and_scope(args):
     if ip == C.SCOPE_PLACEHOLDER_IP:
         print("WARNING: SCOPE_IP is still the config.py placeholder (%s) -- edit config.py or "
               "pass --ip <real address>." % ip, file=sys.stderr)
-    resource = S.resource_for(ip)
-    print("connecting to scope at", resource, "...")
-    sc = S.VisaScope(resource, channel=args.channel or C.SCOPE_CHANNEL,
-                     points=args.samples, dialect=args.dialect or C.SCOPE_DIALECT)
+    print("connecting to scope at", S.resource_for(ip, args.transport), "...")
+    sc = S.open_scope(ip, channel=args.channel, dialect=args.dialect, points=args.samples,
+                      transport=args.transport)
     sc.configure()
     print("scope:", sc.info())
     return target, sc
@@ -339,8 +338,10 @@ def main() -> None:
     def add_hw(sp):
         sp.add_argument("-p", "--port", required=True)
         sp.add_argument("--ip", default="", help="scope IP; default is SCOPE_IP in config.py")
-        sp.add_argument("--channel", default="")
-        sp.add_argument("--dialect", default="", choices=["", "default", "tektronix"])
+        sp.add_argument("--channel", default="", help="default is SCOPE_CHANNEL in config.py (LeCroy: C1..C4)")
+        sp.add_argument("--dialect", default="", choices=("",) + S.DIALECT_NAMES)
+        sp.add_argument("--transport", default="", choices=[""] + list(C.SCOPE_RESOURCES),
+                        help="default is SCOPE_TRANSPORT in config.py (vicp / vxi11 / socket)")
         sp.add_argument("--samples", type=int, default=0, help="0 = the scope's record length, measured with one capture")
         sp.add_argument("--resend-dk-every", type=int, default=50)
         sp.add_argument("--quiet", action="store_true")

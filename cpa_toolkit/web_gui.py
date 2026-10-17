@@ -201,6 +201,7 @@ def api_state(_body: dict) -> dict:
         "defaults": {"port": C.SERIAL_PORT, "baud": C.BAUD, "scope_ip": C.SCOPE_IP,
                      "scope_placeholder_ip": C.SCOPE_PLACEHOLDER_IP, "scope_channel": C.SCOPE_CHANNEL,
                      "scope_dialect": C.SCOPE_DIALECT, "scope_timeout_ms": C.SCOPE_TIMEOUT_MS,
+                     "scope_transport": C.SCOPE_TRANSPORT, "scope_resources": C.SCOPE_RESOURCES,
                      "core_mhz": C.CORE_MHZ},
         "registers": sorted(T.REG),
     }
@@ -499,10 +500,14 @@ def api_scope_connect(body: dict) -> dict:
         log("[warn] SCOPE_IP is still the config.py placeholder (%s) -- this will just time out" % ip)
     params = {"ip": ip, "channel": body.get("channel") or C.SCOPE_CHANNEL,
               "dialect": body.get("dialect") or C.SCOPE_DIALECT, "points": int(body.get("points") or 0),
-              "timeout_ms": int(body.get("timeout_ms") or C.SCOPE_TIMEOUT_MS)}
+              "timeout_ms": int(body.get("timeout_ms") or C.SCOPE_TIMEOUT_MS),
+              "transport": body.get("transport") or C.SCOPE_TRANSPORT}
+    if params["dialect"] not in S.DIALECT_NAMES:
+        raise ValueError("unknown scope dialect %r" % params["dialect"])
+    resource = S.resource_for(ip, params["transport"])        # also rejects an unknown transport
     if _busy():
         raise ValueError("a job is using the scope -- stop it first")
-    log("connecting to scope %s ..." % S.resource_for(ip))
+    log("connecting to scope %s (%s driver) ..." % (resource, params["dialect"]))
     return scope_conn.connect(params, CN.open_scope)
 
 
@@ -512,9 +517,12 @@ def api_scope_disconnect(_body: dict) -> dict:
 
 
 def api_scope_save_config(body: dict) -> dict:
+    transport = str(body.get("transport") or C.SCOPE_TRANSPORT).strip()
+    if transport not in C.SCOPE_RESOURCES:
+        raise ValueError("unknown scope transport %r" % transport)
     save_config_values(SCOPE_IP=body["ip"].strip(), SCOPE_CHANNEL=body["channel"].strip(),
-                       SCOPE_DIALECT=body["dialect"].strip())
-    log("saved SCOPE_IP / SCOPE_CHANNEL / SCOPE_DIALECT to config.py")
+                       SCOPE_DIALECT=body["dialect"].strip(), SCOPE_TRANSPORT=transport)
+    log("saved SCOPE_IP / SCOPE_CHANNEL / SCOPE_DIALECT / SCOPE_TRANSPORT to config.py")
     return {}
 
 
@@ -955,25 +963,39 @@ def api_acquire_capture_one(body: dict) -> dict:
     k_ok = out.output == vs.k[0].tobytes()
     log("capture: %s, K %s, %d samples @ %s Sa/s" % (out.describe(), "ok" if k_ok else "MISMATCH",
                                                      t.size, ("%.4g" % rate) if rate else "?"))
+    _, start_ok, start_detail = _record_start_check(sc)
+    query = getattr(sc, "record_start_s", None)
     return {"trace": _series(t, rate, max_points), "axis": _axis(rate, int(t.size)),
+            "record_start": {"s": query() if callable(query) else None, "ok": start_ok, "detail": start_detail},
             "cycles": out.cycles, "describe": out.describe(), "k_match": k_ok,
             "stats": {"min": float(t.min()), "max": float(t.max()), "mean": float(t.mean()),
                       "std": float(t.std()), "n": int(t.size)},
             "captured_unix": time.time()}
 
 
+#: Where trig_out comes out, for the trigger-check messages.
+TRIG_PINS = ("Arty A7: Pmod JA1, Arty Z7: Pmod JA3 -- 3.3 V, level about 1.6 V; "
+             "SAKURA-X: CN8 pin 3, ground on CN8 pin 11 -- 2.5 V, level about 1.25 V")
+
+#: A record may start this many core cycles off the trigger (LeCroy reports the
+#: trigger time to a fraction of a sample) before the BMUL windows are misplaced.
+RECORD_START_TOL_CYCLES = 5
+
+
 def api_acquire_trigger_check(_body: dict) -> dict:
     """Does the scope trigger on the start of a Decaps -- and only then?
 
     The boards drive trig_out = STATUS.busy (Pmod JA1 on the Arty A7, JA3 on
-    the Arty Z7): it rises in the core clock cycle the operation starts and
-    stays high for exactly CYCLE_COUNT core cycles (testbench/cdc/tb_bridge.sv
-    checks that). Three checks on the real setup:
+    the Arty Z7, CN8 pin 3 on the SAKURA-X): it rises in the core clock cycle
+    the operation starts and stays high for exactly CYCLE_COUNT core cycles
+    (testbench/cdc/tb_bridge.sv checks that). Four checks on the real setup:
 
     1. armed, register and buffer traffic but no START: the scope must NOT
        trigger -- catches AUTO trigger mode, a wrong source, a level noise crosses;
     2. armed, one Decaps (0x05 Run): the scope MUST trigger;
-    3. the captured record must reach past the last BMUL window.
+    3. the captured record must reach past the last BMUL window;
+    4. the record must start at the trigger (sample 0 = Decaps start), if the
+       driver reports the trigger position (LeCroy does).
     """
     vs = TV.generate("cpa", 1, os.urandom(64), "valid")
     checks, trace, out = [], None, None
@@ -993,8 +1015,8 @@ def api_acquire_trigger_check(_body: dict) -> dict:
                 checks.append((name, None, "this scope driver cannot report its trigger state -- skipped"))
             elif fired:
                 checks.append((name, False, "the scope triggered although no operation ran: set the trigger mode "
-                               "to NORMAL / SINGLE (not AUTO), source = the channel probing trig_out, rising edge, "
-                               "level about 1.6 V"))
+                               "to NORMAL / SINGLE (not AUTO), source = the channel probing trig_out, rising edge "
+                               "(%s)" % TRIG_PINS))
             else:
                 checks.append((name, True, "stayed armed through register and buffer traffic"))
         else:
@@ -1014,8 +1036,7 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         except TimeoutError:
             checks.append(("trigger on the Decaps start", False,
                            "the Decaps ran (%d cycles) but the scope did not trigger within 3 s: probe trig_out "
-                           "(Arty A7: Pmod JA1, Arty Z7: Pmod JA3, ground on a Pmod GND pin), trigger source = that "
-                           "channel, rising edge, level about 1.6 V" % out.cycles))
+                           "(%s), trigger source = that channel, rising edge" % (out.cycles, TRIG_PINS)))
     k_ok = out.output == vs.k[0].tobytes()
     checks.append(("Decaps result", k_ok, "K equals the FIPS 203 value" if k_ok else "K differs from the expected value"))
     result = {"pulse_us": out.cycles / C.CORE_MHZ, "cycles": out.cycles}
@@ -1031,12 +1052,31 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         else:
             checks.append(("record covers the BMUL windows", True, "%.1f us captured, all three BMUL windows inside "
                            "(need %s us)" % (axis["duration_us"], axis["needed_us"])))
+        checks.append(_record_start_check(sc))
         result.update(trace=_series(trace, rate, 4000), axis=axis)
     rows = [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks]
     result.update(checks=rows, ok=all(r["ok"] is not False for r in rows))
     log("trigger check: " + "; ".join("%s %s" % ("PASS" if r["ok"] else "SKIP" if r["ok"] is None else "FAIL", r["name"])
                                       for r in rows))
     return result
+
+
+def _record_start_check(sc) -> tuple:
+    """Check 4 of the trigger check: does sample 0 sit on the trigger?"""
+    name = "record starts at the trigger"
+    query = getattr(sc, "record_start_s", None)
+    start = query() if callable(query) else None
+    if start is None:
+        return (name, None, "this scope driver does not report the trigger position -- check it once by eye "
+                "(docs/TRACE_ACQUISITION.md, 4.4)")
+    cycles = start * C.CORE_MHZ * 1e6
+    if abs(cycles) <= RECORD_START_TOL_CYCLES:
+        return (name, True, "first sample %+.1f ns from the trigger (%+.1f core cycles)" % (start * 1e9, cycles))
+    where = ("BEFORE the trigger (pre-trigger data: every BMUL window would be shifted by %.0f core cycles)"
+             % -cycles if start < 0 else "AFTER the trigger (the start of the Decaps is missing)")
+    return (name, False, "the record starts %.3f us %s. The analysis takes sample 0 as the Decaps start: set the "
+            "horizontal delay so the time axis starts at 0 (trigger marker at the left edge of the grid)"
+            % (abs(start) * 1e6, where))
 
 
 def api_datasets(_body: dict) -> dict:

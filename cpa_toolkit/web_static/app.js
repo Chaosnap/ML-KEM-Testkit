@@ -363,6 +363,11 @@ function windowBands(windows) {
   return { shapes, annotations };
 }
 const xTitle = (axis) => (axis && axis.unit === "us" ? "time after trigger (µs)" : "sample");
+// First sample relative to the trigger (seconds) -> "+0.0 ns" / "−1.000 µs".
+function startTxt(s) {
+  const a = Math.abs(s), sign = s < 0 ? "−" : "+";
+  return a < 1e-6 ? `${sign}${(a * 1e9).toFixed(1)} ns` : `${sign}${(a * 1e6).toFixed(3)} µs`;
+}
 function coverageKpi(axis) {
   if (!axis || !axis.duration_us) return ["trace length", axis ? `${axis.n_samples} samples` : "—", "sample rate unknown"];
   const ok = !axis.bmul_outside;
@@ -399,11 +404,16 @@ function applyState(s) {
     : x.state === "connecting" ? `Connecting to ${x.params.port.split("/").pop()}…` : STATE_TXT[x.state]);
   renderConn("scope", sc, (x) => x.state === "connected" ? `Connected · ${x.params.ip}` : x.state === "connecting" ? `Connecting to ${x.params.ip}…` : STATE_TXT[x.state]);
   ["board-port", "board-baud", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state)));
-  ["scope-ip", "scope-channel", "scope-dialect", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
+  ["scope-ip", "scope-channel", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
   kv("board-info", b.info ? [["Algorithm", b.info.alg_id === 1 ? "ML-KEM (ALG_ID 1)" : b.info.alg_id], ["Core version", b.info.version],
     ["Core clock", b.info.core_mhz + " MHz"], ["0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Port", b.info.port], ["Baud", b.info.baud]] : [["Status", "connect the board to read the core"]]);
-  kv("scope-info", sc.info ? [["Instrument", sc.info.id || sc.info.idn], ["Resource", sc.info.resource], ["Channel", sc.info.channel],
-    ["Samples", sc.info.samples], ["Sample rate", sc.info.sample_rate]] : [["Status", "connect to read the instrument"]]);
+  const si = sc.info;
+  kv("scope-info", si ? [["Instrument", si.id || si.idn], ["Resource", si.resource], ["Channel", si.channel],
+    ["Samples", si.samples || (si.wave_array_count ? `${si.wave_array_count} (last record)` : si.samples)], ["Sample rate", si.sample_rate],
+    ...(si.trigger ? [["Trigger", si.trigger + (si.trigger_level_v ? " @ " + si.trigger_level_v : "")]] : []),
+    ...(si.timebase_s_div ? [["Timebase", si.timebase_s_div + " s/div"]] : []),
+    ...(si.record_start_s !== undefined ? [["Record start", startTxt(si.record_start_s) + " from the trigger"]] : []),
+    ...(si.nominal_bits ? [["ADC", si.nominal_bits + " bit"]] : [])] : [["Status", "connect to read the instrument"]]);
 
   const dotCls = (st) => "dot " + STATE_DOT[st];
   $("pill-board").className = dotCls(b.state); $("pill-board-txt").textContent = b.state === "connected" ? "Board " + (b.info?.version || "") : "Board";
@@ -502,17 +512,42 @@ async function boardPreflight() {
     } catch (e) { err(e); }
   });
 }
+const SCOPE_CHANNELS = { lecroy: ["C1", "C2", "C3", "C4"], default: ["CHANnel1", "CHANnel2", "CHANnel3", "CHANnel4"],
+                         tektronix: ["CH1", "CH2", "CH3", "CH4"] };
+const SCOPE_REMOTE = { vicp: "TCPIP (VICP)", vxi11: "LXI (VXI11)" };  // LeCroy Utilities › Remote › Control from
 function scopeHint() {
-  const ip = $("scope-ip").value.trim(), h = $("scope-hint");
+  const ip = $("scope-ip").value.trim(), h = $("scope-hint"), tr = $("scope-transport").value, d = $("scope-dialect").value;
+  const tpl = S && S.defaults.scope_resources ? S.defaults.scope_resources[tr] : "";
   if (S && ip === S.defaults.scope_placeholder_ip) { h.textContent = "This is config.py's placeholder address — enter the scope's real IP."; h.className = "hint warn"; }
-  else { h.textContent = ip ? `VISA resource: TCPIP0::${ip}::INSTR` : ""; h.className = "hint"; }
+  else if (d === "lecroy" && !SCOPE_REMOTE[tr]) { h.textContent = "LeCroy scopes are controlled over VICP or LXI (VXI-11), not a raw socket."; h.className = "hint warn"; }
+  else if (d !== "lecroy" && tr === "vicp") { h.textContent = "VICP is Teledyne LeCroy's protocol — use VXI-11 or a raw socket for this scope."; h.className = "hint warn"; }
+  else {
+    const res = ip && tpl ? tpl.replace("{ip}", ip) : "";
+    const remote = d === "lecroy" ? ` · scope: Utilities › Remote › ${SCOPE_REMOTE[tr]}` : "";
+    h.textContent = res ? `VISA resource: ${res}${remote}${tr === "vicp" ? " · needs pyvicp (uv sync --extra scope)" : ""}` : "";
+    h.className = "hint";
+  }
+}
+// Channel suggestions per scope family; when the user switches family, keep
+// the channel number but respell it (CHANnel2 <-> C2 <-> CH2).
+function scopeDialectChanged(fromUser) {
+  const d = $("scope-dialect").value;
+  $("channel-options").innerHTML = (SCOPE_CHANNELS[d] || []).map((c) => `<option value="${c}">`).join("");
+  if (fromUser) {
+    const m = $("scope-channel").value.trim().match(/(\d+)\s*$/);
+    $("scope-channel").value = (SCOPE_CHANNELS[d] || SCOPE_CHANNELS.default)[0].replace(/\d+$/, m ? m[1] : "1");
+    if (d === "lecroy" && !SCOPE_REMOTE[$("scope-transport").value]) $("scope-transport").value = "vicp";
+    if (d !== "lecroy" && $("scope-transport").value === "vicp") $("scope-transport").value = "vxi11";  // VICP is LeCroy-only
+  }
+  scopeHint();
 }
 async function scopeConnBtn() {
   const st = $("scope-conn-btn").dataset.state || "disconnected";
   try {
     if (st === "connected" || st === "connecting") await api("POST", "/api/scope/disconnect", {});
     else await api("POST", "/api/scope/connect", { ip: $("scope-ip").value, channel: $("scope-channel").value,
-      dialect: $("scope-dialect").value, points: $("scope-points").value, timeout_ms: $("scope-timeout").value });
+      dialect: $("scope-dialect").value, transport: $("scope-transport").value, points: $("scope-points").value,
+      timeout_ms: $("scope-timeout").value });
     applyState(await api("GET", "/api/state"));
   } catch (e) { err(e); }
 }
@@ -525,14 +560,20 @@ async function scopeFind() {
       tb.innerHTML = resources.length ? resources.map((r) => `<tr data-r="${esc(r.resource)}"><td class="mono">${esc(r.resource)}</td><td>${esc(r.idn)}</td></tr>`).join("")
         : `<tr><td colspan=2 class="muted">no instruments found</td></tr>`;
       tb.querySelectorAll("tr[data-r]").forEach((tr) => tr.addEventListener("click", () => {
-        const m = tr.dataset.r.match(/TCPIP\d*::([^:]+)::/);
-        if (m) { $("scope-ip").value = m[1]; scopeHint(); toast("IP filled in from " + tr.dataset.r); }
+        const m = tr.dataset.r.match(/^(TCPIP\d*|VICP)::([^:]+)::/i);
+        if (m) {
+          $("scope-ip").value = m[2];
+          if (/^VICP/i.test(m[1])) $("scope-transport").value = "vicp";
+          else if (/::INSTR$/i.test(tr.dataset.r)) $("scope-transport").value = "vxi11";
+          scopeHint(); toast("IP filled in from " + tr.dataset.r);
+        }
       }));
     } catch (e) { err(e); }
   });
 }
 async function scopeSave() {
-  try { await api("POST", "/api/scope/save_config", { ip: $("scope-ip").value, channel: $("scope-channel").value, dialect: $("scope-dialect").value });
+  try { await api("POST", "/api/scope/save_config", { ip: $("scope-ip").value, channel: $("scope-channel").value,
+                                                       dialect: $("scope-dialect").value, transport: $("scope-transport").value });
         toast("Saved as the default scope settings (config.py)", "ok"); } catch (e) { err(e); }
 }
 
@@ -873,8 +914,10 @@ async function capOne() {
       captures = captures.concat([r]).slice(-5);
       capDraw();
       const s = r.stats;
+      const rs = r.record_start || {};
       kpis("cap-kpis", [["Decaps", r.k_match ? "K ✓" : "K ✗", r.describe, r.k_match ? "good" : "bad"], coverageKpi(r.axis),
-        ["sample rate", rateTxt(r.axis.sample_rate_hz), `${s.n} samples`], ["range", `${s.min.toPrecision(3)} … ${s.max.toPrecision(3)}`, `mean ${s.mean.toPrecision(3)} ± ${s.std.toPrecision(2)}`]]);
+        ["sample rate", rateTxt(r.axis.sample_rate_hz), `${s.n} samples`], ["range", `${s.min.toPrecision(3)} … ${s.max.toPrecision(3)}`, `mean ${s.mean.toPrecision(3)} ± ${s.std.toPrecision(2)}`],
+        rs.s === null || rs.s === undefined ? null : ["trigger position", startTxt(rs.s), rs.ok ? "sample 0 = Decaps start" : rs.detail, rs.ok ? "good" : "bad"]]);
     } catch (e) { err(e); }
   });
 }
@@ -1763,10 +1806,11 @@ async function init() {
     $("board-baud").value = s.defaults.baud;
     $("scope-ip").value = s.defaults.scope_ip; $("scope-channel").value = s.defaults.scope_channel;
     $("scope-dialect").value = s.defaults.scope_dialect; $("scope-timeout").value = s.defaults.scope_timeout_ms;
+    if (s.defaults.scope_transport) $("scope-transport").value = s.defaults.scope_transport;
     $("reg-name").innerHTML = s.registers.map((r) => `<option ${r === "STATUS" ? "selected" : ""}>${r}</option>`).join("");
     S = s;
   } catch (e) { err(e); }
-  scopeHint();
+  scopeDialectChanged(false);
   await refreshPorts(true);
 
   $("board-port").addEventListener("change", portHint);
@@ -1776,6 +1820,8 @@ async function init() {
   $("board-auto").checked = localStorage.getItem("board-auto") === "1";
   $("board-auto").addEventListener("change", () => localStorage.setItem("board-auto", $("board-auto").checked ? "1" : "0"));
   $("scope-ip").addEventListener("input", scopeHint);
+  $("scope-transport").addEventListener("change", scopeHint);
+  $("scope-dialect").addEventListener("change", () => scopeDialectChanged(true));
   $("scope-conn-btn").addEventListener("click", scopeConnBtn);
   $("scope-list-resources").addEventListener("click", scopeFind);
   $("scope-save-config").addEventListener("click", scopeSave);

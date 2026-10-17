@@ -2,7 +2,7 @@
 
 这份文档按实验室里的实际顺序写：出发前准备 → 接线 → 设置示波器 → 在 GUI 中连接和自检 → 调触发与时基 → 正式采集 → 采集后的整理与第一次分析。第 0 节是一页速查表，熟悉之后只看它就够了。
 
-相关文档：通信协议 [UART_PROTOCOL.md](UART_PROTOCOL.md)，攻击模型 [ATTACK_MODEL.md](ATTACK_MODEL.md)，工具说明 [cpa_toolkit/README.md](../cpa_toolkit/README.md)。
+相关文档：通信协议 [UART_PROTOCOL.md](UART_PROTOCOL.md)，攻击模型 [ATTACK_MODEL.md](ATTACK_MODEL.md)，工具说明 [cpa_toolkit/README.md](../cpa_toolkit/README.md)，SAKURA-X 移植与 LeCroy HDO6104 设置 [SAKURA_X.md](SAKURA_X.md)。
 
 ---
 
@@ -12,12 +12,13 @@
 □ 板子上电，绿灯 3（A7 的 LD7 / Z7 的 LD3）1 Hz 闪烁 = bitstream 在运行
   （Z7 PS 版：每次上电先运行 uv run scripts/board/boot_arty_z7_ps.py）
 □ 触发探头：A7 → Pmod JA 第 1 脚；Z7 → Pmod JA 第 3 脚（不是 JB）；地夹接 JA 第 5 或 11 脚（GND），别碰 6、12 脚（3.3 V）
-□ 测量探头接测量通道（例如 CH1），触发探头接另一个通道（例如 CH2）
-□ 示波器：触发源 = CH2，上升沿，电平 ≈ 1.6 V，模式 NORMAL（不是 AUTO）
+  SAKURA-X → CN8 第 3 脚，地夹接 CN8 第 11 或 13 脚，别碰 12 脚（2.5 V）和 14 脚（VIN）
+□ 测量探头接测量通道（例如 CH1 / LeCroy 的 C2），触发探头接另一个通道（例如 CH2 / C4）
+□ 示波器：触发源 = 触发通道，上升沿，电平 ≈ 1.6 V（Arty，3.3 V）/ ≈ 1.25 V（SAKURA-X，2.5 V），模式 NORMAL（不是 AUTO）
 □ 示波器：触发点放在记录的最左端（预触发 0），记录长度 ≥ 25 µs，采样率建议 ≥ 1 GSa/s
 □ 示波器：采集模式 Normal/Sample（不要 Average），存储深度固定（不要 Auto）
 □ make gui → Connection：选 …1 串口 → Connect → Run link self-test（4 项全部 OK）
-□ Connection：示波器 IP、Channel = 测量通道（CHANnel1）→ Connect
+□ Connection：示波器 IP、Driver、Transport、Channel = 测量通道（CHANnel1 / LeCroy 写 C2）→ Connect
 □ Acquisition → Check trigger（全部 PASS）→ Capture 调垂直档位（不削顶），采样率和点数与示波器屏幕一致
 □ Test Vectors → 生成向量集 → Run on board 前 20 条全部 ✓
 □ Acquisition → 选向量集 → Start acquisition；采集中不要动示波器
@@ -131,19 +132,21 @@ uv run scripts/board/boot_arty_z7_ps.py
 
 它会烧录 PL bitstream、初始化 PS、启动 UART 转发程序。运行前要先关掉占用 JTAG 的程序（`openFPGALoader --xvc`、run_vivado.sh、Vivado Hardware Manager）。如果它报 DAP 锁定，就把板子**完全断电**（拔 USB，按 PROG/SRST 不够）后再试。
 
+**SAKURA-X**：JTAG 线接 Kintex-7 的 CN5（不是 Spartan-6 的 CN10），每次上电后运行 `vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bit>`。串口走 CN8 上外接的 **2.5 V** USB-UART，详见 [SAKURA_X.md](SAKURA_X.md)。
+
 **看灯确认**（见 README 的 LED 表）：
 
-| 灯 | Arty A7 | Arty Z7 | 应该看到 |
-| -- | ------- | ------- | -------- |
-| 心跳 | LD7 | LD3 | 1 Hz 闪烁：bitstream 已加载，时钟在运行 |
-| 电源 / 复位 | LD0（RGB） | LD4（RGB） | 暗绿色；红色表示按住了 BTN0 或时钟没锁定 |
-| 运算活动 | LD4 | LD0 | 每次运算后亮 0.1 s |
+| 灯 | Arty A7 | Arty Z7 | SAKURA-X | 应该看到 |
+| -- | ------- | ------- | -------- | -------- |
+| 心跳 | LD7 | LD3 | LED4 | 1 Hz 闪烁：bitstream 已加载，时钟在运行 |
+| 电源 / 复位 | LD0（RGB） | LD4（RGB） | LED6（运行，暗）/ LED5（复位） | 暗绿色；红色（SAKURA-X：LED5）表示按住了复位键或时钟没锁定 |
+| 运算活动 | LD4 | LD0 | LED1 | 每次运算后亮 0.1 s |
 
 核心运算期间所有 LED 都保持静止，不会在功耗 trace 里引入翻转。
 
 ### 3.2 触发探头
 
-触发信号 `trig_out` 是 3.3 V 的 LVCMOS 输出：Decaps 开始时上升，持续约 127.5 µs（正好 CYCLE_COUNT 个核心周期）后下降。只有真正开始运算时才出现，寄存器读写不会产生脉冲。
+触发信号 `trig_out` 是 LVCMOS 输出（Arty 上 3.3 V，SAKURA-X 上 **2.5 V**）：Decaps 开始时上升，持续约 127.5 µs（正好 CYCLE_COUNT 个核心周期）后下降。只有真正开始运算时才出现，寄存器读写不会产生脉冲。
 
 需要接的是 **两根线，都在 Pmod JA 上**：触发信号（探头针尖）和它的地（探头地夹）。**JB 不用**：本设计的三块板子都没有往 JB 输出任何信号。板上丝印写着 JA 的那个排母才是要接的，靠近 PROG 按钮的是 JB，不要接。
 
@@ -152,6 +155,7 @@ uv run scripts/board/boot_arty_z7_ps.py
 | Arty A7 | JA **第 1 脚** | G13 | 第 5 或第 11 脚 |
 | Arty Z7 PS 版 | JA **第 3 脚** | Y16 | 第 5 或第 11 脚 |
 | Arty Z7 纯 PL 版 | JA **第 3 脚** | Y16 | 第 5 或第 11 脚 |
+| SAKURA-X | CN8 **第 3 脚** | N16 | CN8 第 11 或第 13 脚（引脚图见 [SAKURA_X.md](SAKURA_X.md)） |
 
 #### JA 引脚图
 
@@ -231,7 +235,10 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 
 - 在示波器的 Utility / I/O / LAN 菜单里查看它的 IP 地址（或设一个固定 IP）；
 - 让电脑和示波器在同一个子网，先在终端里 `ping <示波器 IP>` 确认能通；
-- 默认使用 VXI-11（`TCPIP0::<IP>::INSTR`），大多数 Keysight / Rigol / Siglent / Tektronix 都支持。如果连不上，可以改用原始 SCPI 端口：在 `cpa_toolkit/config.py` 中把 `SCOPE_RESOURCE` 改成 `"TCPIP0::{ip}::5025::SOCKET"`（Rigol / Siglent 一般是 5555）。
+- 传输方式（GUI 的 *Transport*，`config.py` 的 `SCOPE_TRANSPORT`）要和示波器的远程控制设置一致：
+  - **VICP**（`VICP::<IP>::INSTR`）：Teledyne LeCroy 的协议，示波器 Utilities › Remote 选 *TCPIP (VICP)*；需要 `pyvicp`（`uv sync --extra scope` 会装上）；
+  - **VXI-11 / LXI**（`TCPIP0::<IP>::INSTR`）：LeCroy 选 *LXI (VXI11)*；Keysight / Rigol / Siglent / Tektronix 默认都支持；
+  - **原始 SCPI 端口**（`TCPIP0::<IP>::5025::SOCKET`，Rigol / Siglent 一般是 5555，改 `config.py` 的 `SCOPE_RESOURCES`）：LeCroy 不支持。
 
 ---
 
@@ -246,14 +253,14 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 | 测量通道 | 例如 CH1，接被测信号 | 就是 GUI 里的 *Channel* |
 | 触发源 | 接 `trig_out` 的通道（例如 CH2）或 EXT | |
 | 触发类型 | 边沿触发，上升沿 | `trig_out` 在 Decaps 开始时上升 |
-| 触发电平 | ≈ 1.6 V（3.3 V 的一半） | 避开噪声 |
+| 触发电平 | ≈ 1.6 V（Arty，3.3 V 的一半）；≈ 1.25 V（SAKURA-X，2.5 V 的一半） | 避开噪声；SAKURA-X 上设成 2.5 V 正好卡在高电平上，会漏触发 |
 | 触发模式 | **NORMAL**（不是 AUTO） | AUTO 在没有触发时也会自己采一次，Check trigger 会报错 |
 | 触发位置 | **记录的最左端**（预触发 / 水平延迟为 0） | 软件认为第 0 个采样点就是 Decaps 开始 |
 | 记录长度 | **≥ 25 µs**（CPA）；想看完整 Decaps 用 ≥ 130 µs | BMUL 窗口到 22.8 µs 结束 |
 | 采样率 | 建议 ≥ 1 GSa/s，至少 500 MSa/s | 1 GSa/s 时每个核心周期约 5 个采样点 |
 | 存储深度 | 固定值，不要 Auto | 一次采集中每条 trace 的长度必须相同 |
 | 采集模式 | **Normal / Sample**，不要 Average、Peak Detect、Envelope | 平均会把不同密文的 trace 混在一起，CPA 就没有意义了 |
-| 垂直档位 | 信号占屏幕高度的 70–80%，不能削顶 | 数据是以 8 位 ADC 码传输的，档位太大会损失分辨率 |
+| 垂直档位 | 信号占屏幕高度的 70–80%，不能削顶 | Keysight / Rigol / Tektronix 以 8 位 ADC 码传输，LeCroy HDO 以 16 位字传输（12 位有效）；档位太大都会损失分辨率 |
 | 垂直偏移 | 把信号移到屏幕中间 | |
 | 耦合 | 交流信号（电磁探头等）可用 AC 耦合 | 去掉直流偏置，档位可以调得更细 |
 
@@ -265,7 +272,8 @@ GUI 和分析脚本都按“第 0 个采样点 = Decaps 开始”来计算 BMUL 
 
 - Keysight InfiniiVision：Horizontal 菜单中 Time Ref 选 Left，延迟设为 0；
 - Rigol / Siglent：调水平位移（Horizontal Position / Delay），把屏幕上方的触发位置标记移到最左边；
-- Tektronix：Horizontal Position 设为 0%（或关闭 Delay 后把位置设为 0%）。
+- Tektronix：Horizontal Position 设为 0%（或关闭 Delay 后把位置设为 0%）；
+- Teledyne LeCroy（HDO / WaveRunner / WavePro）：用 Horizontal 区的 *Delay* 旋钮把触发位置移到网格最左边：屏幕下方的时间轴应从 0 开始（默认是触发在正中，时间轴从 −5 格开始）。LeCroy 驱动会读回第一个采样点相对触发的时间，*Check trigger* 的第 4 项和 *Capture* 的 “trigger position” 直接告诉你是否对齐。
 
 具体菜单以你用的示波器为准。4.4 节有一个用软件验证触发位置的方法。
 
@@ -327,12 +335,13 @@ Connection 页右边：
 | 字段 | 填什么 |
 | ---- | ------ |
 | IP address | 示波器的 IP |
-| Channel | **测量通道**：Keysight / Rigol / Siglent 写 `CHANnel1`，Tektronix 写 `CH1` |
-| SCPI dialect | Keysight / Rigol / Siglent，或 Tektronix |
+| Driver | Teledyne LeCroy（HDO / WaveRunner / WavePro），Keysight / Rigol / Siglent，或 Tektronix |
+| Transport | 和示波器的远程控制设置一致（3.4 节）：LeCroy 用 VICP 或 VXI-11 / LXI |
+| Channel | **测量通道**：LeCroy 写 `C1`…`C4`，Keysight / Rigol / Siglent 写 `CHANnel1`，Tektronix 写 `CH1`（切换 Driver 时会自动改写法） |
 | Points per trace | 先保持 0（传输示波器给出的记录）。如果 6.3 节发现传回来的点数远少于示波器屏幕上的“采样率 × 记录长度”，就在这里填完整点数（例如 25 µs × 1 GSa/s = 25000），重新 Connect |
 | Timeout (ms) | 保持 20000；记录很长、网络慢时可以加大 |
 
-点 *Connect*，下面会显示 `*IDN?`（示波器型号）和它报告的采样率。不知道 IP 时可以点 *Find instruments* 搜索（搜不到就直接填 IP）。点 *Save as default* 会把 IP、通道和方言写进 `config.py`，下次自动填好。
+点 *Connect*，下面会显示 `*IDN?`（示波器型号）和它报告的采样率；LeCroy 还会显示触发设置（源和电平）、时基、ADC 位数，以及上一次记录的起点相对触发的时间。不知道 IP 时可以点 *Find instruments* 搜索（搜不到就直接填 IP）。点 *Save as default* 会把 IP、通道、驱动和传输方式写进 `config.py`，下次自动填好。
 
 ---
 

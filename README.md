@@ -17,6 +17,7 @@ hdl/core/               厂商无关的 SystemVerilog：ML-KEM-768 核心、AXI-
 hdl/xilinx/arty_a7/     Arty A7-35T/100T 顶层与约束（板载 USB 串口）
 hdl/xilinx/arty_z7/     Arty Z7-20 纯 PL 版（外接 3.3 V USB-UART 到 Pmod JA）
 hdl/xilinx/arty_z7_ps/  Arty Z7-20 PS 版（板载 USB 串口经 PS 转发到 PL）
+hdl/xilinx/sakura_x/    SAKURA-X（SASEBO-GIII）Kintex-7 顶层与约束（外接 2.5 V USB-UART 到 CN8）
 sw/arty_z7_uart_fwd/    Z7 PS 上运行的裸机 UART 字节转发程序
 cpa_toolkit/            Python 主机端：UART 驱动、FIPS 203 参考实现、测试向量、采集、CPA/TVLA、Web GUI
 scripts/vivado/         Vivado 构建 / 烧写 Tcl
@@ -57,23 +58,25 @@ GUI 左侧导航对应一次实验的完整流程：
 | Arty A7-100T / 35T | `hdl/xilinx/arty_a7` | 协议桥 100 MHz，核心 206 MHz | 板载 USB 的 `…1` 接口 | Pmod JA1 |
 | Arty Z7-20（纯 PL） | `hdl/xilinx/arty_z7` | 125 MHz / 206.25 MHz | 外接 USB-UART 到 Pmod JA | Pmod JA3 |
 | Arty Z7-20（PS 版） | `hdl/xilinx/arty_z7_ps` | 125 MHz / 206.25 MHz | 板载 USB 的 `…1` 接口，每次上电后先运行 `uv run scripts/board/boot_arty_z7_ps.py` | Pmod JA3 |
+| SAKURA-X（SASEBO-GIII，Kintex-7 XC7K160T） | `hdl/xilinx/sakura_x` | 103.125 MHz / 206.25 MHz（200 MHz 晶振经 MMCM） | 外接 **2.5 V** USB-UART 到 CN8 第 1/2 脚（板载 USB 只连 Spartan-6） | CN8 第 3 脚（2.5 V） |
 
 示波器触发引脚输出 `trig_out = STATUS.busy`：在运算开始的那个核心时钟沿上升，保持 CYCLE_COUNT 个周期后下降，只有真正开始运算时才出现。GUI 的 Acquisition → *Check trigger* 可以在板上验证触发是否正确（见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md) 第 5.1 节）。
 
-三块板共用 `hdl/core/mlkem_uart_system.sv`（UART、协议桥、跨时钟域、核心、触发、LED），各板顶层只负责时钟、复位和引脚。
+所有板子共用 `hdl/core/mlkem_uart_system.sv`（UART、协议桥、跨时钟域、核心、触发、LED），各板顶层只负责时钟、复位和引脚。SAKURA-X 的接线、LED、构建烧录和 LeCroy HDO6104 设置见 [docs/SAKURA_X.md](docs/SAKURA_X.md)。
 
 **板上 LED**（`hdl/core/status_leds.sv`）：
 
-| 灯 | Arty A7 | Arty Z7 | 含义 |
-| -- | ------- | ------- | ---- |
-| 绿灯 0 | LD4 | LD0 | 运算活动：每次运算后亮 0.1 s（运算本身只有约 0.13 ms，肉眼看不到） |
-| 绿灯 1 | LD5 | LD1 | 上一次运算成功完成 |
-| 绿灯 2 | LD6 | LD2 | 上一次运算出错 |
-| 绿灯 3 | LD7 | LD3 | 心跳（1 Hz 闪烁）：bitstream 已加载，时钟在运行 |
-| RGB 0 | LD0（BTN0 上方） | LD4 | 电源 / 复位：按住 BTN0 或核心时钟未锁定时为红色，正常运行为暗绿色 |
-| RGB 1 | LD1 | LD5 | 主机链路：每个应答帧闪蓝色，帧被拒绝（CRC / 长度 / 命令错误）时亮红色 0.5 s；在 Z7 上还会在每次 0x05 完成通知时闪绿色 |
-| RGB 2 | LD2 | — | 0x05 完成通知：每次闪绿色 |
-| RGB 3 | LD3 | — | 上一次运算（暗光）：Decaps 绿色，Encaps 蓝色，KeyGen 品红色；出错时为红色 |
+| 灯 | Arty A7 | Arty Z7 | SAKURA-X | 含义 |
+| -- | ------- | ------- | -------- | ---- |
+| 绿灯 0 | LD4 | LD0 | LED1 | 运算活动：每次运算后亮 0.1 s（运算本身只有约 0.13 ms，肉眼看不到） |
+| 绿灯 1 | LD5 | LD1 | LED2 | 上一次运算成功完成 |
+| 绿灯 2 | LD6 | LD2 | LED3 | 上一次运算出错 |
+| 绿灯 3 | LD7 | LD3 | LED4 | 心跳（1 Hz 闪烁）：bitstream 已加载，时钟在运行 |
+| RGB 0 | LD0（BTN0 上方） | LD4 | LED5（红）/ LED6（绿） | 电源 / 复位：按住 BTN0（SAKURA-X：SW4）或核心时钟未锁定时为红色，正常运行为暗绿色 |
+| RGB 1 | LD1 | LD5 | LED7（蓝）/ LED8（红）/ LED9（绿） | 主机链路：每个应答帧闪蓝色，帧被拒绝（CRC / 长度 / 命令错误）时亮红色 0.5 s；在 Z7 和 SAKURA-X 上还会在每次 0x05 完成通知时闪绿色 |
+| RGB 2 | LD2 | — | — | 0x05 完成通知：每次闪绿色 |
+| RGB 3 | LD3 | — | — | 上一次运算（暗光）：Decaps 绿色，Encaps 蓝色，KeyGen 品红色；出错时为红色 |
+| — | — | — | LED10 | MMCM 锁定（常亮；不亮 = 没有 200 MHz 时钟） |
 
 核心忙时 LED 模块完全静止：所有寄存器、计数器和输出都保持不变，因此 LED 不会在功耗 trace 里引入任何翻转。`make sim-system` 会检查这一点。
 
@@ -81,7 +84,9 @@ GUI 左侧导航对应一次实验的完整流程：
 vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tclargs arty-a7-100t mlkem
 vivado -mode batch -source scripts/vivado/build_arty_z7.tcl -tclargs mlkem
 vivado -mode batch -source scripts/vivado/build_arty_z7_ps.tcl
+vivado -mode batch -source scripts/vivado/build_sakura_x.tcl
 vivado -mode batch -source scripts/vivado/program_bitstream.tcl -tclargs <bitstream.bit>
+vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bitstream.bit> [xvc-url]
 ```
 
 **核心参数**

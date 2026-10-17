@@ -12,27 +12,33 @@
 #   build/vivado/arty-z7-ps_mlkem/out/ps7_init.tcl
 #   build/arty_z7_uart_fwd/uart_fwd.elf
 #
-# Needs an XVC server that reads TDO correctly: openFPGALoader <= 1.1.1
-# garbles ARM-DAP accesses ("Invalid DAP ACK value: 3", a TDO alignment bug
-# fixed upstream in commit 4700951), so use a build newer than 1.1.1 -- or
-# scripts/board/boot_arty_z7_ps.py, which runs on the host without xsdb/hw_server.
+# Usage (xsdb ships with Vivado: $XILINX_VIVADO/bin/xsdb):
+#   xsdb scripts/vivado/load_arty_z7_ps.tcl [xvc-url]
 #
-# Usage (inside the Vivado container, where xsdb lives):
-#   xsdb scripts/vivado/load_arty_z7_ps.tcl [xvc-url | none]
+# JTAG path: by default, whatever cable the local hw_server sees directly --
+# the Arty Z7's own USB-JTAG (its micro-USB port) or any Xilinx/Digilent cable on
+# the machine running xsdb. No XVC server and no openFPGALoader are needed.
+# If Vivado's Hardware Manager is already connected (directly or through a
+# Virtual Cable), its hw_server on localhost:3121 is reused, so the board it
+# shows is the one this script uses.
 #
-# JTAG path: by default the board is reached through the openFPGALoader XVC
-# server that run_vivado.sh starts on the Mac (./run_vivado.sh arty_z7_20),
-# at tcp:host.docker.internal:3721 -- the same cable Vivado's Hardware
-# Manager uses. Pass another XVC URL, or `none` if the JTAG cable is
-# directly visible to hw_server.
+# Optional xvc-url: only when the cable is NOT local to hw_server, e.g. Vivado
+# in a container without USB access, with an XVC server on the host
+# (tcp:host.docker.internal:3721 for openFPGALoader --xvc). An XVC server must
+# read TDO correctly for ARM-DAP accesses: openFPGALoader <= 1.1.1 does not
+# ("Invalid DAP ACK value: 3", fixed upstream in commit 4700951).
+# scripts/board/boot_arty_z7_ps.py is the host-side alternative without xsdb.
 #
 # Sourcing it from Vivado's Tcl console (Tools > Run Tcl Script) also works:
 # Vivado has no ARM debug commands, so the script re-runs itself under xsdb
-# with the default XVC URL and prints xsdb's output.
+# (same default: the cable Vivado's hw_server sees) and prints xsdb's output.
 
 if {![info exists argv]} { set argv {} }
 if {[info commands dow] eq "" && "--from-vivado" ni $argv} {
     set xsdb [file join $::env(XILINX_VIVADO) bin xsdb]
+    if {![file exists $xsdb] && ![file exists $xsdb.bat]} {
+        return -code error "xsdb not found at $xsdb: run this script with xsdb from a Vivado/Vitis install"
+    }
     puts "Not running under xsdb -- handing this script to $xsdb ..."
     set failed [catch {exec $xsdb [info script] --from-vivado 2>@1} log]
     puts $log
@@ -59,26 +65,32 @@ foreach {what path hint} [list \
     }
 }
 
-set xvc [expr {[llength $argv] >= 1 ? [lindex $argv 0] : "tcp:host.docker.internal:3721"}]
+# Optional XVC server; without one (or with `none`) only local cables are used.
+set xvc [expr {[llength $argv] >= 1 ? [lindex $argv 0] : "none"}]
 
 # hw_server: reuse the one Vivado's Hardware Manager started, else start one.
 if {[catch {connect -url tcp:localhost:3121}]} {
     connect
 }
 proc chain_visible {} { string match "*xc7z020*" [targets] }
-# A cable hw_server (re)opens takes about a second to scan its JTAG chain.
+# A freshly started hw_server, or a cable it has just opened, needs a few
+# seconds to enumerate and scan its JTAG chain.
 proc wait_chain {tries} {
     for {set i 0} {$i < $tries && ![chain_visible]} {incr i} { after 500 }
 }
-wait_chain 4
-if {$xvc ne "none" && ![chain_visible]} {
-    # Only (re)open the XVC cable when hw_server has no working one: reopening
-    # it under Vivado's Hardware Manager drops Vivado's target, and the
-    # openFPGALoader XVC server can wedge (all-zero scans) after such a drop.
-    if {[catch {connect -xvc-url $xvc} msg]} {
-        puts "note: XVC $xvc not (re)opened: $msg"
+if {$xvc eq "none"} {
+    wait_chain 20
+} else {
+    wait_chain 4
+    if {![chain_visible]} {
+        # Only (re)open the XVC cable when hw_server has no working one: reopening
+        # it under Vivado's Hardware Manager drops Vivado's target, and the
+        # openFPGALoader XVC server can wedge (all-zero scans) after such a drop.
+        if {[catch {connect -xvc-url $xvc} msg]} {
+            puts "note: XVC $xvc not (re)opened: $msg"
+        }
+        wait_chain 10
     }
-    wait_chain 10
 }
 
 proc select_target {pattern} {
@@ -90,7 +102,12 @@ proc select_target {pattern} {
         if {[string match "*DAP (*" $visible]} {
             dap_locked_hint
         } else {
-            puts "Is the board powered and is openFPGALoader (XVC) running? (./run_vivado.sh arty_z7_20)"
+            puts "JTAG cables hw_server sees:"
+            catch {puts [jtag targets]}
+            puts "Check that the board is powered, its micro-USB (PROG/UART) port is connected, the"
+            puts "cable driver is installed and no other program holds the cable (openFPGALoader,"
+            puts "another hw_server). If hw_server cannot reach USB here (e.g. Vivado in a container),"
+            puts "pass an XVC server: xsdb scripts/vivado/load_arty_z7_ps.tcl tcp:<host>:<port>"
         }
         exit 1
     }
@@ -121,6 +138,7 @@ if {[catch {mrd -value 0xF8000530} msg]} {        ;# PSS_IDCODE: answers on any 
 }
 
 puts "== programming the PL: $bit"
+select_target "xc7z020*"       ;# the PL device itself, in case several cables are attached
 fpga -file $bit
 
 puts "== initialising the PS (ps7_init without DDR): $init"

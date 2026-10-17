@@ -20,7 +20,7 @@
 | `testvectors.py` | 测试向量集：由种子确定性生成，包含每条密文的期望 K，存为 `data/vectors/*.npz` |
 | `uart_target.py` | 板子侧驱动：`Link` 负责收发帧，`Target` 提供分步操作（reset / configure / load / run，对应论文的 x/m/s/c/e/a）；自动识别 `0x05` Run |
 | `connection.py` | 非阻塞的连接/断开（可随时断开），以及链路监视（空闲时 ping，检测串口被拔出） |
-| `scope.py` | 示波器：`VisaScope`（VISA/SCPI，Keysight / Rigol / Siglent / Tektronix 方言） |
+| `scope.py` | 示波器：`LeCroyScope`（Teledyne LeCroy MAUI，如 HDO6104：VICP 或 LXI/VXI-11，`WF?` + WAVEDESC），`VisaScope`（VISA/SCPI，Keysight / Rigol / Siglent / Tektronix 方言）；`open_scope()` 按 `SCOPE_DIALECT` 选择 |
 | `hdf5_trace_store.py` | campaign 文件（`.hdf5`）的增量写入、读取与续采 |
 | `acquire_cpa.py` | 采集：CPA 或 TVLA，按向量集逐条采集并逐条校验 |
 | `cpa_attack.py` | CPA：相关系数、key rank、`--curve`（key rank 随 trace 数的变化及 MTD）、CSV |

@@ -187,8 +187,12 @@ def open_board(params: dict, publish):
 
 def open_scope(params: dict, publish):
     import scope as S
-    sc = S.VisaScope(S.resource_for(params["ip"]), channel=params["channel"], points=int(params.get("points", 0)),
-                     dialect=params["dialect"], timeout_ms=int(params["timeout_ms"]))
+    try:
+        sc = S.open_scope(params["ip"], channel=params["channel"], dialect=params["dialect"],
+                          points=int(params.get("points", 0)), timeout_ms=int(params["timeout_ms"]),
+                          transport=params.get("transport", ""))
+    except SystemExit as e:  # scope.py's command-line errors: here they must become the "error" state
+        raise RuntimeError(str(e)) from None
     publish(sc)
     sc.configure()
     info = sc.info()

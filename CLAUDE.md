@@ -7,9 +7,9 @@ ML-KEM-768 (FIPS 203) hardware core for Xilinx Arty boards plus the host tool ch
 ## Architecture
 
 - **HDL** (`hdl/core/`, vendor-agnostic SystemVerilog): `pqc_mlkem_top` (CSR + 8 KB data buffer + microcoded datapath: Keccak, NTT, BaseMul, CBD, (de)compress, pack/unpack), `uart_axi_bridge` (host protocol to AXI-Lite), `axil_cdc` (100/125 MHz bridge clock to the 206 MHz core clock), `status_leds` (green + RGB LEDs, frozen while the core is busy), and `mlkem_uart_system`, which wires all of these plus `trig_out` and is the one block every board top instantiates.
-- **Board tops** (`hdl/xilinx/`): clocking (MMCM), reset synchronisers and pins only: `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO). `trig_out = STATUS.busy` is the scope trigger.
+- **Board tops** (`hdl/xilinx/`): clocking (MMCM), reset synchronisers and pins only: `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO), `sakura_x` (SAKURA-X / SASEBO-GIII Kintex-7 XC7K160T, 200 MHz diff. clock, external 2.5 V USB-UART on CN8 -- the board USB only reaches the Spartan-6; `scripts/vivado/build_sakura_x.tcl`, `program_sakura_x.tcl`, docs/SAKURA_X.md). `trig_out = STATUS.busy` is the scope trigger.
 - **Timing at 206 MHz**: the core-clock critical paths ran from the read FIFO (`mlkem_word_fifo`) into the sponge / unpack; the FIFO now registers its bank addresses and fill flags (cycle-exact). Any RTL change must keep ACVP cycle counts identical (`make acvp-sim`, compare `data/acvp/*/results.csv`) unless a cycle change is intended.
-- **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference), `models/` (CPA leakage models, one file per model, shared code in `models/base.py`; `cpa_attack.py --model <file name>` and the GUI pick from it), `testvectors`, `acquire_cpa` + `hdf5_trace_store`, `cpa_attack`, `tvla_analysis`, `scope` (VISA), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
+- **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference), `models/` (CPA leakage models, one file per model, shared code in `models/base.py`; `cpa_attack.py --model <file name>` and the GUI pick from it), `testvectors`, `acquire_cpa` + `hdf5_trace_store`, `cpa_attack`, `tvla_analysis`, `scope` (VISA: `LeCroyScope` for Teledyne LeCroy MAUI over VICP/VXI-11, `VisaScope` for SCPI; `open_scope()` picks by `SCOPE_DIALECT`, transport by `SCOPE_TRANSPORT`), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
 - **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs).
 
 ## Key design decisions
@@ -18,7 +18,7 @@ ML-KEM-768 (FIPS 203) hardware core for Xilinx Arty boards plus the host tool ch
 - CSR register map (`hdl/core/pqc_axi_csr.sv`, `uart_target.REG`) is fixed; board-specific code is only in the tops and the transport.
 - Test vectors are a deterministic function of a 64-byte seed; every trace is checked against its precomputed shared secret K and CYCLE_COUNT.
 - Campaign files are HDF5 (`/traces`, `/intermediates/ct`, `/intermediates/k_expected`, metadata incl. the vector-set recipe), resumable after a stop or link loss.
-- Arty Z7 changes must not affect the Arty A7 build.
+- Arty Z7 changes must not affect the Arty A7 build; SAKURA-X changes must not affect either Arty build (own top, XDC, Tcl and project directory).
 
 ## Build and test
 

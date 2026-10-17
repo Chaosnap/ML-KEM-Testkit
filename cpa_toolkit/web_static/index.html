@@ -80,14 +80,15 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>Oscilloscope</h2><span class="sub">VISA / SCPI over the network</span></div>
+            <div class="card-head"><h2>Oscilloscope</h2><span class="sub">Teledyne LeCroy over VICP / LXI, or SCPI, on the network</span></div>
             <label class="f">IP address</label>
-            <input id="scope-ip" type="text" placeholder="e.g. 192.168.1.50">
+            <input id="scope-ip" type="text" placeholder="e.g. 192.168.0.174">
             <div class="hint" id="scope-hint"></div>
             <div class="cols-2">
-              <div><label class="f">Channel</label><input id="scope-channel" type="text" list="channel-options">
-                <datalist id="channel-options"><option value="CHANnel1"><option value="CHANnel2"><option value="CHANnel3"><option value="CHANnel4"><option value="CH1"><option value="CH2"></datalist></div>
-              <div><label class="f">SCPI dialect</label><select id="scope-dialect"><option value="default">Keysight / Rigol / Siglent</option><option value="tektronix">Tektronix</option></select></div>
+              <div><label class="f">Driver</label><select id="scope-dialect"><option value="lecroy">Teledyne LeCroy (HDO / WaveRunner / WavePro)</option><option value="default">Keysight / Rigol / Siglent</option><option value="tektronix">Tektronix</option></select></div>
+              <div><label class="f">Transport</label><select id="scope-transport" title="must match the scope's remote-control setting"><option value="vicp">VICP (LeCroy &ldquo;TCPIP (VICP)&rdquo;)</option><option value="vxi11">VXI-11 / LXI</option><option value="socket">Raw SCPI socket :5025</option></select></div>
+              <div><label class="f">Channel</label><input id="scope-channel" type="text" list="channel-options" title="the measured signal, not the trigger channel">
+                <datalist id="channel-options"></datalist></div>
               <div><label class="f">Points per trace</label><input id="scope-points" type="text" value="0" title="0 = transfer the whole record at the scope's current settings"></div>
               <div><label class="f">Timeout (ms)</label><input id="scope-timeout" type="text" value="20000"></div>
             </div>
@@ -229,7 +230,7 @@
           <div class="hidden" id="trig-wrap">
             <div class="table-wrap short" style="margin-bottom:12px"><table class="t"><thead><tr><th>trigger check</th><th>result</th><th>detail</th></tr></thead><tbody id="trig-table"></tbody></table></div>
           </div>
-          <div class="hint" style="margin:0 0 10px">Trigger: <b>trig_out</b> = STATUS.busy on Pmod JA1 (Arty A7) / JA3 (Arty Z7) — rises when the Decaps starts, high for CYCLE_COUNT core cycles. Scope: NORMAL/SINGLE mode, rising edge, ≈ 1.6 V.</div>
+          <div class="hint" style="margin:0 0 10px">Trigger: <b>trig_out</b> = STATUS.busy on Pmod JA1 (Arty A7) / JA3 (Arty Z7) / CN8 pin 3 (SAKURA-X) — rises when the Decaps starts, high for CYCLE_COUNT core cycles. Scope: NORMAL/SINGLE mode, rising edge, ≈ 1.6 V on the Arty boards (3.3 V), ≈ 1.25 V on the SAKURA-X (2.5 V); trigger point at the left edge of the record.</div>
           <div class="kpis compact" id="cap-kpis"></div>
           <div class="chart tall" id="cap-chart"><div class="chart-empty">No capture yet. The last 5 captures are overlaid for comparison.</div></div>
         </div>
