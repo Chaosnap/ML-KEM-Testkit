@@ -75,6 +75,13 @@ CORE_MHZ = 206.25
 #: cycles wide so the write-back tail is inside the window.
 BMUL_WINDOWS = [(1289, 1570), (2855, 3136), (4421, 4702)]
 
+#: The cycle in which the RAM read address of the first word of each decryption BMUL is issued
+#: (``T`` of word 0 in ``mlkem_poly_alu.sv``; word ``w`` is read at ``T + 2 w``): the datapath's
+#: first active cycle plus one. The row-aligned attack (``aligned_cpa.py``) places the pipeline
+#: schedule of every word on the trace with these. Measured by ``scripts/sim/bmul_timing.py`` (the
+#: ALU start event of each BMUL, plus 2), same run as BMUL_WINDOWS.
+BMUL_READ_CYCLES = [1290, 2856, 4422]
+
 #: NTT (one per BMUL, computing u_hat_i before it) and the single INTT (after
 #: the third BMUL, see docs/ATTACK_MODEL.md section 4.1's microcode listing --
 #: ADDR 235/239/243 = NTT, ADDR 247 = INTT) cycle ranges, same units as

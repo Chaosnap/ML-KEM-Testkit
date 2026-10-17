@@ -147,6 +147,7 @@ def main() -> None:
 
     print("\nconfig.py (copy in after an RTL/microcode change, re-measured here):")
     print("  BMUL_WINDOWS = %s" % bmul_ranges)
+    print("  BMUL_READ_CYCLES = %s" % [w["start"] + 2 for w in dec_bmul])
     if dec_ntt:
         ntt_ranges = [win_of(w) for w in dec_ntt]
         print("  NTT_WINDOWS_CYCLES = %s" % [(a, b) for a, b in ntt_ranges])
