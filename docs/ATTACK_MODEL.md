@@ -161,18 +161,23 @@ c1 = a0·b1 + a1·b0 = (a0+a1)(b0+b1) − a0·b0 − a1·b1
 
 ### 4.3 三条攻击窗口在核心周期里的具体位置
 
-每条 BMUL 处理 128 个字（256 个系数两两一对），每 2 个周期发一个字的读请求，加上
-21 拍流水线深度排空，总长 128×2 + 21 ≈ 281 个周期。这三条窗口不是猜的，是跑一次
-Decaps 的周期精确 Verilator 仿真（`testbench/core_sim`）、从波形的微码 `pc` 列里数出来的：
+每条 BMUL 处理 128 个字（256 个系数两两一对），每 2 个周期发一个字的读请求，再加上流水线排空，数据通路连续活动 276 个周期。这三条窗口不是猜的，是跑一次 Decaps 的周期精确 Verilator 仿真（`testbench/core_sim`，`+trace=` 指令时间线和 `+bmul=` 数据通路转储）量出来的，用 `scripts/sim/bmul_timing.py` 解析，两次不同 Decaps 的结果逐周期一致（核心是常数时间）：
 
 ```
-  cycle 1289-1570: BMUL s7*s6->s3        (ŝ₀∘û₀, poly=0)
-  cycle 2855-3136: BMUL s7*s6->s3 (acc)  (ŝ₁∘û₁, poly=1)
-  cycle 4421-4702: BMUL s7*s6->s3 (acc)  (ŝ₂∘û₂, poly=2)
+  BMUL s7*s6->s3        (ŝ₀∘û₀, poly=0)   数据通路活动 1289-1564，第一个字的读地址在周期 1290
+  BMUL s7*s6->s3 (acc)  (ŝ₁∘û₁, poly=1)   数据通路活动 2855-3130，第一个字的读地址在周期 2856
+  BMUL s7*s6->s3 (acc)  (ŝ₂∘û₂, poly=2)   数据通路活动 4421-4696，第一个字的读地址在周期 4422
 ```
 
-抄进了 `config.py: BMUL_WINDOWS`，核心时钟 206.25 MHz。RTL 或微码改了之后必须重新
-跑一次 `tvla_sim.py` 核对（这三个数字和 `mlkem_ucode_rom.sv` 的内容是绑定的）。
+周期从 0 数起：周期 0 就是 `trig_out`（= STATUS.busy）升起的那个核心时钟周期，和 CYCLE_COUNT 数的是同一批周期。抄进了 `config.py: BMUL_WINDOWS`（窗口比活动多留了几个周期给写回的尾巴），核心时钟 206.25 MHz。同一次测量还给出：
+
+```
+  NTT û₀ 146-1143, NTT û₁ 1712-2709, NTT û₂ 3278-4275   （config.NTT_WINDOWS_CYCLES）
+  INTT   4701-5841                                         （config.INTT_WINDOW_CYCLES）
+  G(m′‖h) 6519-6623, J(z‖c) 6623-7375, 重加密 7375-25795, 比较/选择 25795-26367   （config.DECAPS_PHASES）
+```
+
+这些不是 CPA 的目标（û 是公开的，ŝ 不是 NTT/INTT 的操作数），记下来是为了在 trace 上**给任何一个特征命名**：例如 TVLA 的最强峰几乎一定在 J(z‖c)（整条密文被 Keccak 吸收）或重加密里，不在解密的 BMUL 里（见 [TRACE_ACQUISITION.md](TRACE_ACQUISITION.md) 1.3 节）。RTL 或微码改了之后要重新跑一次 `scripts/sim/bmul_timing.py`，把它打印的 config.py 块抄进去（这几个数字和 `mlkem_ucode_rom.sv` 的内容是绑定的）。
 
 ---
 
@@ -210,6 +215,10 @@ def hd(a, b, bits):
 `p_self` 是最"干净"的点——只有一次标量乘法，没有 Karatsuba 交叉项、没有累加，理
 论上信噪比最高，但对应的寄存器在硬件里只存在 1 拍（T+11 这一瞬间），真实探头采样
 率不够高的话容易漏过。`word` 是最贴近"写进 RAM 的最终值"的点，也是默认选项。
+
+> 上面这四个寄存器是 `hw_*` / `hd_*` 系列的目标。它们有一个共同的前提——"寄存器上一拍存的是上一个字
+> 的同一个值"——和这颗核心的实际发射时序对不上（第 5.5 节），所以另有一组按时序建模的 `pipe_*`
+> 模型。
 
 **模型文件（`cpa_toolkit/models/`，一个文件一个模型）**：每个模型选定一个寄存器、
 它接受的 R_prev，以及泄漏函数 `leak(x, r_prev)`。`hw_scalar`（`p_self`，无 R_prev）
@@ -250,6 +259,36 @@ BaseMul 的 Karatsuba 分解里，一次乘法同时涉及**一对**系数（`b0
   结果**（见 `cpa_attack.py: run_attack` 里的注释）——但同一对里**先猜的那个**，
   它的搭档系数永远只能按 0 处理，这是"逐系数攻击"相对"联合枚举一对系数"的固有
   弱点，`README.md` 第 6 节第 4 条和本文档第 9 节都提到了，这里不重复展开。
+
+### 5.5 按发射时序建模（`pipe_*`）
+
+第 5.3 节的 `prev-word` 假设"第 w 个字进来时寄存器里留着第 w−1 个字的同一个值"。看
+`mlkem_poly_alu.sv` 第 225-247 行的操作数多路选择：两个 Barrett 乘法器**每一拍都接一个新运算**，
+而且两种运算交替发射——
+
+```
+mul0:  ... A0(w−1) , K(w−1) , A0(w) , K(w) , A0(w+1) ...     A0 = s0·u0 ,  K = (s0+s1)·(u0+u1)
+mul1:  ... A1(w−1) , G(w−4) , A1(w) , G(w−3) , A1(w+1) ...   A1 = s1·u1 ,  G = (a1·b1)·γ
+```
+
+——所以 `p00` 相邻两拍之间的翻转是 `A0(w)` 对 **`K(w)`**，中间根本不存在"上一个字的 A0"。
+把两种假设拿到周期精确仿真里和真实翻转数比（`scripts/sim/model_vs_rtl.py`）：
+
+| 假设 | 与仿真总翻转的相关系数 |
+| --- | --- |
+| `hd_basemul_word` / `hd_scalar` 等（任意 R_prev） | ≈ 0.01 |
+| 按真实发射时序，每拍一个假设 | ≈ 0.3（峰值拍） |
+
+`cpa_toolkit/mlkem_pipeline.py` 把两个乘法器的每一级流水线寄存器和复制其输出的寄存器逐位复刻，
+`scripts/sim/pipeline_check.py` 证明它和 RTL 的每周期翻转数**完全一致**（全部 35 个寄存器 ×
+三次解密 BMUL × 每一拍；把任一延迟改错一拍即报错）。由此得到 `models/pipe_{all,dsp,barrett,output}.py`：
+一个系数在流水线里停留约 15–17 拍，每一拍都是一条独立证据，求和后等效相关系数约提升 √K。
+
+攻击侧在 `cpa_toolkit/aligned_cpa.py`：trace 先按核心时钟折成每周期一个值
+（`cycle_features.py`：从跨 trace 方差估时钟相位，再用 PCA / energy / abs 压缩周期内的采样点），
+每个假设只和**它自己那一拍**做相关；trigger 到采样点 0 之间的整数周期偏移用一次小范围搜索定出来
+（`config.BMUL_READ_CYCLES` 给出每条 BMUL 第一个字的读周期）。用法和局限见
+[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md) 第 7 节。
 
 ---
 
@@ -334,12 +373,13 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 
 ## 9. 已知局限（设计层面，补充 `cpa_toolkit/README.md` 第 7 节）
 
-1. **延迟链副本没有单独建模。** 第 4.2 节表格里 `p00d[0..5]`、`h1d[0..4]` 这些延
-   迟寄存器副本，真实硅片上每一级都在独立翻转、独立消耗功耗，现有模型只建模
-   了"当前字"（`word`/`c0`/`c1`）和"上一个字"（`prev-word`）两个时间点，没有把
-   流水线里同时存在的 6+5 级延迟副本都纳入假设。这意味着真实信号可能比模型预测
-   的更强（延迟链贡献了额外没被算进去的信噪比），但也可能因为相位没对齐被漏掉
-   ——**这个模型给出的是泄漏强度的下界，不是精确预测**。
+1. **寄存器模型的延迟链副本没有单独建模。** 第 4.2 节表格里 `p00d[0..5]`、`h1d[0..4]` 这些延
+   迟寄存器副本，真实硅片上每一级都在独立翻转、独立消耗功耗，`hw_*` / `hd_*` 只建模
+   了"当前字"（`word`/`c0`/`c1`）和"上一个字"（`prev-word`）两个时间点。第 5.5 节的 `pipe_*`
+   模型把 `p00d[0..5]`、`mr`、`mr2` 这些副本都纳入了（并且和 RTL 逐周期比对过），但仍然
+   **没有**覆盖 Karatsuba 的两次减法（`s1`、`h1`、`h1d`）、累加器读回（`cd[0..13]`）和写回
+   （`wb`、`wbd`、`rb_din`）。这些寄存器携带同一批数据，只是晚几拍，所以现有模型给出的仍然是
+   泄漏强度的下界，不是精确预测。
 2. **逐系数攻击的"先鸡后蛋"问题。** 见第 5.4 节，一对系数里先猜的那个搭档永远未知。
 3. **只覆盖了 Decrypt 的 BaseMul（P1/P2），没覆盖 P3（减法）、KeyGen 的 CBD/NTT、
    Encaps 重加密路径。** 早期仿真级 TVLA 的结果显示 P2 泄漏最强，
@@ -356,6 +396,10 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 | --- | --- |
 | 本文档引用的 FIPS 203 软件参考实现 | [`mlkem_ref.py`](../cpa_toolkit/mlkem_ref.py) |
 | 泄漏模型（一个文件一个模型）、`Guess`、R_prev、汉明重量 / 距离、模型自检 | [`models/`](../cpa_toolkit/models/) |
+| 乘法器流水线的软件孪生（`pipe_*` 的基础） | [`mlkem_pipeline.py`](../cpa_toolkit/mlkem_pipeline.py) |
+| 每周期一个特征（时钟相位、PCA / energy / abs） | [`cycle_features.py`](../cpa_toolkit/cycle_features.py) |
+| 逐拍对齐的 CPA 引擎 | [`aligned_cpa.py`](../cpa_toolkit/aligned_cpa.py) |
+| 仿真侧测量脚本（窗口、寄存器排序、孪生比对、模型对齐） | [`scripts/sim/`](../scripts/sim/) |
 | BMUL 流水线 RTL（第 4.2 节表格的全部行号出处） | [`../hdl/core/mlkem_poly_alu.sv`](../hdl/core/mlkem_poly_alu.sv) |
 | Decaps 微码（第 4.1 节的 ROM 地址） | [`../hdl/core/mlkem_ucode_rom.sv`](../hdl/core/mlkem_ucode_rom.sv) |
 | 微码生成器（slot/操作码定义） | [`../scripts/gen/gen_mlkem_ucode.py`](../scripts/gen/gen_mlkem_ucode.py) |

@@ -15,6 +15,8 @@ Usage::
     python cpa_attack.py --list-models                          # the models in models/
     python cpa_attack.py FILE.hdf5                              # unknown-key (the real attack)
     python cpa_attack.py FILE.hdf5 --model hd_scalar --rprev zero
+    python cpa_attack.py FILE.hdf5 --model pipe_all               # schedule-aware, row-aligned (per-cycle features)
+    python cpa_attack.py FILE.hdf5 --model pipe_all --features energy --offsets -3:3
     python cpa_attack.py FILE.hdf5 --dk-ref REF.bin               # oracle-assisted evaluation
     python cpa_attack.py FILE.hdf5 --dk-ref REF.bin --curve         # + key-rank-vs-N, MTD
 
@@ -35,17 +37,27 @@ Without ``--dk-ref`` the script still runs the full attack and reports its
 own best guess per coefficient plus the correlation peaks, so you can judge
 "is there a confident recovery" without a ground truth -- this is the actual
 attack a real adversary would run.
+
+Two kinds of model. The ``hd_*`` / ``hw_*`` models name one register and are correlated with every
+sample of the BMUL window (the best sample wins). The ``pipe_*`` models (:class:`models.PipelineModel`)
+follow the RTL schedule: a hypothesis per clock cycle, correlated with the trace feature of its own
+cycle and summed (``aligned_cpa.py``); they need the sample rate of the campaign to turn the trace into
+one feature per cycle (``--features``), and search a small integer cycle offset (``--offsets``).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+import aligned_cpa as AC
 import config as C
+import cycle_features as CF
 import mlkem_ref as R
 import models as LM
 from hdf5_trace_store import TraceReader
@@ -110,10 +122,124 @@ def _model(model, rprev: str) -> tuple[LM.LeakageModel, str]:
     return m, m.resolve_rprev(rprev)
 
 
+def parse_offsets(text) -> tuple:
+    """Cycle offsets to search: ``"-6:6"``, ``"3"``, ``"-2,0,2"``, a list/tuple of ints, or empty for the default."""
+    if text in (None, "", ()):
+        return AC.DEFAULT_OFFSETS
+    if isinstance(text, (list, tuple)):
+        return tuple(int(x) for x in text)
+    text = str(text).strip()
+    if ":" in text:
+        a, b = text.split(":", 1)
+        a, b = int(a), int(b)
+        if a > b:
+            raise ValueError("offsets %r: the range runs from low to high" % text)
+        return tuple(range(a, b + 1))
+    return tuple(int(x) for x in text.split(",") if x.strip())
+
+
+def feature_mode(model, features: str) -> str:
+    """The per-cycle feature mode of an aligned model: ``features`` or, for ``"auto"`` / ``"raw"``, the default."""
+    if features in ("", "auto"):
+        return "pca"
+    if features not in CF.MODES:
+        raise SystemExit("%s works on one feature per clock cycle: --features %s (not %r)"
+                         % (model.name, "|".join(CF.MODES), features))
+    return features
+
+
+def _workers() -> int:
+    return max(1, min(8, os.cpu_count() or 1))
+
+
+def _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets, progress_cb, coeffs) -> dict:
+    """The 768-coefficient attack with a :class:`models.PipelineModel` (row-aligned, per-cycle features)."""
+    mode, offsets = feature_mode(model, features), parse_offsets(offsets)
+    with TraceReader(h5_path) as r:
+        _require_cpa(r)
+        n = min(r.n_completed, max_traces) if max_traces else r.n_completed
+        ok = r.ok[:n]
+        if not np.all(ok):
+            print("note: %d/%d traces failed an integrity check and are excluded"
+                  % (int((~ok).sum()), n), file=sys.stderr)
+        traces_full = r.traces[:n][ok]
+        cts = r.ciphertexts[:n][ok]
+        dk_hash_in_file = r.dk_hash
+        rate = r.sample_rate
+    n_ok = traces_full.shape[0]
+    if n_ok < 20:
+        raise SystemExit("only %d usable traces; capture more" % n_ok)
+    if rate <= 0:
+        raise SystemExit("%s needs the sample rate of the campaign (the scope did not report one): it turns the "
+                         "trace into one feature per core clock cycle" % model.name)
+    s_hat = None
+    if dk_ref is not None:
+        import hashlib
+        if hashlib.sha3_256(dk_ref).digest() != dk_hash_in_file:
+            raise SystemExit("--dk-ref does not match the key this file was captured under "
+                             "(SHA3-256(dk) mismatch) -- wrong file or wrong key")
+        s_hat = R.s_hat_from_dk(dk_ref)
+    u_hat = R.u_hat_from_ct(cts)
+    causal = s_hat is None              # blind: only what the attack has recovered so far may enter a hypothesis
+    phase = AC.decrypt_phase(traces_full, rate)
+    candidates = np.arange(R.Q, dtype=np.int64)
+    results, offs, infos = [], [], []
+    n_coeffs = 256 if coeffs <= 0 else min(256, coeffs)
+    recovered = np.zeros((R.K, 256), dtype=np.int64)
+    with ThreadPoolExecutor(_workers()) as pool:
+        for poly in range(R.K):
+            Z, first, info = AC.poly_features(traces_full, rate, poly, mode, phase)
+            infos.append(info)
+            guess = LM.Guess(u_hat, s_hat if s_hat is not None else recovered, poly)
+            for j in range(n_coeffs):
+                guess.at(j)
+                guess.true_value = int(s_hat[poly][j]) if s_hat is not None else -1
+                res = AC.attack_coefficient(model, guess, Z, first, C.BMUL_READ_CYCLES[poly], offsets, candidates,
+                                            causal, pool)
+                recovered[poly, j] = res["best_guess"]
+                offs.append(res["best_sample"])
+                results.append({k: v for k, v in res.items() if k not in ("candidates", "peak_per_cand")})
+                if progress_cb:
+                    progress_cb(len(results), R.K * n_coeffs)
+    hist = {int(o): int(c) for o, c in zip(*np.unique(offs, return_counts=True))}
+    summary = {
+        "file": h5_path, "n_traces_used": n_ok, "model": model.name, "model_title": model.title,
+        "target": model.register, "rprev": "", "oracle_assisted": s_hat is not None,
+        "known_key_eval": s_hat is not None, "coefficients_attacked": len(results),
+        "coefficients_per_poly": n_coeffs, "results": results,
+        "features": {"mode": mode, "phase_samples": infos[0]["phase"], "samples_per_cycle": infos[0]["samples_per_cycle"],
+                     "offsets_searched": list(offsets), "offset_histogram": hist, "unit": "row",
+                     "rows": results[0]["rows"] if results else 0},
+    }
+    _score_summary(summary, results, s_hat is not None)
+    return summary
+
+
+def _score_summary(summary: dict, results: list, scored: bool) -> None:
+    """The rank statistics of an oracle-assisted run, added to ``summary`` in place."""
+    n_scored = sum(1 for r_ in results if r_["true_rank"] is not None)
+    if scored and n_scored:
+        ranks = [r_["true_rank"] for r_ in results if r_["true_rank"] is not None]
+        corrs = [r_["true_corr"] for r_ in results if r_["true_corr"] is not None]
+        summary["rank1_fraction"] = sum(1 for rk in ranks if rk == 1) / len(ranks)
+        summary["median_true_rank"] = float(np.median(ranks))
+        summary["mean_true_corr"] = float(np.mean(corrs))
+        summary["n_candidates"] = int(R.Q)
+        summary["chance_rank_mean"] = float(R.Q / 2)
+
+
 def run_attack(h5_path: str, model, rprev: str, max_traces: int, plot_dir: str | None,
-                dk_ref: bytes | None) -> dict:
-    """The full 768-coefficient attack with ``model`` (a name in ``models/``)."""
+                dk_ref: bytes | None, features: str = "auto", offsets=None, progress_cb=None,
+                coeffs: int = 0) -> dict:
+    """The full 768-coefficient attack with ``model`` (a name in ``models/``).
+
+    ``features`` / ``offsets`` only matter for a ``pipe_*`` model (see the module docstring);
+    ``progress_cb(done, total)`` is called after every coefficient; ``coeffs`` > 0 attacks only the
+    first ``coeffs`` coefficients of each polynomial (a quick look -- the summary says so).
+    """
     model, rprev = _model(model, rprev)
+    if model.aligned:
+        return _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets, progress_cb, coeffs)
     with TraceReader(h5_path) as r:
         _require_cpa(r)
         n = min(r.n_completed, max_traces) if max_traces else r.n_completed
@@ -163,7 +289,7 @@ def run_attack(h5_path: str, model, rprev: str, max_traces: int, plot_dir: str |
         # Candidates are coefficient VALUES mod q (0..3328, canonical ML-KEM
         # range), never a function of the register's bit width.
         candidates = np.arange(R.Q, dtype=np.int64)
-        for j in range(256):
+        for j in range(256 if coeffs <= 0 else min(256, coeffs)):
             guess.at(j)
             guess.true_value = int(s_hat[poly][j]) if s_hat is not None else -1
             res = attack_coefficient(model, guess, rprev, traces, candidates)
@@ -171,29 +297,78 @@ def run_attack(h5_path: str, model, rprev: str, max_traces: int, plot_dir: str |
             results.append({k: v for k, v in res.items() if k not in ("corr_curve", "candidates", "peak_per_cand")})
             if plot_dir and j < 4:  # a handful of example plots, not all 256*3
                 plot_coefficient(res, poly, j, plot_dir)
+            if progress_cb:
+                progress_cb(len(results), R.K * (256 if coeffs <= 0 else min(256, coeffs)))
 
-    n_scored = sum(1 for r_ in results if r_["true_rank"] is not None)
     summary = {
         "file": h5_path, "n_traces_used": n_ok, "model": model.name, "model_title": model.title,
         "target": model.register, "rprev": rprev,
         "oracle_assisted": s_hat is not None,  # True <=> --dk-ref given; see module docstring
         "known_key_eval": s_hat is not None,  # deprecated alias, kept for older report consumers
         "coefficients_attacked": len(results),
+        "coefficients_per_poly": 256 if coeffs <= 0 else min(256, coeffs),
         "results": results,
     }
-    if n_scored:
-        ranks = [r_["true_rank"] for r_ in results if r_["true_rank"] is not None]
-        corrs = [r_["true_corr"] for r_ in results if r_["true_corr"] is not None]
-        summary["rank1_fraction"] = sum(1 for rk in ranks if rk == 1) / len(ranks)
-        summary["median_true_rank"] = float(np.median(ranks))
-        summary["mean_true_corr"] = float(np.mean(corrs))
-        summary["n_candidates"] = int(R.Q)
-        summary["chance_rank_mean"] = float(R.Q / 2)
+    _score_summary(summary, results, s_hat is not None)
     return summary
 
 
+def _curve_aligned(h5_path, model, poly, coeff, max_traces, dk_ref, features, offsets) -> dict:
+    """The coefficient inspector for a pipeline model: the correlation of each row's hypothesis with its
+    cycle (at the best cycle offset), for the best guess and, when the key is known, for the true value."""
+    mode, offsets = feature_mode(model, features), parse_offsets(offsets)
+    with TraceReader(h5_path) as r:
+        _require_cpa(r)
+        n = min(r.n_completed, max_traces) if max_traces else r.n_completed
+        ok = r.ok[:n]
+        traces_full = r.traces[:n][ok]
+        cts = r.ciphertexts[:n][ok]
+        dk_hash_in_file = r.dk_hash
+        rate = r.sample_rate
+    n_ok = traces_full.shape[0]
+    if n_ok < 20:
+        raise SystemExit("only %d usable traces; need at least 20" % n_ok)
+    if rate <= 0:
+        raise SystemExit("%s needs the sample rate of the campaign" % model.name)
+    s_hat = None
+    if dk_ref is not None:
+        import hashlib
+        if hashlib.sha3_256(dk_ref).digest() != dk_hash_in_file:
+            raise SystemExit("--dk-ref does not match the key this file was captured under")
+        s_hat = R.s_hat_from_dk(dk_ref)
+    u_hat = R.u_hat_from_ct(cts)
+    Z, first, _info = AC.poly_features(traces_full, rate, poly, mode, AC.decrypt_phase(traces_full, rate))
+    t0 = C.BMUL_READ_CYCLES[poly]
+    guess = LM.Guess(u_hat, s_hat if s_hat is not None else np.zeros((R.K, 256), dtype=np.int64), poly, coeff)
+    candidates = np.arange(R.Q, dtype=np.int64)
+    causal = s_hat is None
+    with ThreadPoolExecutor(_workers()) as pool:
+        sc, k = AC.aligned_scores(model, guess, Z, first, t0, offsets, candidates, causal, pool)
+    per = sc.max(axis=1)
+    best = int(np.argmax(per))
+    off_best = int(np.asarray(offsets)[int(sc[best].argmax())])
+    cur = AC.row_correlations(model, guess, Z, first, t0, off_best, [best], causal)
+    rows = sorted(cur)
+    out = {
+        "poly": poly, "coeff": coeff, "model": model.name, "target": model.register, "rprev": "",
+        "n_traces": n_ok, "n_samples": len(rows), "unit": "row", "rows": rows, "offset": off_best,
+        "best_guess": int(candidates[best]), "best_corr": float(per[best]) / max(k, 1),
+        "best_curve": [round(float(cur[r][0]), 5) for r in rows],
+        "oracle_assisted": s_hat is not None,
+    }
+    if s_hat is not None:
+        true_idx = int(guess.true_value)
+        off_true = int(np.asarray(offsets)[int(sc[true_idx].argmax())])
+        tc = AC.row_correlations(model, guess, Z, first, t0, off_true, [true_idx], causal)
+        out["true_value"] = true_idx
+        out["true_rank"] = int(np.where(np.argsort(per)[::-1] == true_idx)[0][0]) + 1
+        out["true_curve"] = [round(float(tc[r][0]), 5) if r in tc else 0.0 for r in rows]
+    return out
+
+
 def correlation_curve_for_coefficient(h5_path: str, model, rprev: str, poly: int, coeff: int,
-                                       max_traces: int, dk_ref: bytes | None) -> dict:
+                                       max_traces: int, dk_ref: bytes | None, features: str = "auto",
+                                       offsets=None) -> dict:
     """Full per-sample correlation curve for ONE coefficient -- for the GUI's
     "Correlation vs. Time" chart. Fast (one coefficient, not all 768): this
     is a preview of a single guess in isolation, not a step of the
@@ -207,6 +382,8 @@ def correlation_curve_for_coefficient(h5_path: str, model, rprev: str, poly: int
         raise ValueError("poly must be 0..%d" % (R.K - 1))
     if not 0 <= coeff < 256:
         raise ValueError("coeff must be 0..255")
+    if model.aligned:
+        return _curve_aligned(h5_path, model, poly, coeff, max_traces, dk_ref, features, offsets)
     with TraceReader(h5_path) as r:
         _require_cpa(r)
         n = min(r.n_completed, max_traces) if max_traces else r.n_completed
@@ -262,7 +439,7 @@ def default_checkpoints(n_max: int) -> list[int]:
 
 
 def run_curve(h5_path: str, model, rprev: str, max_traces: int, dk_ref: bytes,
-              checkpoints: list[int] | None = None) -> dict:
+              checkpoints: list[int] | None = None, features: str = "auto", offsets=None) -> dict:
     """Key rank / success rate vs. trace count, oracle-assisted only.
 
     Re-runs run_attack() at each checkpoint (recomputing the correlation at
@@ -281,7 +458,7 @@ def run_curve(h5_path: str, model, rprev: str, max_traces: int, dk_ref: bytes,
     checkpoints = checkpoints or default_checkpoints(n_avail)
     rows, mtd = [], None
     for n in checkpoints:
-        s = run_attack(h5_path, model, rprev, n, None, dk_ref)
+        s = run_attack(h5_path, model, rprev, n, None, dk_ref, features, offsets)
         row = {
             "n_traces": s["n_traces_used"],
             "rank1_fraction": s.get("rank1_fraction", 0.0),
@@ -368,6 +545,15 @@ def main():
                           "model, else the model's first). Options: %s"
                           % "; ".join("%s = %s" % kv for kv in LM.RPREVS.items()))
     ap.add_argument("--max-traces", type=int, default=0, help="0 = use every trace in the file")
+    ap.add_argument("--coeffs", type=int, default=0,
+                     help="attack only the first N coefficients of each polynomial (0 = all 256): a quick look at "
+                          "a campaign or a model before committing to the full 768")
+    ap.add_argument("--features", default="auto", choices=("auto",) + CF.MODES,
+                     help="pipe_* models: how a trace becomes one value per core clock cycle (default: pca = the "
+                          "probe's per-cycle waveform learned from the traces; energy / abs need no shape)")
+    ap.add_argument("--offsets", default="",
+                     help="pipe_* models: integer cycle offsets between the schedule and the trace to search, "
+                          "'-6:6' (default) or a single value once known (printed with the result)")
     ap.add_argument("--dk-ref", default="",
                      help="path to a dk binary: turns this into an ORACLE-ASSISTED evaluation "
                           "(scores the attack's own guesses against a real key; never used to "
@@ -383,8 +569,8 @@ def main():
 
     if args.list_models:
         for m in LM.scan()[0]:
-            print("%-18s %-4s %-6s R_prev: %-22s %s" % (m.name, m.family, m.register,
-                                                       " / ".join(m.rprevs) or "-", m.equation))
+            print("%-18s %-4s %-8s R_prev: %-22s %s" % (m.name, m.family, m.register,
+                                                         " / ".join(m.rprevs) or "-", m.equation))
         return
     if not args.file:
         ap.error("the campaign file is required")
@@ -397,13 +583,35 @@ def main():
         raise SystemExit("--curve needs --dk-ref (oracle-assisted evaluation): there is no way "
                          "to know when the attack has succeeded without a ground-truth key")
 
-    summary = run_attack(args.file, model, rprev, args.max_traces, args.plots or None, dk_ref)
+    def progress(done, total):
+        if done % 64 == 0 or done == total:
+            print("  %d / %d coefficients" % (done, total), file=sys.stderr)
+
+    summary = run_attack(args.file, model, rprev, args.max_traces, args.plots or None, dk_ref, args.features,
+                         args.offsets, progress, args.coeffs)
 
     print("file:            %s" % summary["file"])
     print("traces used:     %d" % summary["n_traces_used"])
     print("model:           %s  (register %s, R_prev %s)" % (model.name, model.register, rprev or "-"))
     print("                 %s" % model.equation)
-    print("coefficients:    %d (of 768)" % summary["coefficients_attacked"])
+    print("coefficients:    %d (of 768)%s" % (summary["coefficients_attacked"],
+          "" if summary["coefficients_per_poly"] == 256 else "   <-- partial run (--coeffs)"))
+    ft = summary.get("features")
+    if ft:
+        top = sorted(ft["offset_histogram"].items(), key=lambda kv: -kv[1])[:3]
+        print("features:        %s, one per core clock cycle (%.2f samples/cycle, cell starts at sample %.2f)"
+              % (ft["mode"], ft["samples_per_cycle"], ft["phase_samples"]))
+        print("cycle offsets:   best guess per coefficient at offset %s of %d searched -- a pile-up at one offset "
+              "means the alignment is real; rerun with --offsets <that value>"
+              % (", ".join("%+d (%d)" % kv for kv in top), len(ft["offsets_searched"])))
+    best = [r_["best_corr"] for r_ in summary["results"]]
+    if best:
+        # the largest |rho| of pure noise over G guesses x T samples (x offsets) for n traces
+        t = ft["rows"] if ft else 1
+        trials = R.Q * (len(ft["offsets_searched"]) if ft else 4400)
+        print("peak |rho|:      mean %.3f, max %.3f   (noise alone gives about %.3f at this trace count%s)"
+              % (np.mean(best), np.max(best), np.sqrt(2 * np.log(trials) / (summary["n_traces_used"] * t)),
+                 ", averaged over %d rows" % t if ft else ""))
     if summary["oracle_assisted"]:
         print("\n################################################################")
         print("# ORACLE-ASSISTED EVALUATION (--dk-ref given)")
@@ -432,7 +640,7 @@ def main():
               "verdict, only what the attack recovered under the stated model.")
 
     if args.curve:
-        curve = run_curve(args.file, model, rprev, args.max_traces, dk_ref)
+        curve = run_curve(args.file, model, rprev, args.max_traces, dk_ref, features=args.features, offsets=args.offsets)
         print("\n-- key rank / success rate vs. trace count (oracle-assisted) --")
         print("%10s  %12s  %12s  %10s" % ("n_traces", "rank1_frac", "median_rank", "mean|rho|"))
         for row in curve["checkpoints"]:

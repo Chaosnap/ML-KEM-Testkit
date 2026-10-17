@@ -17,7 +17,7 @@ import importlib
 import os
 import pkgutil
 
-from .base import REGISTERS, RPREVS, Guess, LeakageModel, check, hd, hw  # noqa: F401
+from .base import REGISTERS, RPREVS, Guess, LeakageModel, PipelineModel, check, hd, hw  # noqa: F401
 
 #: Names the models had as mlkem_ref.MODEL_PRESETS (older reports, configs, scripts).
 ALIASES = {"HW": "hw_scalar", "HD": "hd_scalar", "basemul-c0": "hd_basemul_c0",
@@ -82,7 +82,7 @@ def describe(model: LeakageModel) -> dict:
             "rprevs": [{"name": r, "desc": RPREVS[r]} for r in model.rprevs],
             "equation": model.equation, "rtl_register": model.rtl_register,
             "pipeline_stage": model.pipeline_stage, "required_inputs": model.required_inputs,
-            "limitations": model.limitations, "doc": (model.__doc__ or "").strip()}
+            "limitations": model.limitations, "aligned": model.aligned, "doc": (model.__doc__ or "").strip()}
 
 
 def selftest(model: LeakageModel) -> list[dict]:

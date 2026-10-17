@@ -9,7 +9,7 @@
 VERILATOR ?= verilator
 SRCS := tb_core.sv $(wildcard ../../hdl/core/*.sv)
 
-obj_dir/Vtb_core: $(SRCS) $(wildcard ../../hdl/core/*.hex)
+obj_dir/Vtb_core: $(SRCS) bmul_regs.svh $(wildcard ../../hdl/core/*.hex)
 	$(VERILATOR) --binary --timing -O3 -j 0 \
 		-Wno-fatal -Wno-lint -Wno-style \
 		--top-module tb_core -o Vtb_core $(SRCS)

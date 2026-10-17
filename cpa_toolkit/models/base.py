@@ -8,6 +8,10 @@
 - :class:`LeakageModel`: the base class. A model file next to this one only
   names the register it looks at, the R_prev choices it accepts and how the
   register leaks (``leak``).
+- :class:`PipelineModel`: a model that follows the RTL schedule instead of naming one
+  register -- the transitions of every register of the multiplier pipeline, row by row
+  (``mlkem_pipeline.py``). It needs per-cycle trace features and is attacked row-aligned
+  (``aligned_cpa.py``); ``models/pipe_*.py`` are such models.
 - :func:`check`: does a model build its hypotheses on the values the hardware
   computes? Compared against whole-polynomial BaseMuls (``mlkem_ref``).
 
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import mlkem_pipeline as MP
 import mlkem_ref as R
 
 Q, K = R.Q, R.K
@@ -28,6 +33,7 @@ REGISTERS = {
     "c0": 12,       # even BaseMul output coefficient (+ accumulated C)
     "c1": 12,       # odd BaseMul output coefficient (+ accumulated C)
     "word": 24,     # {c1, c0}: the 24-bit RAM word / wb / rb_din register
+    "pipeline": 0,  # not one register: a PipelineModel's flops (see its ``bits``)
 }
 
 #: What the register held before (R_prev).
@@ -160,6 +166,7 @@ class LeakageModel:
     limitations = ""         # what this model does NOT capture
     name = ""                # set by the registry: the file name
     source = ""              # set by the registry: the file path
+    aligned = False          # True: a PipelineModel (row-aligned attack on per-cycle features)
 
     @property
     def bits(self) -> int:
@@ -186,6 +193,44 @@ class LeakageModel:
         return np.asarray(self.leak(x, r), dtype=np.float32)
 
 
+class PipelineModel(LeakageModel):
+    """A model that follows the RTL schedule: the Hamming distance of every register of one group
+    of the multiplier pipeline, in each clock cycle after the attacked word is read.
+
+    Subclass it in a file of its own, set ``group`` (a group of ``mlkem_pipeline.registers``) and the
+    texts; the file ends with ``MODEL = YourClass()``. :meth:`row_hypotheses` replaces
+    :meth:`hypotheses`: one hypothesis per cycle instead of one per model, and the attack sums their
+    correlations at the known cycles (``aligned_cpa.py``) instead of taking the best sample.
+    """
+
+    aligned = True
+    register = "pipeline"
+    rprevs = ()
+    group = "all"
+
+    @property
+    def regs(self) -> dict:
+        return MP.registers(self.group)
+
+    @property
+    def bits(self) -> int:
+        return MP.bits_of(self.regs)
+
+    def leak(self, x, r_prev):
+        raise NotImplementedError("a PipelineModel has no single register: use row_hypotheses()")
+
+    def hypotheses(self, guess, rprev, candidates, rows=slice(None)):
+        raise NotImplementedError("a PipelineModel is attacked row-aligned: use row_hypotheses()")
+
+    def row_hypotheses(self, guess: Guess, candidates: np.ndarray, causal: bool = False) -> dict[int, np.ndarray]:
+        """``{row: (N, G)}`` hypothetical toggle counts, ``row`` = cycles after the read of the word of ``guess``."""
+        return MP.row_hypotheses(guess.u, guess.s, guess.j, candidates, self.regs, causal)
+
+    def rows(self, j: int, causal: bool = False) -> list[int]:
+        """The rows :meth:`row_hypotheses` returns for coefficient ``j``."""
+        return MP.rows_for(j, causal, self.regs)
+
+
 # --- check -----------------------------------------------------------------------
 def _reference(u: np.ndarray, s: np.ndarray, poly: int, j: int, register: str, rprev: str):
     """Register value and R_prev of coefficient j, computed from whole-polynomial BaseMuls."""
@@ -210,11 +255,59 @@ def _reference(u: np.ndarray, s: np.ndarray, poly: int, j: int, register: str, r
     return value(w, acc), prev
 
 
+def check_pipeline(model: PipelineModel, n: int = 12, seed: int = 1) -> list[tuple[str, bool, str]]:
+    """The pipeline twin against FIPS 203 and the model against the twin.
+
+    1. The operations of the two multipliers, taken from the twin's own schedule (A0, A1, the
+       Karatsuba sum K and gamma * A1), combine to the BaseCaseMultiply of ``mlkem_ref`` for every word:
+       ``c0 = A0 + G``, ``c1 = K - A0 - A1``. The twin's operations are therefore the arithmetic the
+       hardware does, not an unrelated formula.
+    2. Every transition lands on a row inside the pipeline (4 .. 25 cycles after the read).
+    3. The hypotheses depend on the guess (candidates are told apart), for an even and an odd
+       coefficient, with the true key (oracle-assisted) and blind (causal).
+    """
+    rng = np.random.default_rng(seed)
+    u = rng.integers(0, Q, (n, 256))
+    s = rng.integers(0, Q, 256)
+    out = []
+    bad = []
+    want = R.basemul(u, s[None, :])
+    for w in (0, 1, 2, 3, 4, 17, 64, 100, 126, 127):
+        ops = MP.WordOps(u, s, w)
+        r = lambda op: MP.modmul_state(*op)["r"]
+        a0, a1, kar, gam = r(ops.a0(w)), r(ops.a1(w)), r(ops.kar(w)), r(ops.gam(w))
+        c0, c1 = (a0 + gam) % Q, (kar - a0 - a1) % Q
+        if not (np.array_equal(c0[:, 0], want[:, 2 * w]) and np.array_equal(c1[:, 0], want[:, 2 * w + 1])):
+            bad.append("word %d" % w)
+    out.append(("operations match BaseCaseMultiply", not bad,
+                "A0, A1, K and the gamma product combine to the FIPS 203 BaseMul at 10 words" if not bad
+                else "differ at " + ", ".join(bad)))
+    rows = sorted({k for j in (0, 1, 60, 61, 254, 255) for c in (False, True) for k in model.rows(j, c)})
+    ok_rows = bool(rows) and rows[0] >= 4 and rows[-1] <= 25
+    out.append(("rows inside the pipeline", ok_rows,
+                "rows %d .. %d cycles after the word's read" % (rows[0], rows[-1]) if rows else "the model uses no register"))
+    g = Guess(np.repeat(u[:, None, :], K, axis=1), np.repeat(s[None, :], K, axis=0), 0)
+    cand = np.arange(0, Q, 41)
+    varies = {}
+    for causal in (False, True):
+        for j in (60, 61):
+            g.at(j)
+            h = model.row_hypotheses(g, cand, causal)
+            varies[(causal, j)] = bool(h) and any(float(np.ptp(v, axis=1).max()) > 0 for v in h.values())
+    bad = ["%s j=%d" % ("blind" if c else "oracle", j) for (c, j), v in varies.items() if not v]
+    out.append(("depends on the guess", not bad,
+                "hypotheses differ between candidate values (oracle and blind, both parities)" if not bad
+                else "no variation for " + ", ".join(bad)))
+    return out
+
+
 def check(model: LeakageModel, n: int = 8, seed: int = 1) -> list[tuple[str, bool, str]]:
     """Random û and ŝ; for coefficients of every BMUL, the model's hypothesis for
     the true value must equal ``leak`` of the register value and R_prev computed
     independently from whole-polynomial BaseMuls, and the hypotheses must
     depend on the guess. Returns ``[(name, ok, detail), ...]``."""
+    if model.aligned:
+        return check_pipeline(model)
     rng = np.random.default_rng(seed)
     u = rng.integers(0, Q, (n, K, 256))
     s = rng.integers(0, Q, (K, 256))

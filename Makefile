@@ -1,5 +1,5 @@
 .PHONY: help setup gui test vectors ucode sim-iverilog sim-link sim-bridge sim-system sim-cdc sim-units \
-	acvp-sim acvp-uart check lint regress clean
+	sim-bmul-timing sim-pipeline-check acvp-sim acvp-uart check lint regress clean
 
 # Python of the project environment (pyproject.toml / uv.lock).
 PY ?= uv run python
@@ -16,6 +16,8 @@ help:
 	@echo "make acvp-uart PORT=  NIST ACVP vectors on the board;  make acvp-sim: same on the RTL"
 	@echo "make sim-link      UART link + 0x05 Run (Icarus);  make sim-bridge: host protocol on the real core"
 	@echo "make sim-system    whole board system over a serial line, incl. trigger and LEDs"
+	@echo "make sim-bmul-timing     re-measure the Decaps windows for cpa_toolkit/config.py"
+	@echo "make sim-pipeline-check  the pipe_* multiplier twin against the RTL, cycle by cycle"
 	@echo "make regress       all simulation and unit tests"
 	@echo "make ucode         regenerate the microcode / zeta ROMs"
 	@echo "Protocol: docs/UART_PROTOCOL.md   ACVP: docs/ACVP_TEST.md   CPA/TVLA: cpa_toolkit/README.md"
@@ -64,6 +66,16 @@ sim-cdc:
 sim-units:
 	$(MAKE) -C testbench/units all
 	$(MAKE) -C testbench/sponge
+
+# Re-measure the Decaps windows (BMUL / NTT / INTT / phases) that cpa_toolkit/config.py
+# holds; paste the "config.py" block it prints back into config.py after an RTL change.
+sim-bmul-timing:
+	$(PY) scripts/sim/bmul_timing.py
+
+# The software twin of the multiplier pipeline (the pipe_* leakage models) against the
+# RTL's own per-cycle toggle counts: every register, every cycle, all three BMULs.
+sim-pipeline-check:
+	$(PY) scripts/sim/pipeline_check.py
 
 # NIST ACVP ML-KEM-768 vectors on the RTL in Verilator, report in data/acvp/ (docs/ACVP_TEST.md).
 acvp-sim:

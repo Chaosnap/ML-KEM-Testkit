@@ -24,12 +24,17 @@ import models as LM  # noqa: E402
 import testvectors as TV  # noqa: E402
 import web_gui as W  # noqa: E402
 
+#: The register models (one register + R_prev, correlated with every sample of the window).
 MODELS = ["hd_basemul_c0", "hd_basemul_c1", "hd_basemul_word", "hd_scalar", "hw_scalar"]
+#: The schedule-aware pipeline models (one hypothesis per clock cycle) -- tests/test_aligned_attack.py.
+PIPE_MODELS = ["pipe_all", "pipe_barrett", "pipe_dsp", "pipe_output"]
+#: Every model file, as models.names() sorts them.
+ALL_MODELS = sorted(MODELS + PIPE_MODELS)
 
 
 class TestRegistry(unittest.TestCase):
     def test_names_and_aliases(self):
-        self.assertEqual(LM.names(), MODELS)
+        self.assertEqual(LM.names(), ALL_MODELS)
         self.assertEqual(LM.get("basemul-word").name, "hd_basemul_word")      # pre-models/ preset names
         self.assertEqual(LM.resolve("HW"), "hw_scalar")
         self.assertEqual(LM.resolve("custom", "c1"), "hd_basemul_c1")          # old "custom" reports
@@ -54,7 +59,7 @@ class TestRegistry(unittest.TestCase):
             path.write_text("this is not python")
             found, errors = LM.scan()                                            # a broken file is reported,
             self.assertEqual([e["file"] for e in errors], ["models/zz_test_tmp.py"])  # the others still load
-            self.assertEqual([m.name for m in found], MODELS)
+            self.assertEqual([m.name for m in found], ALL_MODELS)
         finally:
             path.unlink()
 
@@ -118,7 +123,7 @@ class TestAttack(unittest.TestCase):
 class TestGuiEndpoints(unittest.TestCase):
     def test_list_and_selftest(self):
         r = W.api_model_list({})
-        self.assertEqual([m["name"] for m in r["models"]], MODELS)
+        self.assertEqual([m["name"] for m in r["models"]], ALL_MODELS)
         self.assertEqual(r["errors"], [])
         self.assertEqual(r["default_model"], LM.resolve(C.CPA_MODEL))
         word = next(m for m in r["models"] if m["name"] == "hd_basemul_word")

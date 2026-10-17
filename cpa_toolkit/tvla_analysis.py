@@ -96,15 +96,33 @@ def detection_curve(h5_path: str, max_traces: int = 0, checkpoints: list[int] | 
             "leakage_threshold": LEAKAGE_THRESHOLD}
 
 
+def peak_indices(abs_t: np.ndarray, max_points: int) -> np.ndarray:
+    """At most ``max_points`` sample indices, one per equal-width bin: the bin's largest ``|t|``.
+
+    A TVLA verdict is a peak against a threshold, so decimating the curve by a plain stride would
+    drop exactly the samples that matter (a single-sample |t| = 9 next to a plotted 6, or a
+    crossing of 4.5 that is not drawn at all). The first and last bin are padded, never skipped.
+    """
+    n = int(abs_t.shape[0])
+    if n <= max_points:
+        return np.arange(n)
+    stride = -(-n // max_points)                        # ceil
+    pad = np.full(-(-n // stride) * stride, -1.0)       # |t| >= 0, so the padding never wins a bin
+    pad[:n] = abs_t
+    best = pad.reshape(-1, stride).argmax(axis=1)
+    return np.minimum(np.arange(best.size) * stride + best, n - 1)
+
+
 def chart_data(h5_path: str, max_traces: int = 0, max_points: int = 2000) -> dict:
     """Everything the Results Viewer's TVLA chart needs in one call: the full
     (optionally decimated) t-curve, the fixed/random mean traces, and the
     detection curve -- all from real per-sample arrays read out of the HDF5
     file, never fabricated (see README.md's "no hardcoded/fake results").
 
-    Decimation is plain strided subsampling (``max_points`` cap), applied
-    identically to every series returned so they stay aligned on the same
-    (possibly-subsampled) sample-index axis; the chart label says so.
+    Decimation (``max_points`` cap) keeps, per bin, the sample with the largest
+    |t| (:func:`peak_indices`), so every peak and threshold crossing of the
+    full curve is in the plot; the class means are read at the same sample
+    indices so all series stay aligned on one (possibly subsampled) axis.
     """
     result = run_tvla(h5_path, max_traces)
     t_values = result.pop("t_values")
@@ -118,9 +136,9 @@ def chart_data(h5_path: str, max_traces: int = 0, max_points: int = 2000) -> dic
     random_mean = traces[cls == 1].mean(axis=0) if (cls == 1).any() else np.zeros_like(t_values)
 
     n_samples = t_values.shape[0]
-    stride = max(1, n_samples // max_points)
-    idx = np.arange(0, n_samples, stride)
-    decimated = stride > 1
+    abs_t = np.abs(t_values)
+    idx = peak_indices(np.where(np.isfinite(abs_t), abs_t, np.finfo(np.float64).max), max_points)
+    decimated = n_samples > max_points
 
     detection = detection_curve(h5_path, max_traces)
     # +-inf (certain leakage: zero variance in both classes, means differ --

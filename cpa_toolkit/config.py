@@ -69,20 +69,47 @@ CORE_MHZ = 206.25
 #: products s_hat_i o u_hat_i. Measured in a cycle-accurate RTL simulation of
 #: Decaps (each is 281 cycles: 128 words, one per 2 cycles, plus the 21-cycle
 #: pipeline); see docs/ATTACK_MODEL.md section 4.3. After an RTL/microcode
-#: change, re-measure the cycle range of "BMUL s7 * s6 -> s3" in simulation
-#: (testbench/core_sim) and update these by hand.
+#: change, re-measure with ``scripts/sim/bmul_timing.py`` (which drives
+#: testbench/core_sim) and paste its "config.py" block in here.
+#: The datapath is active cycles 1289-1564 etc.; the ends are kept a few
+#: cycles wide so the write-back tail is inside the window.
 BMUL_WINDOWS = [(1289, 1570), (2855, 3136), (4421, 4702)]
+
+#: The cycle in which the RAM read address of the first word of each decryption BMUL is issued
+#: (``T`` of word 0 in ``mlkem_poly_alu.sv``; word ``w`` is read at ``T + 2 w``): the datapath's
+#: first active cycle plus one. The row-aligned attack (``aligned_cpa.py``) places the pipeline
+#: schedule of every word on the trace with these. Measured by ``scripts/sim/bmul_timing.py`` (the
+#: ALU start event of each BMUL, plus 2), same run as BMUL_WINDOWS.
+BMUL_READ_CYCLES = [1290, 2856, 4422]
 
 #: NTT (one per BMUL, computing u_hat_i before it) and the single INTT (after
 #: the third BMUL, see docs/ATTACK_MODEL.md section 4.1's microcode listing --
 #: ADDR 235/239/243 = NTT, ADDR 247 = INTT) cycle ranges, same units as
-#: BMUL_WINDOWS. Left unset (None) because -- unlike BMUL_WINDOWS -- these
-#: have not been measured yet; the GUI's window markers only draw what is
-#: here, never a guessed value, so these stay None (and the NTT/INTT markers
-#: are simply omitted) until they are measured the same way BMUL_WINDOWS was
-#: (see the comment above).
-NTT_WINDOWS_CYCLES: list[tuple[int, int]] | None = None
-INTT_WINDOW_CYCLES: tuple[int, int] | None = None
+#: BMUL_WINDOWS. Measured cycle-exactly (identical across two Decaps jobs) in
+#: scripts/sim/bmul_timing.py, same run that re-confirms BMUL_WINDOWS. These
+#: are not CPA targets (u_hat is public, s_hat is not an NTT/INTT operand);
+#: the GUI draws them, when present, only to show the decryption structure.
+NTT_WINDOWS_CYCLES: list[tuple[int, int]] | None = [(146, 1143), (1712, 2709), (3278, 4275)]
+INTT_WINDOW_CYCLES: tuple[int, int] | None = (4701, 5841)
+
+#: The Decaps timeline as ``(label, start_cycle, end_cycle)``, measured in the
+#: same RTL run (scripts/sim/bmul_timing.py). Only the three decryption BMULs
+#: (inside "decrypt") carry s_hat and are the CPA target; the rest is here so
+#: a trace feature OUTSIDE the BMUL windows can be named instead of mistaken
+#: for a misplaced target. In a fixed-vs-random TVLA the strongest leakage is
+#: the input-dependent Keccak: J(z||c) absorbs the whole ciphertext and the FO
+#: re-encryption recomputes everything from the decrypted message m', so the
+#: |t| peak lands there (~6900 cycles / ~33 us), not in a decryption BMUL --
+#: that is expected and is a different phenomenon from the key-bearing BMUL
+#: leakage the CPA model targets. Total Decaps is ~26367 core cycles (127.8 us
+#: at 206.25 MHz), so a typical 50 us record only reaches into "re-encrypt".
+DECAPS_PHASES: list[tuple[str, int, int]] = [
+    ("decrypt ŝᵀ∘û", 0, 6519),   # 3x(NTT u_hat, BMUL) + INTT + v-(...) -> m'
+    ("G(m′‖h)", 6519, 6623),               # (K',r') = G(m'||h), SHA3-512
+    ("J(z‖c)", 6623, 7375),                     # K_bar = J(z||c): absorbs the whole ciphertext
+    ("re-encrypt c′", 7375, 25795),             # K-PKE.Encrypt(ek, m', r'), Keccak-heavy
+    ("compare/select", 25795, 26367),                # c == c' ? K' : K_bar
+]
 
 #: Trigger = trig_out (STATUS.busy): Pmod JA pin 1 / pkg pin G13 on the Arty
 #: A7, Pmod JA pin 3 / Y16 on the Arty Z7 (3.3 V logic), CN8 pin 3 / N16 on

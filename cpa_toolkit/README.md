@@ -146,6 +146,18 @@ TVLA 中，class 0 是同一条固定密文的重复（`m0 = SHA3-256("pqc-testk
 | `hd_basemul_c1` | `c1`，12 位，`h1d[4]`，T+18 | prev-word / zero / acc | BaseMul 输出的奇系数（含累加） |
 | `hd_basemul_word`（默认） | `word`，24 位，`wb`/`rb_din`，T+21 | prev-word / zero / acc | `HD(R_prev, {c1, c0})`：24 位 RAM 写回字，物理上最接近真实探头 |
 
+另有一组**流水线模型**（`pipe_all`、`pipe_dsp`、`pipe_barrett`、`pipe_output`）：它们不指定单个寄存器，而是按 `mlkem_poly_alu.sv` 的真实发射时序，给乘法器流水线里每一拍各算一个假设，再和**那一拍**的特征做相关。上面这些 `hd_*` 的 `prev-word` 前态（"上一个字的同一个值"）和硬件对不上——两个乘法器每拍都换运算，`A0` 的下一拍是 Karatsuba 和项，不是下一个字的 `A0`；在周期精确仿真里，`hd_*` 的假设与真实翻转的相关系数约 0.01，按时序建模约 0.3。用法、四个子模型的区别和局限见 [`LEAKAGE_MODELS.md`](../docs/LEAKAGE_MODELS.md) 第 7 节，设计推导见 [`ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md) 第 5.5 节。
+
+这组模型需要 campaign 记录了采样率（它要把 trace 折成每个核心周期一个值），并且会搜一个整数周期偏移：
+
+```bash
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_all               # 盲攻击
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_all --coeffs 8     # 先看 24 个系数
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_dsp --features energy --offsets 2
+```
+
+`--features` 选怎么把一个周期里的采样点压成一个数（`pca` 默认，从 trace 里学探头的单周期波形；`energy`、`abs` 不假设形状），`--offsets` 是要搜的整数周期偏移（默认 `-6:6`），`--coeffs` 只攻击每个多项式的前 N 个系数（先快速看一眼）。GUI 在 Analysis 页选到 `pipe_*` 时会多出对应的两个设置。
+
 R_prev 的含义：`zero` = 前态为 0（即汉明重量）；`prev-word` = 同一遍 BMUL 中上一个字；`acc` = 前面多项式的累加和 C_old。每个模型对应哪个 RTL 寄存器、哪一个时钟拍，完整推导见 [`ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md) 第 5 节。旧的预设名（`HW`、`HD`、`basemul-c0`、`basemul-c1`、`basemul-word`）仍然可以用，旧报告也会自动对应到新的模型名。
 
 **比较不同模型**：对同一个 campaign 用不同的模型（或 R_prev）各运行一次 CPA，然后在报告的 *Compare models* 标签中对比。只在相同条件下比较：同样的 trace 数，打分模式下看 rank-1 比例和真实密钥的中位排名，盲攻击模式下看峰值 |ρ|。
@@ -153,9 +165,17 @@ R_prev 的含义：`zero` = 前态为 0（即汉明重量）；`prev-word` = 同
 **加一个新模型**：
 
 1. 复制 `models/_template.py` 为 `models/<名字>.py`（小写，不以 `_` 开头）；
-2. 选寄存器（`p_self` / `c0` / `c1` / `word`）、它接受的 R_prev（或不用），写 `leak(x, r_prev)`：`x` 是（trace × 候选值）的寄存器值，返回每个 (trace, 候选值) 的假设泄漏；
+2. 选寄存器（`p_self` / `c0` / `c1` / `word`）、它接受的 R_prev（或不用），写 `leak(x, r_prev)`：`x` 是（trace × 候选值）的寄存器值，返回每个 (trace, 候选值) 的假设泄漏；要做流水线模型则继承 `PipelineModel` 并选一个触发器分组（`all` / `dsp` / `barrett` / `output`），不用写 `leak()`；
 3. 在 GUI 的模型下拉框旁点 ↻（或刷新页面），新模型就出现在列表里，不需要重启 GUI；
-4. 先运行 *Self-test this model*：它检查模型看到的寄存器值和硬件实际计算的值一致（与整多项式 BaseMul 独立计算的结果比较），并且假设确实随猜测值变化。
+4. 先运行 *Self-test this model*：它检查模型看到的寄存器值和硬件实际计算的值一致（与整多项式 BaseMul 独立计算的结果比较），并且假设确实随猜测值变化。流水线模型的自检改为检查：孪生的四种运算组合起来等于 FIPS 203 的 BaseCaseMultiply、每个假设落在流水线存在的拍上、盲/打分两种模式下假设都随猜测变化。
+
+把孪生和 RTL 逐周期比对（需要 Verilator）：
+
+```bash
+python scripts/sim/pipeline_check.py        # 全部 35 个寄存器、三次 BMUL、每一拍都必须一致
+python scripts/sim/model_vs_rtl.py          # 每个模型与仿真总翻转的对齐曲线
+python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关的翻转，按分组排序
+```
 
 模板里的示例是一个“单比特”模型（24 位写回字的第 0 位，DPA 风格）。`models/base.py` 提供 `hw()`、`hd()` 和 `Guess`（给定猜测值时整个 BaseMul 对的中间值），需要更特殊的假设时可以直接重写 `hypotheses()`。
 

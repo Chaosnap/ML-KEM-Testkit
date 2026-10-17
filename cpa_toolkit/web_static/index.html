@@ -191,7 +191,7 @@
 
       <!-- ============================ Acquisition ============================ -->
       <section class="page" id="page-acquire" data-title="Acquisition" data-desc="Capture one trace per vector, checked against the expected shared secret">
-        <div class="grid grid-side">
+        <div class="grid grid-acq">
           <div class="card">
             <div class="card-head"><h2>Campaign</h2></div>
             <ul class="checklist" id="acq-checklist"></ul>
@@ -227,12 +227,16 @@
         <div class="card">
           <div class="card-head"><h2>Setup capture</h2><span class="sub">one Decaps of a fresh valid vector — for trigger, vertical scale and timebase</span>
             <div class="actions"><button class="btn ghost sm" id="cap-clear">Clear</button><button class="btn secondary" id="trig-check">Check trigger</button><button class="btn primary" id="cap-one">Capture</button></div></div>
-          <div class="hidden" id="trig-wrap">
-            <div class="table-wrap short" style="margin-bottom:12px"><table class="t"><thead><tr><th>trigger check</th><th>result</th><th>detail</th></tr></thead><tbody id="trig-table"></tbody></table></div>
+          <div class="setup-grid">
+            <div class="setup-side">
+              <div class="hidden" id="trig-wrap">
+                <div class="table-wrap" style="margin-bottom:12px"><table class="t trig"><thead><tr><th>trigger check</th><th>result</th><th>detail</th></tr></thead><tbody id="trig-table"></tbody></table></div>
+              </div>
+              <div class="hint" style="margin:0 0 10px">Trigger: <b>trig_out</b> = STATUS.busy on Pmod JA1 (Arty A7) / JA3 (Arty Z7) / CN8 pin 3 (SAKURA-X) — rises when the Decaps starts, high for CYCLE_COUNT core cycles. Scope: NORMAL/SINGLE mode, rising edge, ≈ 1.6 V on the Arty boards (3.3 V), ≈ 1.25 V on the SAKURA-X (2.5 V); trigger point at the left edge of the record.</div>
+              <div class="kpis compact" id="cap-kpis"></div>
+            </div>
+            <div class="chart tall" id="cap-chart"><div class="chart-empty">No capture yet. The last 5 captures are overlaid for comparison.</div></div>
           </div>
-          <div class="hint" style="margin:0 0 10px">Trigger: <b>trig_out</b> = STATUS.busy on Pmod JA1 (Arty A7) / JA3 (Arty Z7) / CN8 pin 3 (SAKURA-X) — rises when the Decaps starts, high for CYCLE_COUNT core cycles. Scope: NORMAL/SINGLE mode, rising edge, ≈ 1.6 V on the Arty boards (3.3 V), ≈ 1.25 V on the SAKURA-X (2.5 V); trigger point at the left edge of the record.</div>
-          <div class="kpis compact" id="cap-kpis"></div>
-          <div class="chart tall" id="cap-chart"><div class="chart-empty">No capture yet. The last 5 captures are overlaid for comparison.</div></div>
         </div>
       </section>
 
@@ -309,6 +313,19 @@
                 <button class="btn ghost sm icon" id="an-model-reload" title="Re-read cpa_toolkit/models/ (new or edited model files)">↻</button></div>
               <div class="model-detail" id="an-model-detail"></div>
               <div id="an-rprev-wrap"><label class="f">R_prev — what the register held before</label><select id="an-rprev"></select></div>
+              <div id="an-aligned-wrap" class="hidden">
+                <div class="cols-2">
+                  <div><label class="f">Trace feature — one value per core clock cycle</label>
+                    <select id="an-features">
+                      <option value="auto">pca — the probe's per-cycle shape, learned from the traces</option>
+                      <option value="energy">energy — sum of squares (no shape assumed)</option>
+                      <option value="abs">abs — sum of absolute values</option>
+                    </select></div>
+                  <div><label class="f">Cycle offsets to search</label>
+                    <input id="an-offsets" type="text" placeholder="-6:6" title="integer cycles between the RTL schedule and sample 0 of the record; a range (-6:6), a list (-2,0,2) or one value once it is known"></div>
+                </div>
+                <div class="hint">This model has one hypothesis per clock cycle, so it needs the campaign's sample rate and the cycle the record starts at. The offset that wins for most coefficients is reported with the result — put it in here afterwards to make the run faster and the result cleaner.</div>
+              </div>
               <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test this model</button>
                 <button class="btn ghost sm" id="model-save-default">Save as CLI default</button><span class="hint" id="model-status" style="margin:0"></span></div>
               <div class="table-wrap short hidden" id="model-selftest-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody id="model-selftest-table"></tbody></table></div>
@@ -323,6 +340,7 @@
               </div>
               <div class="step-title" id="an-run-step"><span class="n" id="an-run-n">3</span>Run</div>
               <div class="row"><label class="f" style="margin:0">Traces to use</label><input id="an-max-traces" type="text" value="0" title="0 = all" style="width:110px"><span class="hint" style="margin:0">0 = all</span></div>
+              <div class="row" id="an-coeffs-row"><label class="f" style="margin:0">Coefficients per polynomial</label><input id="an-coeffs" type="text" value="0" title="0 = all 256; a smaller number is a quick look at the model before the full 768" style="width:110px"><span class="hint" style="margin:0">0 = all 256</span></div>
               <div class="btn-row"><button class="btn primary" id="an-run">Run analysis</button><span class="hint" id="an-status" style="margin:0"></span></div>
               <div class="progress indet hidden" id="an-progress"><div class="fill"></div><div class="txt"></div></div>
             </div>
