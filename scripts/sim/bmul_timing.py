@@ -14,30 +14,58 @@ core-clock cycles after ``start`` (the same cycles ``trig_out`` is high and
   outside the decryption windows can be named instead of mistaken for a
   misplaced target (e.g. a TVLA peak in the FO re-encryption).
 
-It does not touch the hardware: run the model once (see ``--help``) and feed
-its dumps in. Re-run after any RTL/microcode change and update config.py by
-hand, exactly as the comment on ``BMUL_WINDOWS`` says.
+It does not touch the hardware. With no arguments it builds the Verilator model,
+runs two Decaps through it and analyses the dumps; given a ``+trace=`` (and
+optionally ``+bmul=``) file it analyses those instead. Re-run after any
+RTL/microcode change and paste its "config.py" block into ``cpa_toolkit/config.py``,
+exactly as the comment on ``BMUL_WINDOWS`` says.
 
-    # build + run the model (one Decaps is enough; two confirms it is cycle-exact)
-    make -C testbench/core_sim
-    python - <<'PY'  # write a 1-job Decaps job file -> /tmp/jobs.txt  (see acvp_test.py)
-    PY
-    testbench/core_sim/obj_dir/Vtb_core +jobs=jobs.txt +out=res.txt \
-        +trace=trace.txt +bmul=bmul.txt
-    python scripts/sim/bmul_timing.py trace.txt bmul.txt
+    make sim-bmul-timing                                   # or:
+    python scripts/sim/bmul_timing.py                      # build, run, analyse
+    python scripts/sim/bmul_timing.py trace.txt bmul.txt   # analyse existing dumps
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+SIM_DIR = os.path.join(ROOT, "testbench", "core_sim")
+SIM_BINARY = os.path.join(SIM_DIR, "obj_dir", "Vtb_core")
 
 # op codes (mlkem_poly_alu.sv OP_*): 0 NTT, 1 INTT, 2 BMUL, 3 ADD, 4 SUB.
 ALU_OP = {0: "NTT", 1: "INTT", 2: "BMUL", 3: "ADD", 4: "SUB"}
 # The microcode slot the three decryption products ŝᵢ∘ûᵢ accumulate into
 # (gen_mlkem_ucode.py: S_ACC); their NTTs land in S_T. Re-encryption reuses
 # other slots, so "decryption" is the first INTT's worth of operations.
+
+
+def simulate(workdir: str, n_jobs: int = 2) -> tuple[str, str]:
+    """Build the model if needed, run ``n_jobs`` Decaps, return the ``(trace, bmul)`` dump paths."""
+    sys.path.insert(0, os.path.join(ROOT, "cpa_toolkit"))
+    import testvectors as TV
+
+    r = subprocess.run(["make", "-C", SIM_DIR], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit("Verilator build failed:\n%s%s" % (r.stdout, r.stderr))
+    vs = TV.generate("cpa", n_jobs, bytes(range(64)), "valid")
+    jobs = os.path.join(workdir, "jobs.txt")
+    with open(jobs, "w") as f:
+        f.write("%d\n" % vs.n)
+        for i in range(vs.n):
+            data = vs.dk + vs.ct[i].tobytes()
+            f.write("2 768 %d\n%s\n" % (len(data), " ".join("%02x" % b for b in data)))
+    trace, bmul = os.path.join(workdir, "trace.txt"), os.path.join(workdir, "bmul.txt")
+    r = subprocess.run([SIM_BINARY, "+jobs=" + jobs, "+out=" + os.path.join(workdir, "res.txt"),
+                        "+trace=" + trace, "+bmul=" + bmul], capture_output=True, text=True)
+    if r.returncode != 0 or "TB_CORE DONE" not in r.stdout:
+        raise SystemExit("simulation failed:\n%s%s" % (r.stdout, r.stderr))
+    return trace, bmul
 
 
 def parse_trace(path: str) -> dict[int, list]:
@@ -95,11 +123,17 @@ def bmul_spans(path: str) -> dict[int, list[tuple[int, int]]]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("trace", help="the +trace= file (instruction timeline)")
+    ap.add_argument("trace", nargs="?", help="a +trace= file (instruction timeline); omit to run the model")
     ap.add_argument("bmul", nargs="?", help="the +bmul= file (BMUL datapath), optional")
     ap.add_argument("--slack", type=int, default=40,
                     help="cycles added each side when printing config windows (TRIGGER_SLACK_CYCLES)")
     args = ap.parse_args()
+
+    tmp = None
+    if not args.trace:
+        tmp = tempfile.TemporaryDirectory(prefix="bmul_timing_")
+        print("building and running the Verilator model (2 Decaps) ...")
+        args.trace, args.bmul = simulate(tmp.name)
 
     jobs = parse_trace(args.trace)
     if not jobs:

@@ -251,6 +251,24 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 
 不管用哪一种，**记下探头的位置和型号**（后面要写进 campaign 备注），换了位置的数据不能和原来的混在一起分析。
 
+#### 只有一个 EM 探头时怎么找位置
+
+探头测的是 dI/dt：同一批触发器翻转，探头朝向反一下，波形就整个倒过来，而且每个时钟沿后面会拖一串响铃。
+所以**不要**用"哪个采样点幅度最大"来判断位置好坏——那既依赖相位也依赖朝向。按这个顺序做：
+
+1. **先确认记录是对的**：Check trigger 五项全绿（尤其"record starts at the trigger"），时基至少覆盖触发后 23 µs。
+2. **用 TVLA 判断位置，不要用眼睛**。在每个候选位置采 300–500 条 TVLA，看 BMUL 窗口里的 \|t\|
+   （Analysis → \|t\| over time → 缩放到 *BMUL 0/1/2*）。注意整条 trace 的最强峰几乎一定在 J(z‖c) 或
+   重加密里（1.3 节），那个峰在任何位置都看得到，**不能用来挑位置**；要看的是三个 BMUL 窗口内的值。
+3. 位置固定后再采 CPA。采样率够高最好（每个核心周期 ≥ 8 个采样点，206.25 MHz 对应 ≥ 1.65 GSa/s）：
+   `pipe_*` 模型要把 trace 折成每周期一个值，周期内的点越多，`pca` 学到的单周期波形越准。
+4. 分析时用 `pipe_*` 模型（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md) 第 7 节）。它自己估时钟相位、自己学
+   探头的单周期响应，所以探头正负、响铃形状都不用你去猜；只有整数周期偏移需要搜一次
+   （*Cycle offsets to search* 留 `-6:6`），结果里会告诉你偏移是多少，之后填回去即可。
+5. 同一批 trace 把 `pipe_dsp` / `pipe_barrett` / `pipe_output` 都跑一遍（*Compare models*）。
+   **哪个子模型明显更好，就说明探头主要耦合到那一组触发器**，这是判断"探头看到的是芯片哪一块"
+   最直接的办法，也可以据此再微调位置。
+
 ### 3.4 网络
 
 - 在示波器的 Utility / I/O / LAN 菜单里查看它的 IP 地址（或设一个固定 IP）；
@@ -462,7 +480,7 @@ Acquisition 页左边 *Campaign* 卡片：
 Analysis 页顶部选 campaign，点 *New analysis*：
 
 - **TVLA**：直接 *Run analysis*。看 \|t\| 曲线：超过 ±4.5 的峰说明检测到泄漏。峰会标出它落在哪个阶段（KPI 里的 *peak at*、点击读数）；整条 Decaps 的最强峰在 J(z‖c) 或重加密里是预期的（见 1.3 节），要看 BMUL 有没有泄漏，用工具栏缩放到 *BMUL 0/1/2* 看窗口内的 \|t\|。
-- **CPA**：*Leakage model* 先用默认的 `hd_basemul_word`（`cpa_toolkit/models/` 里每个文件是一个模型，可以换别的模型再跑一次，在报告的 *Compare models* 标签中对比）；*Scoring* 选 *Blind attack*（真实攻击，不使用真实密钥）或 *Score with campaign key*（用真实密钥给结果打分，结果会标注 oracle-assisted，**不能当作真实攻击结果展示**）。结果在 *Key map* 中显示 3×256 个系数的排名，*Convergence* 显示 key rank 随 trace 数的变化。
+- **CPA**：*Leakage model* 建议先用 `pipe_all`（按 RTL 发射时序建模，每个时钟周期一个假设；需要采样率，见 [LEAKAGE_MODELS.md](LEAKAGE_MODELS.md) 第 7 节），`hd_basemul_word`（`cpa_toolkit/models/` 里每个文件是一个模型，可以换别的模型再跑一次，在报告的 *Compare models* 标签中对比）；*Scoring* 选 *Blind attack*（真实攻击，不使用真实密钥）或 *Score with campaign key*（用真实密钥给结果打分，结果会标注 oracle-assisted，**不能当作真实攻击结果展示**）。结果在 *Key map* 中显示 3×256 个系数的排名，*Convergence* 显示 key rank 随 trace 数的变化。
 
 结果怎么解读，见 [cpa_toolkit/README.md](../cpa_toolkit/README.md) 第 7、8 节。
 

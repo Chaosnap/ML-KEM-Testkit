@@ -35,14 +35,18 @@ WORDS = range(8, 100)
 
 
 def twin_hd(reg_parts, u_poly: np.ndarray, s_poly: np.ndarray, w: int, phase: str) -> np.ndarray:
-    """The twin's toggle count of one register in the ``enter`` or ``leave`` transition of word ``w``: ``(N,)``."""
+    """The twin's toggle count of one register in the ``enter`` or ``leave`` transition of word ``w``: ``(N,)``.
+
+    A register that only ever holds s_hat (mul0/mul1 ``a0``: slot A of the BMUL is ŝ) toggles the same
+    amount in every trace, so the twin computes one scalar; broadcast it to the trace axis to compare.
+    """
     total = 0
     ops = MP.WordOps(u_poly, s_poly, w)
     for m, field, _d in reg_parts:
         stream = ops.mul0 if m == 0 else ops.mul1
         x, y = (stream("prev"), stream("cur")) if phase == "enter" else (stream("cur"), stream("next"))
         total = total + MP.transition_hd((m, field, 0), x, y)
-    return np.asarray(total).reshape(-1)
+    return np.broadcast_to(np.asarray(total).reshape(-1), (u_poly.shape[0],))
 
 
 def check(run: RL.Run, u: np.ndarray, s: np.ndarray) -> dict[str, int]:
