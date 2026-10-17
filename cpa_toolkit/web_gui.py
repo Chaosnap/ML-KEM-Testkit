@@ -79,7 +79,11 @@ _state = {"busy": None}
 _jobs_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
 _live_lock = threading.Lock()
+_live_cond = threading.Condition(_live_lock)   # notified on every new trace (live-preview long poll)
 _live: dict[str, dict] = {}   # job_id -> running trace statistics for the live preview
+
+#: Longest a /api/acquire/live request waits for a new trace before answering "unchanged".
+LIVE_WAIT_MAX_S = 2.0
 
 
 def _new_job(kind: str, **extra) -> str:
@@ -850,6 +854,7 @@ class _LiveStats:
             else:
                 self.n_bad += 1
             self.seq += 1
+            _live_cond.notify_all()
 
 
 def _run_acquire_job(job_id: str, vs_path: str, resume_path: str, samples: int, resend_dk_every: int) -> None:
@@ -924,11 +929,24 @@ def api_acquire_start(body: dict) -> dict:
 
 
 def api_acquire_live(body: dict) -> dict:
-    """Latest trace and running means of a running/finished acquisition (decimated)."""
+    """Latest trace and running means of a running/finished acquisition (decimated).
+
+    With ``wait_ms`` the request is a long poll: it returns as soon as a trace
+    newer than ``since`` is captured, or "unchanged" after ``wait_ms`` (at most
+    LIVE_WAIT_MAX_S), so the preview follows every trace without busy polling.
+    """
     job_id = body["job_id"]
     since = int(body.get("since", -1))
     max_points = min(20000, max(200, int(body.get("max_points", 3000) or 3000)))
-    with _live_lock:
+    wait = min(LIVE_WAIT_MAX_S, max(0.0, float(body.get("wait_ms", 0) or 0) / 1000.0))
+
+    def fresh() -> bool:
+        lv = _live.get(job_id)
+        return lv is not None and lv.last is not None and lv.seq != since
+
+    with _live_cond:
+        if wait and not fresh():
+            _live_cond.wait_for(fresh, timeout=wait)
         live = _live.get(job_id)
         if live is None or live.last is None:
             return {"seq": 0, "ready": False}

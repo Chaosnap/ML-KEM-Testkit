@@ -275,6 +275,7 @@ const PAGES = ["connect", "vectors", "acquire", "library", "analysis", "advanced
 let currentPage = "connect";
 function showPage(name, push = true) {
   if (!PAGES.includes(name)) name = "connect";
+  if (name !== "library" && tvPlay && tvPlay.running) tvPause();   // the player only runs while visible
   currentPage = name;
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === "page-" + name));
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === name));
@@ -817,6 +818,11 @@ async function acqRefreshResume() {
 }
 async function acqStart() {
   const resume = $("acq-resume").value;
+  if (!resume && trigOk === false && !(await dialog({ title: "The trigger check failed",
+      body: `Failed: <b>${trigFails.map(esc).join(", ") || "see the trigger check table"}</b>.<br><br>With the record cut short or ` +
+            `not starting at the trigger, the traces miss or misplace the BMUL windows and cannot be used for CPA. ` +
+            `Fix the scope's timebase / trigger position and run <i>Check trigger</i> again.`,
+      ok: "Start anyway", danger: true }))) return;
   try {
     const { job_id } = await api("POST", "/api/acquire/start", { vector_set: resume ? "" : $("acq-vector-set").value,
       resume_file: resume, samples: $("acq-samples").value, resend_dk_every: $("acq-resend-dk").value });
@@ -862,16 +868,21 @@ async function acqPoll() {
     libRefresh(true);
   } catch (e) { err(e); setTimeout(acqPoll, 1500); }
 }
-async function liveFetch(job) {
+// Live preview: a long poll -- the server answers as soon as a newer trace is captured --
+// so every trace is drawn as it arrives, at most once per LIVE_MIN_MS (~10 redraws/s).
+const LIVE_MIN_MS = 100, LIVE_WAIT_MS = 1500;
+async function liveFetch(job, waitMs = 0) {
   try {
-    const r = await api("GET", `/api/acquire/live?job_id=${job}&since=${liveSeq}&max_points=3000`);
+    const r = await api("GET", `/api/acquire/live?job_id=${job}&since=${liveSeq}&max_points=3000&wait_ms=${waitMs}`);
     if (r.ready && !r.unchanged) { liveSeq = r.seq; liveDraw(r); }
-  } catch (e) { /* transient */ }
+    return true;
+  } catch (e) { return false; /* transient */ }
 }
 async function liveLoop() {
   if (!acqJob) return;
-  await liveFetch(acqJob);
-  setTimeout(liveLoop, 700);
+  const t0 = performance.now(), hidden = document.hidden;   // background tab: a slow, cheap refresh
+  const ok = await liveFetch(acqJob, hidden ? 0 : LIVE_WAIT_MS);
+  setTimeout(liveLoop, hidden || !ok ? 1000 : Math.max(0, LIVE_MIN_MS - (performance.now() - t0)));
 }
 function liveDraw(r) {
   liveLast = r || liveLast;
@@ -893,12 +904,14 @@ function liveDraw(r) {
     shapes: wb.shapes, annotations: wb.annotations, uirevision: "live" });
 }
 let trigOk = null;   // last trigger check of this session: true / false / null (not run)
+let trigFails = [];  // names of the checks that failed in that run
 async function trigCheck() {
   if ($("trig-check").disabled) return toast("Connect the board and the oscilloscope first", "warn");
   await busy($("trig-check"), async () => {
     try {
       const r = await api("POST", "/api/acquire/trigger_check", {});
       trigOk = r.ok;
+      trigFails = r.checks.filter((c) => c.ok === false).map((c) => c.name);
       $("trig-wrap").classList.remove("hidden");
       $("trig-table").innerHTML = r.checks.map((c) => `<tr><td>${esc(c.name)}</td><td class="${c.ok === true ? "pass" : c.ok === false ? "fail" : "dim"}">${c.ok === true ? "PASS" : c.ok === false ? "FAIL" : "skipped"}</td><td>${esc(c.detail)}</td></tr>`).join("");
       if (r.trace) { captures = captures.concat([{ trace: r.trace, axis: r.axis, captured_unix: Date.now() / 1000 }]).slice(-5); capDraw(); }
@@ -1024,6 +1037,7 @@ function libDetailEmpty() {
   $("lib-viewer").classList.add("hidden");
 }
 async function libShow(path) {
+  if (tvPlay && tvPlay.file !== path) tvPlayReset();
   libSel = path;
   libTable.select(path);
   const f = libFiles.find((x) => x.path === path);
@@ -1132,6 +1146,7 @@ function tvOpen() {
 }
 async function tvLoad() {
   if (!libSel) return;
+  if (tvPlay) tvPlayReset();
   const idx = $("tv-indices").value.trim();
   const body = { file: libSel, max_points: 4000, stats: $("tv-stats").checked, stats_n: 500 };
   if (idx) body.indices = idx.split(/[ ,]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
@@ -1165,6 +1180,123 @@ function tvCsv() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
   a.download = "traces_envelope.csv"; document.body.appendChild(a); a.click(); a.remove();
+}
+
+// --- Trace player: one trace per frame, in capture order --------------------------------
+// The x axis is time after the trigger, the same for every trace (each trace is a triggered
+// snapshot of the same window), so it stays put; only the waveform changes from frame to
+// frame. Traces are fetched in batches ahead of the play position; the y range only ever
+// grows, so the plot does not jump between frames. Positions count within the class filter.
+const TV_BATCH = 20;
+let tvPlay = null;   // {file, cls, pos, end, buf: Map pos -> trace, stats, axis, n, yr, running, timer, pending}
+function tvPlayReset() {
+  if (tvPlay) clearTimeout(tvPlay.timer);
+  tvPlay = null;
+  $("tv-play").textContent = "▶ Play";
+  $("tv-scrub").classList.add("hidden");
+}
+function tvPlayState() {
+  const cls = $("tv-cls").value;
+  if (!tvPlay || tvPlay.file !== libSel || tvPlay.cls !== cls) {
+    tvPlayReset();
+    tvPlay = { file: libSel, cls, pos: Math.max(0, parseInt($("tv-start").value, 10) || 0), end: null,
+               buf: new Map(), stats: null, axis: null, n: libDetail?.n_completed || 0, yr: null, running: false, pending: new Set() };
+  }
+  return tvPlay;
+}
+async function tvFetch(p, start) {
+  if (p.pending.has(start) || (p.end !== null && start >= p.end)) return;
+  p.pending.add(start);
+  try {
+    const wantStats = !p.stats && $("tv-stats").checked;
+    const r = await api("POST", "/api/analysis/raw_traces", { file: p.file, start, count: TV_BATCH, cls: p.cls,
+      max_points: 4000, stats: wantStats, stats_n: 500 });
+    if (tvPlay !== p) return;
+    p.axis = r.axis;
+    if (wantStats) p.stats = r.stats || {};
+    r.traces.forEach((tr, k) => { p.buf.set(start + k, tr); tvGrowRange(p, tr.y); });
+    if (p.stats) Object.values(p.stats).forEach((s) => { tvGrowRange(p, s.lo); tvGrowRange(p, s.hi); });
+    if (r.traces.length < TV_BATCH) p.end = start + r.traces.length;
+    if (!p.cls) p.n = r.n_completed;
+  } catch (e) {
+    if (/no traces match/.test(e.message)) p.end = start; else throw e;
+  } finally { p.pending.delete(start); }
+}
+function tvGrowRange(p, ys) {
+  let lo = Infinity, hi = -Infinity;
+  for (const v of ys) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (!isFinite(lo)) return;
+  const pad = 0.04 * Math.max(hi - lo, 1e-9);
+  p.yr = p.yr ? [Math.min(p.yr[0], lo - pad), Math.max(p.yr[1], hi + pad)] : [lo - pad, hi + pad];
+}
+function tvFrame(p) {
+  const t = p.buf.get(p.pos);
+  if (!t) return;
+  const tr = [], col = { all: ["#38bdf826", C.s[1]], fixed: ["#4ade8026", C.s[1]], random: ["#f8717126", C.s[2]] };
+  if ($("tv-stats").checked && p.stats) Object.entries(p.stats).forEach(([n, s]) => { const [f, c] = col[n] || col.all;
+    tr.push(...band(`${n} ±σ (n=${s.n})`, f, s.x, s.lo, s.hi), line(`${n} mean`, c, s.x, s.mean, { width: 1.4, opacity: 0.8 })); });
+  const prev = p.buf.get(p.pos - 1);   // the previous frame, faint: a little persistence, like a scope
+  if (prev) tr.push(line(`#${prev.index}`, C.s[0], prev.x, prev.y, { width: 1, opacity: 0.18 }));
+  tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[0], t.x, t.y, { width: 1.1 }));
+  const wb = $("tv-bands").checked ? windowBands(p.axis.bmul_windows) : { shapes: [], annotations: [] };
+  chart("tv-chart", tr, { height: 420, xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
+    annotations: wb.annotations, uirevision: "tv-play:" + p.file });
+  const n = p.end !== null ? p.end : p.n;
+  $("tv-pos").max = Math.max(0, n - 1); $("tv-pos").value = p.pos;
+  $("tv-pos-txt").textContent = `#${t.index} · ${p.pos + 1} / ${n || "?"}`;
+  $("tv-note").textContent = `trace #${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"} · ct ${t.ct_preview} · ` +
+    `${rateTxt(p.axis.sample_rate_hz)}${p.running ? ` · playing ${$("tv-speed").value} traces/s` : ""}`;
+}
+async function tvShowPos(p, pos) {
+  p.pos = Math.max(0, pos);
+  if (!p.buf.has(p.pos)) await tvFetch(p, p.pos);
+  if (tvPlay !== p) return false;
+  if (p.end !== null && p.pos >= p.end) return false;
+  tvFrame(p);
+  for (const k of p.buf.keys()) if (k < p.pos - 5 || k > p.pos + 3 * TV_BATCH) p.buf.delete(k);   // bounded memory
+  return true;
+}
+async function tvTick() {
+  const p = tvPlay;
+  if (!p || !p.running) return;
+  const t0 = performance.now();
+  try {
+    if (!(await tvShowPos(p, p.pos))) {
+      tvPause();
+      if (tvPlay === p) toast("End of the campaign — press Play to start again from the first trace");
+      if (tvPlay === p) p.pos = 0;
+      return;
+    }
+    let ahead = p.pos + 1;                                  // keep half a batch buffered ahead
+    while (ahead < p.pos + TV_BATCH / 2 && p.buf.has(ahead)) ahead++;
+    if (ahead < p.pos + TV_BATCH / 2) tvFetch(p, ahead).catch(() => {});
+    p.pos += 1;
+  } catch (e) { tvPause(); err(e); return; }
+  if (!p.running) return;
+  const period = 1000 / (parseFloat($("tv-speed").value) || 5);
+  p.timer = setTimeout(tvTick, Math.max(0, period - (performance.now() - t0)));
+}
+function tvPlayToggle() {
+  if (!libSel) return toast("Pick a campaign first", "warn");
+  const p = tvPlayState();
+  if (p.running) return tvPause();
+  p.running = true;
+  $("tv-indices").value = "";
+  $("tv-play").textContent = "⏸ Pause";
+  $("tv-scrub").classList.remove("hidden");
+  tvTick();
+}
+function tvPause() {
+  if (!tvPlay) return;
+  tvPlay.running = false;
+  clearTimeout(tvPlay.timer);
+  $("tv-play").textContent = "▶ Play";
+  tvShowPos(tvPlay, Math.max(0, tvPlay.pos - 1)).catch(() => {});   // the frame on screen, with the note updated
+}
+async function tvScrub() {
+  const p = tvPlayState();
+  p.pos = parseInt($("tv-pos").value, 10) || 0;
+  if (!p.running) await tvShowPos(p, p.pos).catch((e) => err(e));
 }
 
 // =====================================================================================
@@ -1910,6 +2042,14 @@ async function init() {
   $("tv-load").addEventListener("click", tvLoad);
   $("tv-prev").addEventListener("click", () => tvStep(-1));
   $("tv-next").addEventListener("click", () => tvStep(1));
+  $("tv-play").addEventListener("click", tvPlayToggle);
+  $("tv-pos").addEventListener("input", tvScrub);
+  $("tv-cls").addEventListener("change", () => { if (tvPlay) tvPlayReset(); });
+  document.addEventListener("keydown", (e) => {   // space: play / pause while the viewer is on screen
+    if (e.code !== "Space" || currentPage !== "library" || $("lib-viewer").classList.contains("hidden")) return;
+    if (/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(document.activeElement?.tagName || "")) return;
+    e.preventDefault(); tvPlayToggle();
+  });
   $("tv-bands").addEventListener("change", tvDraw);
   $("tv-export-csv").addEventListener("click", tvCsv);
 

@@ -268,6 +268,13 @@
             <label class="check"><input type="checkbox" id="tv-stats" checked> mean ± σ</label>
             <label class="check"><input type="checkbox" id="tv-bands" checked> BMUL windows</label>
             <button class="btn primary sm" id="tv-load">Plot</button>
+            <span class="spacer"></span>
+            <button class="btn secondary sm" id="tv-play" title="Play the campaign one trace at a time (space)">▶ Play</button>
+            <select id="tv-speed" style="width:92px" title="playback speed"><option value="2">2 / s</option><option value="5" selected>5 / s</option><option value="10">10 / s</option><option value="20">20 / s</option></select>
+          </div>
+          <div class="tv-scrub hidden" id="tv-scrub">
+            <input type="range" id="tv-pos" min="0" max="0" value="0" step="1" aria-label="trace position">
+            <span class="mono" id="tv-pos-txt"></span>
           </div>
           <div class="chart tall" id="tv-chart"></div>
           <div class="chart-note" id="tv-note"></div>
