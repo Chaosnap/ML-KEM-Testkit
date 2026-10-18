@@ -260,9 +260,11 @@
           </div>
           <div class="card" id="lib-detail"><div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div></div>
         </div>
-        <div class="card hidden" id="lib-viewer">
+        <div class="card hidden docked" id="lib-viewer">
           <div class="card-head"><h2>Trace viewer</h2><span class="sub" id="tv-sub"></span>
-            <div class="actions"><button class="btn ghost sm" id="tv-export-csv">CSV</button></div></div>
+            <div class="actions"><button class="btn ghost sm" id="tv-export-csv">CSV</button>
+              <button class="btn ghost sm icon" id="tv-collapse" title="Collapse / expand the viewer">▾</button>
+              <button class="btn ghost sm icon" id="tv-close" title="Close the viewer">✕</button></div></div>
           <div class="toolbar">
             <label class="muted" style="font-size:12px">from #</label><input id="tv-start" type="text" value="0" style="width:80px">
             <label class="muted" style="font-size:12px">count</label><input id="tv-count" type="text" value="4" style="width:64px">
@@ -295,6 +297,7 @@
             <div class="an-actions">
               <button class="btn primary" id="an-new">New analysis</button>
               <div class="dropdown" id="an-more"><button class="btn secondary" id="an-more-btn" title="Report actions">Report ▾</button><div class="dropdown-menu">
+                <a data-act="summary">Copy summary (for slides)</a>
                 <a data-act="rerun">Re-run with these settings…</a><a data-act="json">Download report (.json)</a>
                 <a data-act="csv">Download results (.csv)</a><a data-act="delete" class="danger">Delete report</a></div></div>
             </div>

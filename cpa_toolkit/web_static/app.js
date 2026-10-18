@@ -1124,7 +1124,7 @@ async function libShow(path) {
       ["Board", bd.version ? `core ${bd.version} · ${bd.port} @ ${bd.baud}` : "—"], ["Scope", sc.id ? `${sc.id}${sc.channel ? " · " + sc.channel : ""}` : "—"],
       ["Sample rate", rateTxt(d.sample_rate_hz)], ["Core clock", d.core_mhz ? d.core_mhz + " MHz" : "—"], ["dk hash", d.dk_hash]]);
     $("ld-analyse").addEventListener("click", () => { showPage("analysis"); anSelectDataset(path); });
-    $("ld-view").addEventListener("click", () => { tvOpen(); $("lib-viewer").scrollIntoView({ behavior: "smooth" }); });
+    $("ld-view").addEventListener("click", () => { tvOpen(); $("lib-viewer").scrollIntoView({ behavior: "smooth", block: "nearest" }); });
     if ($("ld-resume")) $("ld-resume").addEventListener("click", () => { showPage("acquire"); acqRefreshResume().then(() => { $("acq-resume").value = path; $("acq-resume").closest("details").open = true; applyState(S); }); });
     $("ld-dl").addEventListener("click", (e) => { e.stopPropagation(); $("ld-dl").parentElement.classList.toggle("open"); });
     $("ld-dl-h5").addEventListener("click", () => download("/api/traces/download", { path }));
@@ -1168,8 +1168,22 @@ async function libPreview(path) {
     chart("ld-preview", tr, { height: 220, xTitle: xTitle(r.axis), shapes: wb.shapes, annotations: wb.annotations, margin: { l: 48, r: 10, t: 6, b: 38 } });
   } catch (e) { chartEmpty("ld-preview", e.message); }
 }
+// The docked viewer shares the screen with the campaign list, so its plot is shorter than a full-page one.
+const tvH = () => vh(0.34, 220, 420);
+function tvCollapse(force) {
+  const v = $("lib-viewer"), c = force === undefined ? !v.classList.contains("collapsed") : force;
+  v.classList.toggle("collapsed", c);
+  $("tv-collapse").textContent = c ? "▴" : "▾";
+  if (c && tvPlay && tvPlay.running) tvPause();           // nothing to watch while collapsed
+  if (!c) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+}
+function tvClose() {
+  if (tvPlay) tvPlayReset();
+  $("lib-viewer").classList.add("hidden");
+}
 function tvOpen() {
   if (!libDetail) return;
+  tvCollapse(false);
   $("lib-viewer").classList.remove("hidden");
   $("tv-sub").textContent = libDetail.label || libDetail.filename;
   $("tv-cls").disabled = libDetail.mode !== "tvla";
@@ -1193,7 +1207,7 @@ function tvDraw() {
   Object.entries(r.stats || {}).forEach(([n, s]) => { const [f, c] = col[n] || col.all; tr.push(...band(`${n} ±σ (n=${s.n})`, f, s.x, s.lo, s.hi), line(`${n} mean`, c, s.x, s.mean, { width: 1.8 })); });
   r.traces.forEach((t, i) => tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[(i + 3) % 8], t.x, t.y, { width: 1, opacity: 0.85 })));
   const wb = $("tv-bands").checked ? axisBands(r.axis) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: vh(0.44, 300, 560), xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
+  chart("tv-chart", tr, { height: tvH(), xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
   $("tv-note").textContent = `${r.traces.length} trace(s) of ${r.n_completed} · ${rateTxt(r.axis.sample_rate_hz)} · each line is a min/max envelope (narrow peaks are kept) · ` +
     r.traces.map((t) => `#${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"}`).join(", ");
 }
@@ -1270,7 +1284,7 @@ function tvFrame(p) {
   if (prev) tr.push(line(`#${prev.index}`, C.s[0], prev.x, prev.y, { width: 1, opacity: 0.18 }));
   tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[0], t.x, t.y, { width: 1.1 }));
   const wb = $("tv-bands").checked ? axisBands(p.axis) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: vh(0.44, 300, 560), xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
+  chart("tv-chart", tr, { height: tvH(), xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
     annotations: wb.annotations, uirevision: "tv-play:" + p.file });
   const n = p.end !== null ? p.end : p.n;
   $("tv-pos").max = Math.max(0, n - 1); $("tv-pos").value = p.pos;
@@ -1435,6 +1449,11 @@ async function anOpenReport(path) {
 async function anReportAction(act) {
   $("an-more").classList.remove("open");
   if (!cur) return toast("Open a report first", "warn");
+  if (act === "summary") {
+    try { await navigator.clipboard.writeText(summaryText(cur)); toast("Summary copied — paste into your slides", "ok"); }
+    catch (e) { err(e); }
+    return;
+  }
   if (act === "json") return download("/api/analysis/download", { path: cur.report_path });
   if (act === "csv") return cur.results_csv ? download("/api/analysis/download", { path: cur.results_csv }) : toast("This report has no CSV export", "warn");
   if (act === "rerun") { anPrefill(cur); anConfig(true); $("an-config").scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
@@ -1448,6 +1467,59 @@ async function anReportAction(act) {
     } catch (e) { err(e); }
   }
 }
+// A plain-text summary of an open report, worded like cpa_attack.py / tvla_analysis.py's own CLI
+// verdict (README.md section 7's prescribed phrasing: state the model, the trace count and the
+// measured number -- never a bare "secure"/"insecure") -- ready to paste into a slide or a report.
+// The 3-way verdict below mirrors cpa_attack.py: main()'s oracle-assisted block; keep them in sync.
+function summaryText(r) {
+  const file = String(r.file || r.dataset?.path || "").split("/").pop();
+  const lines = [];
+  if (r.kind === "cpa") {
+    const oracle = r.oracle_assisted, rows = r.results || [];
+    const m = anModelOf(r.model);
+    lines.push(`CPA key recovery -- ${file}`);
+    lines.push(`Model: ${r.model}${m ? " -- " + m.title : ""}`);
+    lines.push(r.features
+      ? `Feature: ${r.features.mode}, ${r.features.rows} clock cycles/coefficient, cycle offset ${bestOffset(r.features)}`
+      : `Register / R_prev: ${r.target} / ${r.rprev || "--"}`);
+    lines.push(`Traces used: ${r.n_traces_used}  --  coefficients attacked: ${r.coefficients_attacked ?? rows.length} of 768` +
+      ((r.coefficients_per_poly ?? 256) < 256 ? " (partial run)" : ""));
+    if (oracle) {
+      lines.push(`Scoring: oracle-assisted (the true key scores the guesses only -- it never builds the hypotheses)`);
+      lines.push(`Rank-1: ${pct(r.rank1_fraction)} of coefficients (${rows.filter((x) => x.true_rank === 1).length}/${rows.length})` +
+        `  --  median true-key rank ${Math.round(r.median_true_rank)} of ${r.n_candidates} (chance ~= ${Math.round(r.chance_rank_mean)})`);
+      lines.push(`Mean |rho| at the true key: ${r.mean_true_corr.toFixed(4)}`);
+      if (r.curve) lines.push(`MTD (traces to >50% rank-1): ${r.curve.mtd ?? `not reached within ${r.n_traces_used} traces`}`);
+      lines.push("");
+      if (r.rank1_fraction > 0.5)
+        lines.push("=> the modelled leakage recovers the key from these traces: the implementation (as captured) is NOT resistant to this attack.");
+      else if (r.median_true_rank > 0.8 * r.chance_rank_mean)
+        lines.push("=> ranks are close to chance: no confident recovery under this model at this trace count. This does NOT prove security.");
+      else
+        lines.push("=> partial leakage (better than chance, not full recovery) -- more traces are needed before concluding either way.");
+    } else {
+      const best = rows.map((x) => x.best_corr), mean = best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0;
+      lines.push("Scoring: blind attack (no ground truth -- this is what a real adversary would run)");
+      lines.push(`Mean peak |rho|: ${mean.toFixed(4)}  --  max peak |rho|: ${best.length ? Math.max(...best).toFixed(4) : "--"}`);
+      lines.push("");
+      lines.push('A blind run reports best-guess candidates only, with no success/fail verdict. Pair it with a scored run of the ' +
+        'same campaign ("Score with campaign key") or a TVLA report on the same seed to judge whether the correlation is significant.');
+    }
+  } else {
+    lines.push(`TVLA leakage assessment -- ${file}`);
+    lines.push(`Traces: ${r.n_fixed} fixed + ${r.n_random} random  --  threshold |t| > ${r.leakage_threshold}`);
+    lines.push(`max |t| = ${r.max_abs_t.toFixed(2)} at sample ${r.max_abs_t_sample}`);
+    if (r.traces_to_detection) lines.push(`Traces to detection (|t| first crosses the threshold): ${r.traces_to_detection}`);
+    lines.push("");
+    lines.push(r.leakage_detected
+      ? "=> the fixed-class and random-class traces are statistically distinguishable: this implementation leaks secret-dependent information at this trace count."
+      : "=> no leakage detected at this trace count/threshold. This does NOT prove the implementation is safe -- try more traces or a different target window.");
+  }
+  lines.push("");
+  lines.push(`Analysed ${fmtDate(r.analysis_timestamp_unix)}`);
+  return lines.join("\n");
+}
+
 // Fill the configuration from a report ("Re-run with these settings").
 function anPrefill(r) {
   const mc = r.model_config || {};
@@ -2113,6 +2185,8 @@ async function init() {
   $("tv-prev").addEventListener("click", () => tvStep(-1));
   $("tv-next").addEventListener("click", () => tvStep(1));
   $("tv-play").addEventListener("click", tvPlayToggle);
+  $("tv-collapse").addEventListener("click", () => tvCollapse());
+  $("tv-close").addEventListener("click", tvClose);
   $("tv-pos").addEventListener("input", tvScrub);
   $("tv-cls").addEventListener("change", () => { if (tvPlay) tvPlayReset(); });
   document.addEventListener("keydown", (e) => {   // space: play / pause while the viewer is on screen
