@@ -22,10 +22,13 @@ import numpy as np
 import config as C
 import cycle_features as CF
 
-#: Integer cycle offsets between the nominal schedule and the trace that are tried.
-DEFAULT_OFFSETS = tuple(range(-6, 7))
-#: Cycles kept before / after the BMUL's own cycles, so every offset of the search stays in the window.
-PAD = 14
+#: Integer cycle offsets between the nominal schedule and the trace that are tried. Wide enough that
+#: a probe/cable/amplifier delay of a few cycles either way is inside it: a best offset sitting on the
+#: first or last value searched means the search railed, not converged (cpa_attack reports that).
+DEFAULT_OFFSETS = tuple(range(-12, 13))
+#: Cycles kept before / after the BMUL's own cycles, so every row of every offset above stays inside
+#: the feature window (the deepest row is T+20, the widest offset +-12).
+PAD = 28
 #: Candidates per hypothesis block (the hypotheses of a block fit the CPU cache).
 CHUNK = 256
 #: Cycles from the first read to the last row of the last word (2 * 127 + 20) plus the drain.
@@ -94,7 +97,16 @@ def attack_coefficient(model, guess, Z, first_cycle, t0, offsets, candidates, ca
 
     ``best_corr`` / ``true_corr`` are the mean over the model's rows of the correlation (so they are
     comparable with a single-sample |rho|); ``best_sample`` is the cycle offset of the best guess.
+    A coefficient this campaign cannot discriminate comes back with ``informative: False`` and no
+    guess or rank (see ``cpa_attack.informative``).
     """
+    import cpa_attack as CA
+    h = model.row_hypotheses(guess, candidates, causal)
+    if not any(CA.informative(v) for v in h.values()):
+        return {"poly": guess.poly, "coeff": guess.j, "target": model.register, "rprev": "",
+                "informative": False, "best_guess": None, "best_corr": 0.0, "best_sample": None,
+                "true_value": guess.true_value, "true_rank": None, "true_corr": None,
+                "candidates": candidates, "peak_per_cand": np.zeros(len(candidates)), "rows": len(h)}
     s, k = aligned_scores(model, guess, Z, first_cycle, t0, offsets, candidates, causal, pool)
     per = s.max(axis=1)                                   # best offset of every candidate
     order = np.argsort(per)[::-1]
@@ -105,6 +117,7 @@ def attack_coefficient(model, guess, Z, first_cycle, t0, offsets, candidates, ca
         true_corr = float(per[gi]) / max(k, 1)
     best = int(order[0])
     return {"poly": guess.poly, "coeff": guess.j, "target": model.register, "rprev": "",
+            "informative": True,
             "best_guess": int(candidates[best]), "best_corr": float(per[best]) / max(k, 1),
             "best_sample": int(np.asarray(offsets)[int(s[best].argmax())]),
             "true_value": guess.true_value, "true_rank": true_rank, "true_corr": true_corr,

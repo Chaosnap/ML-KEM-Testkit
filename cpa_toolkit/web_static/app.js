@@ -616,7 +616,8 @@ let vgMode, vsSets = [], vsTrashSets = [], vsTrash = false, vsChecks = new Set()
 const vsRows = () => (vsTrash ? vsTrashSets : vsSets);
 const VP_PAGE = 50;
 const kindLabel = (m) => (m.mode === "tvla" ? (m.strategy === "invalid-random" ? "fixed vs random bytes" : "fixed vs random valid")
-  : m.strategy === "structured" ? `structured (poly ${m.poly}, pair ${m.pair})` : m.strategy === "invalid" ? "random bytes" : "valid encapsulations");
+  : m.strategy === "structured" ? `structured (poly ${m.poly}, pair ${m.pair})` : m.strategy === "invalid" ? "random bytes"
+    : m.strategy === "pc-oracle" ? "PC-oracle chosen ciphertexts" : "valid encapsulations");
 
 function vgVisibility() {
   const cpa = vgMode.get() === "cpa";
@@ -2102,7 +2103,9 @@ async function init() {
 
   // vectors
   const info = await api("GET", "/api/vectors/info").catch(() => ({ strategies: {} }));
-  const STRAT = { valid: "Valid encapsulations (accept path)", invalid: "Random bytes (implicit rejection)", structured: "Structured: isolate one BaseMul pair" };
+  const STRAT = { valid: "Valid encapsulations (accept path)", invalid: "Random bytes (implicit rejection)",
+    structured: "Structured (BROKEN — does not isolate a pair; use valid or pc-oracle)",
+    "pc-oracle": "PC-oracle: chosen ciphertexts that recover the whole key (pc_oracle.py)" };
   $("vg-strategy").innerHTML = Object.keys(info.strategies).map((k) => `<option value="${k}">${STRAT[k] || k}</option>`).join("");
   vgMode = seg("vg-mode", vgVisibility);
   $("vg-strategy").addEventListener("change", vgVisibility);

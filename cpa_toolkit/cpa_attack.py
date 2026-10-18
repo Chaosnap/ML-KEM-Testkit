@@ -84,10 +84,36 @@ def pearson_matrix(hyp: np.ndarray, traces: np.ndarray) -> np.ndarray:
     return (h.T @ t) / n
 
 
+def informative(hyp: np.ndarray) -> bool:
+    """Can a CPA over these hypotheses ``(N, G)`` tell the candidates apart at all?
+
+    Correlation is invariant to a per-candidate shift and scale, so a coefficient carries
+    information only if, after centring each candidate's column over the traces, the columns
+    still differ. Two ways a campaign makes that impossible, both silent otherwise:
+
+    * the hypothesis does not depend on the guess (every column identical) -- e.g. a chosen
+      ciphertext whose u_hat is zero for this polynomial multiplies the guess by zero;
+    * the hypothesis is constant over the traces (every column centres to zero), so there is
+      nothing for the measured variation to correlate with.
+
+    Without this, such a coefficient still gets a "best guess" and a true-key rank -- a rank
+    drawn uniformly at random, which reads exactly like a failed attack on a sound campaign.
+    """
+    d = np.asarray(hyp, dtype=np.float64)
+    d = d - d.mean(axis=0, keepdims=True)
+    return bool(d.shape[1] > 1 and np.ptp(d, axis=1).max() > 1e-9)
+
+
 def attack_coefficient(model: LM.LeakageModel, guess: LM.Guess, rprev: str, traces: np.ndarray,
                         candidates: np.ndarray) -> dict:
     """CPA over one secret coefficient; returns peak correlation per candidate."""
     hyp = model.hypotheses(guess, rprev, candidates)   # (N, G)
+    if not informative(hyp):
+        return {"poly": guess.poly, "coeff": guess.j, "target": model.register, "rprev": rprev,
+                "informative": False, "best_guess": None, "best_corr": 0.0, "best_sample": None,
+                "true_value": guess.true_value, "true_rank": None, "true_corr": None,
+                "corr_curve": np.zeros(traces.shape[1]), "candidates": candidates,
+                "peak_per_cand": np.zeros(len(candidates))}
     corr = pearson_matrix(hyp, traces)                  # (G, T)
     peak_per_cand = np.max(np.abs(corr), axis=1)
     peak_sample = np.argmax(np.abs(corr), axis=1)
@@ -98,6 +124,7 @@ def attack_coefficient(model: LM.LeakageModel, guess: LM.Guess, rprev: str, trac
         true_rank = int(np.where(order == g_idx)[0][0]) + 1
     return {
         "poly": guess.poly, "coeff": guess.j, "target": model.register, "rprev": rprev,
+        "informative": True,
         "best_guess": int(candidates[order[0]]),
         "best_corr": float(peak_per_cand[order[0]]),
         "best_sample": int(peak_sample[order[0]]),
@@ -196,12 +223,23 @@ def _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets
                 guess.true_value = int(s_hat[poly][j]) if s_hat is not None else -1
                 res = AC.attack_coefficient(model, guess, Z, first, C.BMUL_READ_CYCLES[poly], offsets, candidates,
                                             causal, pool)
-                recovered[poly, j] = res["best_guess"]
-                offs.append(res["best_sample"])
+                if res["best_guess"] is not None:
+                    recovered[poly, j] = res["best_guess"]
+                    offs.append(res["best_sample"])
                 results.append({k: v for k, v in res.items() if k not in ("candidates", "peak_per_cand")})
                 if progress_cb:
                     progress_cb(len(results), R.K * n_coeffs)
-    hist = {int(o): int(c) for o, c in zip(*np.unique(offs, return_counts=True))}
+    hist = {int(o): int(c) for o, c in zip(*np.unique(offs, return_counts=True))} if offs else {}
+    # A best offset piling up on the first or last value searched means the real alignment is
+    # outside the range: the search is railing, not converging, and every row is then read from
+    # the wrong cycle. Say so rather than reporting the edge as if it were the answer.
+    railed = ""
+    if hist:
+        top = max(hist, key=lambda o: hist[o])
+        if top in (min(offsets), max(offsets)) and hist[top] > 0.25 * sum(hist.values()):
+            railed = ("the best offset is %+d, the edge of the searched range %+d..%+d, for %d%% of the "
+                      "coefficients -- the real alignment is outside it: widen --offsets"
+                      % (top, min(offsets), max(offsets), round(100 * hist[top] / sum(hist.values()))))
     summary = {
         "file": h5_path, "n_traces_used": n_ok, "model": model.name, "model_title": model.title,
         "target": model.register, "rprev": "", "oracle_assisted": s_hat is not None,
@@ -209,14 +247,27 @@ def _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets
         "coefficients_per_poly": n_coeffs, "results": results,
         "features": {"mode": mode, "phase_samples": infos[0]["phase"], "samples_per_cycle": infos[0]["samples_per_cycle"],
                      "offsets_searched": list(offsets), "offset_histogram": hist, "unit": "row",
-                     "rows": results[0]["rows"] if results else 0},
+                     "offsets_railed": railed, "rows": results[0]["rows"] if results else 0},
     }
     _score_summary(summary, results, s_hat is not None)
     return summary
 
 
 def _score_summary(summary: dict, results: list, scored: bool) -> None:
-    """The rank statistics of an oracle-assisted run, added to ``summary`` in place."""
+    """The rank statistics of an oracle-assisted run, added to ``summary`` in place.
+
+    Coefficients the campaign cannot discriminate (:func:`informative`) are counted separately
+    and left out of every statistic: they are not failures of the attack, they are questions
+    this set of ciphertexts never asked.
+    """
+    dead = [r_ for r_ in results if not r_.get("informative", True)]
+    summary["n_informative"] = len(results) - len(dead)
+    summary["n_uninformative"] = len(dead)
+    if dead:
+        per_poly = {}
+        for r_ in dead:
+            per_poly[r_["poly"]] = per_poly.get(r_["poly"], 0) + 1
+        summary["uninformative_per_poly"] = per_poly
     n_scored = sum(1 for r_ in results if r_["true_rank"] is not None)
     if scored and n_scored:
         ranks = [r_["true_rank"] for r_ in results if r_["true_rank"] is not None]
@@ -596,6 +647,18 @@ def main():
     print("                 %s" % model.equation)
     print("coefficients:    %d (of 768)%s" % (summary["coefficients_attacked"],
           "" if summary["coefficients_per_poly"] == 256 else "   <-- partial run (--coeffs)"))
+    dead = summary.get("n_uninformative", 0)
+    if dead:
+        per = summary.get("uninformative_per_poly", {})
+        print("\n################################################################")
+        print("# %d of %d COEFFICIENTS CARRY NO KEY INFORMATION IN THIS CAMPAIGN" % (dead, len(summary["results"])))
+        print("# per polynomial: %s" % ", ".join("s%d: %d" % (p, n) for p, n in sorted(per.items())))
+        print("# For these the hypothesis does not change with the guess (or not between")
+        print("# traces), so no model can rank the true value above chance. This is the")
+        print("# ciphertexts, not the attack: a --strategy structured set leaves u_hat")
+        print("# exactly zero for the polynomials it does not target. Capture with")
+        print("# --strategy valid to attack the whole key.")
+        print("################################################################")
     ft = summary.get("features")
     if ft:
         top = sorted(ft["offset_histogram"].items(), key=lambda kv: -kv[1])[:3]
@@ -604,6 +667,8 @@ def main():
         print("cycle offsets:   best guess per coefficient at offset %s of %d searched -- a pile-up at one offset "
               "means the alignment is real; rerun with --offsets <that value>"
               % (", ".join("%+d (%d)" % kv for kv in top), len(ft["offsets_searched"])))
+        if ft.get("offsets_railed"):
+            print("WARNING:         %s" % ft["offsets_railed"])
     best = [r_["best_corr"] for r_ in summary["results"]]
     if best:
         # the largest |rho| of pure noise over G guesses x T samples (x offsets) for n traces
@@ -618,8 +683,8 @@ def main():
         print("# This scores the attack against a real key for reporting only.")
         print("# It is NOT a blind attack result -- do not present it as one.")
         print("################################################################")
-        print("rank-1 fraction:    %.1f%%  (fraction of coefficients where the true key scored "
-              "highest correlation)" % (100 * summary["rank1_fraction"]))
+        print("rank-1 fraction:    %.1f%%  (of the %d coefficients this campaign can discriminate)"
+              % (100 * summary["rank1_fraction"], summary.get("n_informative", len(summary["results"]))))
         print("median true rank:   %.0f  of %d candidates (chance ~= %.0f)"
               % (summary["median_true_rank"], summary["n_candidates"], summary["chance_rank_mean"]))
         print("mean |rho| at true key: %.4f" % summary["mean_true_corr"])

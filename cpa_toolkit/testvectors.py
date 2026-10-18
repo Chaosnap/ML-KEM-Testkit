@@ -58,8 +58,15 @@ GENERATOR = "cpa_toolkit.testvectors/1 (FIPS 203, deterministic from seed)"
 STRATEGIES = {
     "valid": "fresh FIPS 203 encapsulations of random messages (accept path)",
     "invalid": "uniformly random bytes as ciphertext (implicit-rejection path)",
-    "structured": "u_hat zero except one BaseMul pair (needs poly 0-2, pair 0-127)",
+    "structured": "u_hat zero except one BaseMul pair -- BROKEN, see note below (needs poly 0-2, pair 0-127)",
+    "pc-oracle": "chosen ciphertexts that recover the key by a plaintext-checking oracle (pc_oracle.py)",
 }
+# NOTE on "structured": it does NOT isolate one pair. structured_ciphertext compresses a
+# time-domain polynomial at 10 bits; the small rounding error becomes a uniform O(q) error after
+# the core's NTT (a root of unity mod q destroys smallness), so every other coefficient of the
+# targeted polynomial comes back ~random and the other two polynomials' u_hat are exactly zero --
+# which leaves 512 of 768 key coefficients with no leakage for ANY model. Use "valid" for CPA on
+# the whole key, or "pc-oracle" for a working key recovery. Kept only so old campaigns still load.
 _CHUNK = 256  # ciphertexts per vectorised batch (progress granularity)
 
 
@@ -194,6 +201,14 @@ def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int 
         m[:] = np.frombuffer(b"".join(msgs), dtype=np.uint8).reshape(n, 32)
         has_m[:] = True
         valid = np.ones(n, dtype=bool)
+    elif mode == "cpa" and strategy == "pc-oracle":
+        import pc_oracle as PCO
+        # the chosen-ciphertext plan (sweep + references), cycled to fill n traces so every query is
+        # captured about equally often; the decode recognises each trace's query from its ciphertext.
+        queries = PCO.reference_plan() + PCO.plan()
+        rng.shuffle(queries)
+        ct = np.stack([np.frombuffer(queries[i % len(queries)]["ct"], dtype=np.uint8) for i in range(n)])
+        k, valid = _expected_keys(dk, ct, a_hat, lambda d: report(d, n, "computing expected K"))
     elif mode == "cpa":
         if strategy == "invalid":
             ct = rng.integers(0, 256, size=(n, R.CT_LEN), dtype=np.uint8)

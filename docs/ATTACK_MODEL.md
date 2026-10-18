@@ -390,6 +390,46 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 
 ---
 
+## 9.5 另一条路：明文检查预言机（PC-oracle）—— 实测能恢复整条密钥
+
+CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 个翻转里把它找出来。
+如果 TVLA 最强峰落在 J(z‖c) / 重加密（本仓库实测 \|t\|=9，见 [TRACE_ACQUISITION.md](TRACE_ACQUISITION.md) 1.3 节），
+说明**消息 m′ 的泄漏又强又好测**。那就不绕 BaseMul，直接利用它。代码在
+[`pc_oracle.py`](../cpa_toolkit/pc_oracle.py)，这是公开的攻击类别（Ravi 等，TCHES 2020；Ueno 等，TCHES 2022）。
+
+**构造。** Decaps 接受任意字节当密文。令 `u` 只在某个多项式槽是常数 `k`、其余为 0，则
+`INTT(ŝᵀ∘û) = k·s_poly`，于是 `m′[t] = Compress₁( v[t] − k·s_poly[t] )`。把 `v` 只在位置 `t` 非零、
+`k = Decompress₁₀(64) ≈ q/16`，就能保证其余 255 位无论密钥是什么都压成 0 —— **m′ 要么全 0，要么只有 1 位，
+取决于 s_poly[t]**。ML-KEM-768 的私钥系数很小（CBD η=2，取值 −2..2），把 `v[t]` 扫四档就得到该系数的
+温度计码：`s = 2 − (1 的个数)`（`pc_oracle.plan`，每个系数 4 次查询）。
+
+**判读不需要密钥。** `z` 取一档使 m′ 恒为 0、另一档使 m′ 恒为 1（对所有可能的密钥都成立，
+`pc_oracle.REF_ZERO/REF_ONE`），这两组在同一块板子上采作模板；每个系数的扫描查询拿自己的功耗特征和这两个
+模板比，近哪个就是哪个 bit（`classify` / `decode_campaign`）。
+
+**为什么它能成而 CPA 在你那组数据上是 0。** 它读的正是 m′→G(m′‖h)→重加密这一段（`config.DECAPS_PHASES`
+里 6519 周期往后），也就是 \|t\| 峰所在、功耗最大的那一段；每条 trace 只做一个**二元**判决，可以任意多次
+平均（同一条查询的每条 trace 完全一样）。软件端对完整 768 系数**逐一恢复无误**
+（`python cpa_toolkit/pc_oracle.py verify`，3072 次查询）；合成 EM trace（每周期特征 SNR 0.5、每条查询平均约
+20–100 次）即可拿满覆盖的系数。而 `--strategy structured` 的那组数据，`û` 对多项式 1、2 **恒等于 0**，
+512/768 个系数对任何模型都没有信息——rank 从一开始就被钉在随机线上（见 9.6 节）。
+
+**代价。** 整条密钥 768×(4 扫描 + 2 参考) = 4608 次查询，每次重复 R 条。它不是比 CPA"更省 trace"，而是把
+"难测的 3329 路相关"换成"好测的二元判决"，并且**覆盖整条密钥**。不是合法密文，核心走隐式拒绝返回一个无用的 K
+——测的是消息相关功耗，不是那个 K。
+
+## 9.6 已修正：`--strategy structured` 不隔离，且会废掉 2/3 密钥
+
+`mlkem_ref.structured_ciphertext` 想让 `û` 只在一对系数非零，做法是对时域多项式做 10 位压缩。问题是
+压缩的 ±2 舍入误差经过核心的 NTT 后变成**全域 O(q) 的误差**（乘以单位根再 mod q，小量荡然无存），于是被攻击
+多项式的其余 254 个系数回来都近似随机；更要命的是另外两个多项式的 `û` **精确为 0**。结果：512/768 个系数对
+**任何**模型都没有可利用的泄漏，rank-1 上限 33%。现在：
+
+- `cpa_attack.py` 会检测"这个系数的假设根本不随猜测/trace 变化"（`informative`），把它们单独计数并从统计里剔除，
+  CLI/报告明确写出"本次采集有 N 个系数不含密钥信息——是密文的问题，不是攻击"（而不是打印一个看起来像失败的随机 rank）；
+- `pipe_*` 的周期偏移搜索窗口放宽到 `−12..12`，并在最优偏移落在边界时告警（你那次 `−6` 正好railed 在旧窗口边缘）；
+- `testvectors` 的 `structured` 标注为 BROKEN 仅为兼容旧文件，CPA 请用 `valid`（覆盖整条密钥），密钥恢复用 `pc-oracle`。
+
 ## 10. 文件索引
 
 | 内容 | 文件 |
@@ -400,6 +440,7 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 | 每周期一个特征（时钟相位、PCA / energy / abs） | [`cycle_features.py`](../cpa_toolkit/cycle_features.py) |
 | 逐拍对齐的 CPA 引擎 | [`aligned_cpa.py`](../cpa_toolkit/aligned_cpa.py) |
 | 仿真侧测量脚本（窗口、寄存器排序、孪生比对、模型对齐） | [`scripts/sim/`](../scripts/sim/) |
+| 明文检查预言机（PC-oracle）密钥恢复 | [`pc_oracle.py`](../cpa_toolkit/pc_oracle.py) |
 | BMUL 流水线 RTL（第 4.2 节表格的全部行号出处） | [`../hdl/core/mlkem_poly_alu.sv`](../hdl/core/mlkem_poly_alu.sv) |
 | Decaps 微码（第 4.1 节的 ROM 地址） | [`../hdl/core/mlkem_ucode_rom.sv`](../hdl/core/mlkem_ucode_rom.sv) |
 | 微码生成器（slot/操作码定义） | [`../scripts/gen/gen_mlkem_ucode.py`](../scripts/gen/gen_mlkem_ucode.py) |
