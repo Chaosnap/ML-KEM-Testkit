@@ -2,7 +2,7 @@
 
 这个工具对板上 ML-KEM-768 核心的 Decaps 做实测侧信道评估：真实板子加真实示波器。它包含两套相互独立的实验：
 
-- **CPA**（相关功耗分析）：私钥固定，输入 N 条不同的密文，逐系数恢复私钥。攻击目标是 `HD(R_prev, BaseMul(û, ŝ_guess) mod q)`，设计见 [`../docs/ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md)。
+- **CPA**（相关功耗分析）：私钥固定，输入 N 条不同的密文，逐系数恢复私钥。攻击目标是 BaseMul 里 `û[j]·ŝ[j]` 的乘积：假设 `HW(û[j]·g mod q)`（见第 6 节和 [`../docs/LEAKAGE_MODELS.md`](../docs/LEAKAGE_MODELS.md)，硬件背景见 [`../docs/ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md)）。
 - **TVLA**（Welch's t 检验）：私钥固定，使用 fixed 和 random 两组密文，检测功耗是否与输入相关。这个实验不涉及任何密钥假设。
 
 主机与板子之间的通信协议见 [`../docs/UART_PROTOCOL.md`](../docs/UART_PROTOCOL.md)。第一次去实验室采集，先读 [`../docs/TRACE_ACQUISITION.md`](../docs/TRACE_ACQUISITION.md)（接线、示波器设置、逐步操作、排错）。
@@ -13,17 +13,16 @@
 
 | 文件 | 作用 |
 | ---- | ---- |
-| `config.py` | **需要修改的配置**：示波器 IP、串口、BMUL 窗口、CPA 默认模型 |
+| `config.py` | **需要修改的配置**：示波器 IP、串口、BMUL 窗口、CPA 默认假设 |
 | `mlkem768.py` | FIPS 203 ML-KEM-768 软件实现（KeyGen / Encaps / Decaps，含批量版本），已与 NIST ACVP 向量核对 |
 | `mlkem_ref.py` | NTT / BaseMul / ByteDecode 等 FIPS 203 底层运算、解密自检、结构化密文 |
-| `models/` | **泄漏模型，一个文件一个模型**（第 6 节）；`base.py` 是共用部分（BaseMul 中间值、R_prev、汉明重量 / 距离、自检） |
 | `testvectors.py` | 测试向量集：由种子确定性生成，包含每条密文的期望 K，存为 `data/vectors/*.npz` |
 | `uart_target.py` | 板子侧驱动：`Link` 负责收发帧，`Target` 提供分步操作（reset / configure / load / run，对应论文的 x/m/s/c/e/a）；自动识别 `0x05` Run |
 | `connection.py` | 非阻塞的连接/断开（可随时断开），以及链路监视（空闲时 ping，检测串口被拔出） |
 | `scope.py` | 示波器：`LeCroyScope`（Teledyne LeCroy MAUI，如 HDO6104：VICP 或 LXI/VXI-11，`WF?` + WAVEDESC），`VisaScope`（VISA/SCPI，Keysight / Rigol / Siglent / Tektronix 方言）；`open_scope()` 按 `SCOPE_DIALECT` 选择 |
 | `hdf5_trace_store.py` | campaign 文件（`.hdf5`）的增量写入、读取与续采 |
 | `acquire_cpa.py` | 采集：CPA 或 TVLA，按向量集逐条采集并逐条校验 |
-| `cpa_attack.py` | CPA：相关系数、key rank、`--curve`（key rank 随 trace 数的变化及 MTD）、CSV |
+| `cpa_attack.py` | **简单逐系数 CPA**（第 6 节）：两个假设、相关系数矩阵、峰值位置、top-10 与稳定性投票、可选的真实密钥排名；CSV / JSON |
 | `tvla_analysis.py` | TVLA：Welch's t、检测曲线 |
 | `web_gui.py` + `web_static/` | Web GUI（第 2 节） |
 
@@ -44,7 +43,7 @@ GUI 只依赖标准库 `http.server`，加上随仓库附带的 Plotly.js，不�
 | **Test Vectors** | 生成 CPA（valid / invalid / structured）或 TVLA（fixed vs random）向量集。可以逐行查看 c / m / K（支持复制），导出 csv / json / dk / ek，用软件 Decaps 复核，或在板上跑前 N 条，核对 K 和恒定周期。向量集可以命名、加标签（见下文“标签与删除”），可以删除到回收站；删除前会提示有几个 campaign 用过它——这些 campaign 不受影响，因为每个 campaign 文件自带密文、期望 K 和种子 |
 | **Acquisition** | 开始前会列出检查项（板子、示波器、向量集）。采集时实时显示最新 trace、均值和 fixed−random 差值，以及速度和剩余时间；可随时停止，文件可以续采。另有 Setup capture：用一次性向量抓一条波形，用来调触发、量程和时基；*Check trigger* 检查示波器只在 Decaps 开始时触发（无运算时不触发、Decaps 时触发、波形覆盖全部 BMUL 窗口），结果也显示在检查项里 |
 | **Trace Library** | 所有 campaign 的列表，可搜索、按模式和状态筛选、排序。详情页显示 K 正确率、CYCLE_COUNT 分布、trace 是否覆盖全部 BMUL 窗口、来源信息（向量集、种子、板子、示波器），可以命名、写备注、加标签。波形查看器可以按序号、类别或指定索引叠加 trace，并显示均值 ± σ 带。支持导出 .hdf5 和 .npz 片段。回收站里可以恢复或永久删除；永久删除时，由该 campaign 生成的分析报告也一起删除 |
-| **Analysis** | 顶部选 campaign（下拉项和信息条上显示标签）和已保存的报告（下拉列出所有历史报告）。*New analysis* 打开配置面板，按三步填写：1 泄漏模型（列出 `models/` 里的全部模型，按 HW / HD 等分组，显示公式、寄存器、流水线拍、所需输入和局限，可选该模型接受的 R_prev，可运行模型自检）、2 打分方式（盲攻击 / 用真实密钥打分）、3 运行；运行时显示进度。*Report ▾* 菜单可以用同样的设置重跑、下载 .json / .csv、删除报告。每份报告顶部列出它的配置（模型、寄存器 / R_prev、打分方式、trace 数、时间）和关键指标，下面分标签页。CPA 有五个标签：**Key map**（3×256 系数热力图，可切换 peak \|ρ\| / 真实密钥排名 / 是否恢复；每个多项式的汇总；点击任一格打开该系数的相关曲线，← → ↑ ↓ 切换）、**Convergence**（key rank 随 trace 数的变化，标出 MTD；跨 campaign 的成功率）、**Coefficients**（可排序、可筛选的表，点击一行跳到 Key map）、**Compare models**（这个 campaign 的全部 CPA 报告，一个模型 / R_prev 一行，对比 rank-1、中位排名、峰值 \|ρ\|、MTD，点击一行打开该报告）、**Details**（完整的配置与文件信息）。TVLA 有四个标签：\|t\| 曲线（可一键缩放到各 BMUL 窗口，点击图中任意位置读取该采样点）、类均值、检测曲线、Details。报告保存在 `data/analysis/` |
+| **Analysis** | 顶部选 campaign 和已保存的报告。*New analysis* 打开配置面板：1 假设（`hw_product_mod` / `hw_product_raw`，显示公式、寄存器和发生的周期）、2 攻击什么（哪几个多项式、每个多项式前几个系数、在整个 BMUL 窗口里找，还是只看 RTL 预测的周期附近 ± N 个周期）、3 打分（盲攻击 / 用 campaign 的真实密钥给猜测排名 / dk 文件）、4 运行。CPA 报告有四个标签：**Overview**（一行一个系数的表：最佳猜测、峰值 \|ρ\|、是噪声底的几倍、领先第二名多少、峰值位置、与预测周期的偏差、4 个窗口里的稳定性投票；下方是“峰值是真的吗”条形图和“峰值落在哪”直方图）、**Coefficient**（单个系数的五张图：相关系数随时间、3329 个候选各自的峰值、随 trace 数的收敛、top-10 表、候选×时间热图，← → ↑ ↓ 切换系数）、**Compare**（同一个 campaign 的全部 CPA 报告对比）、**Details**。TVLA 有四个标签：\|t\| 曲线（可一键缩放到各 BMUL 窗口，点击图中任意位置读取该采样点）、类均值、检测曲线、Details。报告保存在 `data/analysis/`；旧模型目录生成的旧报告仍能列出，但需要重新运行 |
 | **Advanced** | **Link settings**：操作超时；显示当前 bitstream 是否支持 0x05 Run（不支持则所有运算被禁用，需要重新生成），可重新探测。**Buffer layout**：dk / c / K 以及 KeyGen、Encaps 输入输出所在的偏移，点击即读取该区域。**Protocol steps**：按 SimpleSerial 的 x / m / s / c / e / a 逐步执行一次运算（复位、设模式、发 dk、发 c、运行并等待、读结果），每步记录在 Step log 中，Run 的结果显示 STATUS 各位、周期数、错误码和输出，并与选中的测试向量的期望 K 比较；也可以一键跑完整 Decaps。**Registers**：一次读出全部寄存器并解码（STATUS 各位、OP_MODE、ERROR_CODE、VERSION）。**Data buffer**：原始读写 |
 
 GUI 和下面的命令行工具调用的是同一套函数，所以结果一致。如果要做很长的采集，也可以直接用命令行。
@@ -61,7 +60,7 @@ Test Vectors 和 Trace Library 两页的管理方式相同：
 
 ## 3. 测量前先确认
 
-1. **模型数学正确**：在 Analysis → New analysis 中选好模型后点 *Self-test this model*，或执行 `make test`。如果模型错了，CPA 会表现为怎么都打不出来，很容易被误以为是硬件做了防护。
+1. **模型数学正确**：执行 `make test`（`tests/test_cpa_attack.py` 在带注入泄漏的合成 campaign 上检查：正对照必须恢复密钥，纯噪声和错误的密钥必须不行）。如果模型错了，CPA 会表现为怎么都打不出来，很容易被误以为是硬件做了防护。
 2. **向量正确**：生成向量集时已经用软件 Decaps 核对过期望 K；在 GUI 中可以再点一次 *Verify in software*。
 3. **板子正确**：在 Test Vectors → *Run on board* 跑前 20 条，应当全部 K 一致，且 CYCLE_COUNT 恒定。
 4. **触发和时基正确**：在 Acquisition 点 *Check trigger*：示波器必须只在 Decaps 开始时触发，波形要覆盖全部三个 BMUL 窗口（触发后约 23 µs）。再用 *Setup capture* 调量程。
@@ -92,11 +91,11 @@ $P acquire_cpa.py tvla-run -p <串口> --ip <示波器IP> -n 20000 --seed <hex>
 $P acquire_cpa.py resume   -p <串口> --ip <示波器IP> ../data/traces/<campaign>.hdf5
 
 # 分析
-$P cpa_attack.py ../data/traces/<campaign>.hdf5                          # 真实攻击（不给 --dk-ref）
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --dk-ref dk.bin --curve  # oracle-assisted 打分 + 曲线
-$P cpa_attack.py --list-models                                          # models/ 里的全部模型
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model hw_scalar        # 换一个泄漏模型
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model hd_scalar --rprev zero
+$P cpa_attack.py --list-models                                          # 两个假设
+$P cpa_attack.py ../data/traces/<campaign>.hdf5                          # 盲攻击：每个多项式的前 8 个系数
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --polys 0 --coeffs 0-15 --dk-ref dk.bin   # + 真实密钥排名
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --search gate --margin 10 --delay 3       # 只看预测周期附近
+$P cpa_attack.py ../data/traces/<campaign>.hdf5 --coeffs 0 --out report.json --csv r.csv   # 全部 256 个系数
 $P tvla_analysis.py ../data/traces/<campaign>.hdf5 --csv t.csv
 ```
 
@@ -104,7 +103,7 @@ $P tvla_analysis.py ../data/traces/<campaign>.hdf5 --csv t.csv
 
 - **每条 trace 都检查 K**：板子输出的 K 与向量集中预先算好的期望值逐条比较。如果不一致，说明板子被复位、密钥不对或链路出错，该 trace 会被标记，并在下一条前重写配置寄存器。**每条 trace 也检查 CYCLE_COUNT**：周期数变化就说明出现了时序侧信道。
 - **dk 只在需要时重发**：默认每 50 条重发一次（`--resend-dk-every`），其余 trace 只上传 1088 字节的密文。
-- **触发**：使用 `trig_out`（`STATUS.busy`）。Arty A7 接 Pmod JA1，Arty Z7 接 Pmod JA3。
+- **触发**：使用 `trig_out`（`STATUS.busy`）。Arty A7 接 Pmod JA1，Arty Z7 接 Pmod JA3，SAKURA-X 接 CN8 第 3 脚（地接第 13 脚）。
 - **BMUL 窗口**（`config.py: BMUL_WINDOWS`）来自 Decaps 的周期精确仿真。修改 RTL 或微码后需要重新测量，方法见 `ATTACK_MODEL.md` 第 4.3 节。
 
 CPA 的密文策略（`--strategy`）：
@@ -134,50 +133,40 @@ TVLA 中，class 0 是同一条固定密文的重复（`m0 = SHA3-256("pqc-testk
 
 ---
 
-## 6. 泄漏模型（`models/`）
+## 6. 简单 CPA（`cpa_attack.py`）
 
-每个泄漏模型是 `cpa_toolkit/models/` 里的一个文件，模型名就是文件名。命令行（`--model`）、GUI 和报告都用这个名字：
+2026-10-20 起，旧的泄漏模型目录（`models/`、按流水线逐周期对齐的攻击）已经移除，换成公开的 ML-KEM CPA 代码库共同使用的最简配方。完整说明、两个假设的推导、图怎么读、与参考仓库的对照表见 [`LEAKAGE_MODELS.md`](../docs/LEAKAGE_MODELS.md)。
 
-| 模型（文件） | 寄存器 | R_prev（第一个为默认） | 假设 |
-| ------------ | ------ | ---------------------- | ---- |
-| `hw_scalar` | `p_self`，12 位，`p00`/`p11`，T+11 | 无 | `HW(û[j]·ŝ_guess mod q)`：单次 Barrett 乘积的汉明重量 |
-| `hd_scalar` | `p_self` | prev-word / zero | `HD(R_prev, û[j]·ŝ_guess mod q)`：同一寄存器，R_prev 为前一对的乘积 |
-| `hd_basemul_c0` | `c0`，12 位，`h0`，T+17 | prev-word / zero / acc | BaseMul 输出的偶系数（含累加） |
-| `hd_basemul_c1` | `c1`，12 位，`h1d[4]`，T+18 | prev-word / zero / acc | BaseMul 输出的奇系数（含累加） |
-| `hd_basemul_word`（默认） | `word`，24 位，`wb`/`rb_din`，T+21 | prev-word / zero / acc | `HD(R_prev, {c1, c0})`：24 位 RAM 写回字，物理上最接近真实探头 |
+**做什么**：对每个秘密系数 `ŝ[poly][j]`（0…3328 共 3329 个候选 g），取已知密文算出的公开系数 `u = û[poly][j]`，假设 `HW(f(u·g))`；对 BMUL 窗口里的**每一个采样点**算 Pearson 相关系数（一次矩阵乘法）；|ρ| 最大的候选就是猜测，峰值所在的位置是 POI。每个系数还给出 top-10，以及“稳定性”：在 POI 周围 3、5、7、9 个采样点的窗口里分别累加 ρ² 取前 10，数每个候选出现在几个窗口里（4/4 = 最稳）。
 
-另有一组**流水线模型**（`pipe_all`、`pipe_dsp`、`pipe_barrett`、`pipe_output`）：它们不指定单个寄存器，而是按 `mlkem_poly_alu.sv` 的真实发射时序，给乘法器流水线里每一拍各算一个假设，再和**那一拍**的特征做相关。上面这些 `hd_*` 的 `prev-word` 前态（"上一个字的同一个值"）和硬件对不上——两个乘法器每拍都换运算，`A0` 的下一拍是 Karatsuba 和项，不是下一个字的 `A0`；在周期精确仿真里，`hd_*` 的假设与真实翻转的相关系数约 0.01，按时序建模约 0.3。用法、四个子模型的区别和局限见 [`LEAKAGE_MODELS.md`](../docs/LEAKAGE_MODELS.md) 第 7 节，设计推导见 [`ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md) 第 5.5 节。
+| 假设（`--model`） | 公式 | 对应的硬件寄存器 | 周期（T = 该系数所在字的 RAM 读地址周期，每个字 +2） |
+| ---- | ---- | ---- | ---- |
+| `hw_product_mod`（默认） | `HW(u·g mod q)`，12 位 | Barrett 输出 `r` → `p00` / `p11` | T + 10 / T + 11 |
+| `hw_product_raw` | `HW(u·g)`，24 位 | DSP 乘积寄存器 `P`（`p1` / `p2`） | T + 5 / T + 6 |
 
-这组模型需要 campaign 记录了采样率（它要把 trace 折成每个核心周期一个值），并且会搜一个整数周期偏移：
+`T = BMUL_READ_CYCLES[poly] + 2·(j // 2)`（`config.py`）；一对系数（2w，2w+1）在同一个周期由两个乘法器算完，所以搭档系数对另一个来说是算法噪声，需要上千条 trace。假设只依赖 `u` 和 `g`，所以**攻击天然是盲的**：真实密钥（`--dk-ref`）只在事后给猜测排名，从不参与构造假设。
+
+**预测周期 ↔ 实际峰值**是最重要的健康检查：每个系数的峰值位置都会和 RTL 预测的周期比较（表里的 *offset* 列）。真实泄漏的峰值会堆在同一个偏移上（偏移不是 0 就是探头/放大器延迟，填进 *shift* 即可），噪声的峰值则散在整个窗口里。
 
 ```bash
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_all               # 盲攻击
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_all --coeffs 8     # 先看 24 个系数
-$P cpa_attack.py ../data/traces/<campaign>.hdf5 --model pipe_dsp --features energy --offsets 2
+python cpa_attack.py FILE.hdf5                                  # 盲攻击，每个多项式的前 8 个系数，整个 BMUL 窗口
+python cpa_attack.py FILE.hdf5 --dk-ref dk.bin                  # + 真实密钥的排名
+python cpa_attack.py FILE.hdf5 --search gate --margin 10        # 只看预测周期 ± 10 个核心周期（快得多）
+python cpa_attack.py FILE.hdf5 --polys 0 --coeffs 0-15 --model hw_product_raw
 ```
 
-`--features` 选怎么把一个周期里的采样点压成一个数（`pca` 默认，从 trace 里学探头的单周期波形；`energy`、`abs` 不假设形状），`--offsets` 是要搜的整数周期偏移（默认 `-6:6`），`--coeffs` 只攻击每个多项式的前 N 个系数（先快速看一眼）。GUI 在 Analysis 页选到 `pipe_*` 时会多出对应的两个设置。
+`--coeffs N` = 每个多项式的前 N 个，`0` = 全部 256 个，`0-15` / `3,7` = 指定的；全部 768 个系数用整个窗口大约要几十分钟，用 `gate` 只要几分钟。
 
-R_prev 的含义：`zero` = 前态为 0（即汉明重量）；`prev-word` = 同一遍 BMUL 中上一个字；`acc` = 前面多项式的累加和 C_old。每个模型对应哪个 RTL 寄存器、哪一个时钟拍，完整推导见 [`ATTACK_MODEL.md`](../docs/ATTACK_MODEL.md) 第 5 节。旧的预设名（`HW`、`HD`、`basemul-c0`、`basemul-c1`、`basemul-word`）仍然可以用，旧报告也会自动对应到新的模型名。
+**时间轴**：示波器报告的“第一个采样点相对触发的时间”（LeCroy 的 `HORIZ_OFFSET`）现在随每条 campaign 一起存下来（`record_start_s`），BMUL 窗口按**时间**放在 trace 上，所以触发位置在屏幕中间（有预触发数据）也不会错位；旧 campaign 没有这个字段时按“采样 0 = 触发”处理，GUI 的覆盖检查会提示。窗口两侧的余量 `TRIGGER_SLACK_CYCLES` 的单位是**核心周期**（旧版误当成采样点，2.5 GS/s 下只有 1/12 的预期）。
 
-**比较不同模型**：对同一个 campaign 用不同的模型（或 R_prev）各运行一次 CPA，然后在报告的 *Compare models* 标签中对比。只在相同条件下比较：同样的 trace 数，打分模式下看 rank-1 比例和真实密钥的中位排名，盲攻击模式下看峰值 |ρ|。
+**加一个新假设**：在 `cpa_attack.py` 的 `MODELS` 里加一个 `Model(...)`，`leak(x)` 接收 `u·g`（整数，shape = trace × 候选）并返回汉明权重 / 汉明距离；GUI 刷新后就能在下拉框里选到。
 
-**加一个新模型**：
-
-1. 复制 `models/_template.py` 为 `models/<名字>.py`（小写，不以 `_` 开头）；
-2. 选寄存器（`p_self` / `c0` / `c1` / `word`）、它接受的 R_prev（或不用），写 `leak(x, r_prev)`：`x` 是（trace × 候选值）的寄存器值，返回每个 (trace, 候选值) 的假设泄漏；要做流水线模型则继承 `PipelineModel` 并选一个触发器分组（`all` / `dsp` / `barrett` / `output`），不用写 `leak()`；
-3. 在 GUI 的模型下拉框旁点 ↻（或刷新页面），新模型就出现在列表里，不需要重启 GUI；
-4. 先运行 *Self-test this model*：它检查模型看到的寄存器值和硬件实际计算的值一致（与整多项式 BaseMul 独立计算的结果比较），并且假设确实随猜测值变化。流水线模型的自检改为检查：孪生的四种运算组合起来等于 FIPS 203 的 BaseCaseMultiply、每个假设落在流水线存在的拍上、盲/打分两种模式下假设都随猜测变化。
-
-把孪生和 RTL 逐周期比对（需要 Verilator）：
+把 RTL 里每个触发器的翻转和流水线孪生逐周期比对的工具仍然保留（需要 Verilator）：
 
 ```bash
 python scripts/sim/pipeline_check.py        # 全部 35 个寄存器、三次 BMUL、每一拍都必须一致
-python scripts/sim/model_vs_rtl.py          # 每个模型与仿真总翻转的对齐曲线
 python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关的翻转，按分组排序
 ```
-
-模板里的示例是一个“单比特”模型（24 位写回字的第 0 位，DPA 风格）。`models/base.py` 提供 `hw()`、`hd()` 和 `Guess`（给定猜测值时整个 BaseMul 对的中间值），需要更特殊的假设时可以直接重写 `hypotheses()`。
 
 ---
 
@@ -192,9 +181,9 @@ python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关�
 
 1. **trace 数不够，不等于没有泄漏。** 先用 TVLA 确认泄漏的量级和位置，再决定 CPA 需要多少条 trace。
 2. **窗口或触发没对齐，会把真实泄漏淹没。** 先用 Setup capture 和 Trace Library 的波形查看器确认 BMUL 窗口落在波形中；TVLA 的 |t| 峰值也应该落在窗口内。
-3. **模型本身是近似的。** BaseMul 实际的延迟链比这里建模的更细（`ATTACK_MODEL.md` 第 9 节），这里给出的是泄漏强度的下界，不是精确预测。
-4. **逐系数攻击有“先有鸡还是先有蛋”的问题**：同一对系数中先猜的那个，在不给 `--dk-ref` 时它的搭档系数仍按 0 处理（见 `cpa_attack.py` 的模块文档）。
-5. **换一次固定密钥或种子，结果会变。这是预期行为，不是故障。** 要评估是否安全，应当用多个不同的种子分别采集，GUI 会把它们汇总成跨 campaign 的成功率。
+3. **假设本身是近似的。** 这里只建模了一个寄存器的汉明权重，真实芯片每拍翻转上千个触发器（`ATTACK_MODEL.md` 第 9 节）；结果是泄漏强度的下界，不是精确预测。
+4. **同一对系数共用一个周期**：搭档系数是算法噪声，所以 `hw_product_*` 每个系数需要的 trace 数比单个乘法器的教科书估计多。
+5. **换一次固定密钥或种子，结果会变。这是预期行为，不是故障。** 要评估是否安全，应当用多个不同的种子分别采集，每个种子的报告在 Analysis 的 *Compare* 标签里并排。
 6. **这里只测了 Decaps 的三条 BMUL。** INTT 之后的减法、KeyGen 的 CBD/NTT、Encaps 的重加密路径都没有覆盖。
 7. **`structured` 策略构造出的密文不是合法密文**，核心照常走隐式拒绝路径，返回的 K 没有意义。它只用于提升目标 BaseMul 对的信噪比。在 KEM 场景下攻击者确实可以发送任意密文，所以这仍然是合理的威胁模型。
 
@@ -206,7 +195,7 @@ python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关�
 
 ## 8. Oracle-assisted 评估的边界
 
-`--dk-ref`（在 GUI 中是 “Score with campaign key”）的**唯一**作用是事后打分：拿真实密钥核对攻击是否猜对、真实值排在第几名。它**从不**参与构造假设（见 `cpa_attack.py` 模块文档、`models/base.py: Guess` 文档、`ATTACK_MODEL.md` 第 5.4 节）。
+`--dk-ref`（在 GUI 中是 “Rank the campaign key”）的**唯一**作用是事后打分：拿真实密钥核对攻击是否猜对、真实值排在第几名。它**从不**参与构造假设——假设只由公开的 `u` 和候选值 `g` 算出（见 `cpa_attack.py` 模块文档）。
 
 凡是用了真实密钥的结果，报告中都会标注 `oracle_assisted: true`，GUI 也会显示同样的提示。**不要把 oracle-assisted 的排名或成功率当成“真实攻击的结果”来展示**：它衡量的是“这个假设模型离成功还有多远”，真实攻击指的是不给真实密钥的那次运行。
 
@@ -214,7 +203,7 @@ python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关�
 
 ## 9. 已知局限
 
-1. **`--curve` 处理大文件较慢**：每个 checkpoint 都重新跑一次完整的 768 系数攻击，没有增量复用。
+1. **全部 768 个系数 × 整个窗口较慢**（几十分钟）：先用 `--coeffs 8`，确认偏移后用 `--search gate --delay <偏移>` 再跑全部。
 2. **NTT / INTT 的周期窗口还没有测量**（`config.py` 中为 `None`），图上只标 BMUL 窗口。
 3. **115200 baud 下，每条 trace 上传 1088 字节密文约需 94 ms**，这是吞吐量的上限。提速方法见 `docs/UART_PROTOCOL.md` 第 2 节。
 4. **采集进行时，板子和示波器归采集任务独占**：寄存器读写等操作会被拒绝，直到采集结束。这是为了避免两路 UART 流量互相冲突。
@@ -233,5 +222,6 @@ python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关�
 | `cannot open <resource>` | 确认 `config.py` 中的 `SCOPE_IP` 已不是占位符（`192.0.2.100`）；在 Connection 页点 *Find instruments* |
 | `pyvisa is missing` | `uv sync --extra scope` |
 | K 正确率 < 100% | 板子在采集中被复位，或链路出错；对应 trace 已被标记，下一条前会自动重写配置 |
-| 分析报错 “BMUL n lies outside the captured traces” | 示波器时基太短，trace 至少要覆盖触发后约 23 µs |
-| `--curve` 报 “needs --dk-ref” | key rank 随 trace 数的曲线只能在 oracle-assisted 模式下计算 |
+| 分析报错 “BMUL n is outside the record” | 记录没有覆盖触发后 0 … 约 23 µs：把触发位置拉到屏幕最左、时基加长；Acquisition 的 *Check trigger* 会显示记录实际覆盖的范围 |
+| CPA 报告 “No signal” | 噪声底以上没有任何峰：加 trace、换另一个假设、检查 Check trigger；先看 TVLA 的 \\|t\\| 峰是否落在 BMUL 窗口内 |
+| CPA 的 offset 全是同一个非零值 | 探头 / 放大器延迟：把它填进“shift”，改用 *Around the predicted cycle* |

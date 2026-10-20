@@ -1,7 +1,7 @@
 """Plaintext-checking (PC) oracle key recovery for the ML-KEM-768 Decaps evaluation.
 
 A published class of attack on FO-transform KEMs (Ravi et al., TCHES 2020; Ueno et al.,
-TCHES 2022). It is complementary to the CPA models in ``models/``: instead of correlating a
+TCHES 2022). It is complementary to the coefficient CPA of ``cpa_attack.py``: instead of correlating a
 3329-candidate hypothesis of one NTT-domain coefficient against the BaseMul window, it recovers
 one *time-domain* secret coefficient per group of queries with a single binary measurement, read
 from the loud part of the trace (the FO re-encryption, where a fixed-vs-random TVLA already shows
@@ -209,7 +209,7 @@ def decode_coefficient(bits) -> dict:
 def classify(sweep_feature: np.ndarray, zero_feature: np.ndarray, one_feature: np.ndarray) -> np.ndarray:
     """Label each sweep query 0/1 by which reference its trace feature is closer to.
 
-    ``*_feature`` are one scalar per query (e.g. the mean of ``cycle_features`` over the
+    ``*_feature`` are one scalar per query (e.g. the mean of the per-cycle energy over the
     re-encryption window, or a template projection); shapes broadcast over the query axis. Returns
     a 0/1 array the size of ``sweep_feature`` (1 = closer to the weight-one reference).
     """

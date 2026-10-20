@@ -40,7 +40,6 @@ import config as C
 import connection as CN
 import cpa_attack as CA
 import hdf5_trace_store as HS
-import models as LM
 import scope as S
 import testvectors as TV
 import tvla_analysis as TVA
@@ -53,6 +52,8 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset
                  ".png": "image/png"}
 DATA_DIR = Path(A.ROOT) / "data"
 TRACES_DIR = DATA_DIR / "traces"
+#: Marks reports made by the current simple CPA (cpa_attack.py); older ones came from the removed model catalogue.
+CPA_FORMAT = "simple-cpa-1"
 ANALYSIS_DIR = DATA_DIR / "analysis"
 VECTORS_DIR = TV.VECTORS_DIR
 
@@ -175,41 +176,68 @@ def envelope(y: np.ndarray, max_points: int) -> tuple[np.ndarray, np.ndarray]:
     return x, v
 
 
-def _series(y: np.ndarray, rate: float, max_points: int) -> dict:
-    """``{x, y}`` ready for Plotly: x in microseconds when the sample rate is known."""
+def _series(y: np.ndarray, rate: float, max_points: int, start_s: float | None = None) -> dict:
+    """``{x, y}`` ready for Plotly: x = time after the trigger in microseconds when
+    the sample rate is known (sample 0 sits at ``start_s``, the record start the
+    scope reported; 0 when unknown), else the sample index."""
     idx, val = envelope(np.asarray(y, dtype=np.float64), max_points)
-    x = idx / rate * 1e6 if rate else idx
+    x = (idx / rate + (start_s or 0.0)) * 1e6 if rate else idx
     return {"x": np.round(x, 6).tolist(), "y": np.round(val, 6).tolist()}
 
 
-def _phase_bands(rate: float, n_samples: int) -> list[dict]:
+def _phase_bands(rate: float, n_samples: int, start_s: float | None = None) -> list[dict]:
     """The Decaps phases (config.DECAPS_PHASES, core cycles) mapped onto the
     captured record, each clipped to it, as ``{label, x, samples}`` (``x`` in the axis unit:
-    microseconds, or samples when the rate is unknown). Lets the
+    microseconds after the trigger, or samples when the rate is unknown). Lets the
     charts name a feature outside the BMUL windows (e.g. a TVLA |t| peak in
     J(z||c) / the re-encryption Keccak, not in a decryption BMUL)."""
     sr = rate if rate > 0 else C.CORE_MHZ * 1e6
-    scale = (1e6 / rate) if rate else 1.0
+    start = (start_s or 0.0) if rate else 0.0
     out = []
     for label, c0, c1 in getattr(C, "DECAPS_PHASES", []) or []:
-        s0 = min(n_samples, max(0, A.cycle_to_sample(c0, sr)))
-        s1 = min(n_samples, A.cycle_to_sample(c1, sr))
-        if s1 > s0:  # a phase wholly past the record end is not drawn
-            out.append({"label": label, "x": [round(s0 * scale, 6), round(s1 * scale, 6)],
+        s0 = min(n_samples, max(0, A.cycle_to_sample(c0, sr, start)))
+        s1 = min(n_samples, max(0, A.cycle_to_sample(c1, sr, start)))
+        if s1 > s0:  # a phase wholly outside the record is not drawn
+            out.append({"label": label, "x": [_sample_x(s0, rate, start), _sample_x(s1, rate, start)],
                         "samples": [int(s0), int(s1)]})
     return out
 
 
-def _axis(rate: float, n_samples: int) -> dict:
-    windows = A.window_sample_ranges(rate, n_samples)
-    scale = (1e6 / rate) if rate else 1.0
-    shown = [(a, b) for a, b in windows if b > a]  # windows past the trace end are not drawn
+def _sample_x(s: int, rate: float, start_s: float) -> float:
+    """Axis position of sample ``s``: microseconds after the trigger, or the index."""
+    return round((s / rate + start_s) * 1e6, 6) if rate else int(s)
+
+
+def _windows_cut(rate: float, windows: list) -> int:
+    """How many BMUL windows the record holds only part of (a cut window loses coefficients)."""
+    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
+    full = [A.cycle_to_sample(c1 + C.TRIGGER_SLACK_CYCLES, sr) - A.cycle_to_sample(c0 - C.TRIGGER_SLACK_CYCLES, sr)
+            for c0, c1 in C.BMUL_WINDOWS]
+    return sum(1 for (a, b), w in zip(windows, full) if 0 < b - a < w - 1)
+
+
+def _axis(rate: float, n_samples: int, start_s: float | None = None) -> dict:
+    """The time axis of a record and where the BMUL windows / Decaps phases fall on it.
+
+    ``start_s`` is the time of sample 0 relative to the trigger (the scope's
+    record start; None = not recorded, taken as 0). The BMUL bands are placed by
+    TIME after the trigger, so they stay right however the scope's horizontal
+    delay was set -- as long as the start was recorded."""
+    start = (start_s or 0.0) if rate else 0.0
+    windows = A.window_sample_ranges(rate, n_samples, start)
+    shown = [(a, b) for a, b in windows if b > a]  # windows outside the record are not drawn
+    labels = [i for i, (a, b) in enumerate(windows) if b > a]   # ...and the rest keep their own number
+    end_us = (start + n_samples / rate) * 1e6 if rate else None
     return {"unit": "us" if rate else "sample", "sample_rate_hz": rate, "n_samples": n_samples,
-            "bmul_windows": [[round(a * scale, 6), round(b * scale, 6)] for a, b in shown],
+            "record_start_s": start_s, "record_start_known": start_s is not None,
+            "bmul_windows": [[_sample_x(a, rate, start), _sample_x(b, rate, start)] for a, b in shown],
             "bmul_windows_samples": [[int(a), int(b)] for a, b in shown],
+            "bmul_index": labels,
             "bmul_outside": len(windows) - len(shown),
-            "phases": _phase_bands(rate, n_samples),
+            "bmul_cut": _windows_cut(rate, windows),
+            "phases": _phase_bands(rate, n_samples, start),
             "duration_us": round(n_samples / rate * 1e6, 3) if rate else None,
+            "end_us": round(end_us, 3) if end_us is not None else None,
             "needed_us": round((C.BMUL_WINDOWS[-1][1] + C.TRIGGER_SLACK_CYCLES) / C.CORE_MHZ, 2)}
 
 
@@ -552,42 +580,17 @@ def api_scope_save_config(body: dict) -> dict:
 # =============================================================================
 # CPA model
 # =============================================================================
-def _default_model() -> tuple[str, str]:
-    """config.py's CPA_MODEL / CPA_RPREV, if they still name a model and a choice it accepts."""
-    name = LM.resolve(C.CPA_MODEL) or "hd_basemul_word"
-    try:
-        return name, LM.get(name).resolve_rprev(C.CPA_RPREV)
-    except ValueError:
-        return name, ""
-
-
 def api_model_list(_body: dict) -> dict:
-    """Every leakage model in models/, re-read from disk (new or edited files show up)."""
-    found, errors = LM.scan()
-    for e in errors:
-        log("[warn] leakage model %s not loaded: %s" % (e["file"], e["error"]))
-    name, rprev = _default_model()
-    return {"models": [LM.describe(m) for m in found], "errors": errors,
-            "default_model": name, "default_rprev": rprev, "rprevs": LM.RPREVS}
-
-
-def api_model_selftest(body: dict) -> dict:
-    model = LM.get(str(body.get("model", "")), reload=True)
-    rows = LM.selftest(model)
-    for r in rows:
-        log("self-test %s: %s %s -- %s" % (model.name, "PASS" if r["ok"] else "FAIL", r["name"], r["detail"]))
-    return {"model": model.name, "checks": rows, "ok": all(r["ok"] for r in rows)}
+    """The CPA hypotheses (cpa_attack.MODELS) and the one config.py names as default."""
+    name = C.CPA_MODEL if C.CPA_MODEL in CA.MODELS else CA.DEFAULT_MODEL
+    return {"models": CA.list_models(), "default_model": name}
 
 
 def api_model_save_default(body: dict) -> dict:
-    model = LM.get(str(body.get("model", "")))
-    rprev = model.resolve_rprev(str(body.get("rprev", "")))
-    values = {"CPA_MODEL": model.name}
-    if rprev:
-        values["CPA_RPREV"] = rprev
-    save_config_values(**values)
-    C.CPA_MODEL, C.CPA_RPREV = model.name, rprev or C.CPA_RPREV
-    log("saved CPA_MODEL=%s%s to config.py" % (model.name, " CPA_RPREV=%s" % rprev if rprev else ""))
+    model = CA.get_model(str(body.get("model", "")))
+    save_config_values(CPA_MODEL=model.name)
+    C.CPA_MODEL = model.name
+    log("saved CPA_MODEL=%s to config.py" % model.name)
     return {}
 
 
@@ -853,8 +856,8 @@ def api_acquire_info(_body: dict) -> dict:
 class _LiveStats:
     """Running per-sample statistics of a campaign, for the live preview."""
 
-    def __init__(self, n_samples: int, rate: float, mode: str):
-        self.n_samples, self.rate, self.mode = n_samples, rate, mode
+    def __init__(self, n_samples: int, rate: float, mode: str, start_s: float | None = None):
+        self.n_samples, self.rate, self.mode, self.start_s = n_samples, rate, mode, start_s
         self.seq = 0
         self.last = None
         self.last_index = -1
@@ -896,7 +899,8 @@ def _run_acquire_job(job_id: str, vs_path: str, resume_path: str, samples: int, 
                 n_samples = A.measure_record_length(target, sc)
             log("%d samples per trace" % n_samples)
         rate = sc.sample_rate()
-        live = _LiveStats(n_samples, rate, mode)
+        query = getattr(sc, "record_start_s", None)
+        live = _LiveStats(n_samples, rate, mode, query() if callable(query) else None)
         with _live_lock:
             _live[job_id] = live
         _update_job(job_id, file=str(out_path), mode=mode, message="acquiring...")
@@ -975,10 +979,11 @@ def api_acquire_live(body: dict) -> dict:
         means = {c: (live.sums[c] / live.counts[c]) for c in (0, 1) if live.counts[c]}
         counts, seq, idx, cls, bad = dict(live.counts), live.seq, live.last_index, live.last_cls, live.n_bad
     out = {"seq": seq, "ready": True, "index": idx, "class": cls, "n_bad": bad, "mode": live.mode,
-           "axis": _axis(live.rate, live.n_samples), "last": _series(last, live.rate, max_points),
-           "means": {str(c): dict(_series(m, live.rate, max_points), n=counts[c]) for c, m in means.items()}}
+           "axis": _axis(live.rate, live.n_samples, live.start_s),
+           "last": _series(last, live.rate, max_points, live.start_s),
+           "means": {str(c): dict(_series(m, live.rate, max_points, live.start_s), n=counts[c]) for c, m in means.items()}}
     if live.mode == "tvla" and 0 in means and 1 in means:
-        out["mean_diff"] = _series(means[0] - means[1], live.rate, max_points)
+        out["mean_diff"] = _series(means[0] - means[1], live.rate, max_points, live.start_s)
     return out
 
 
@@ -1002,8 +1007,9 @@ def api_acquire_capture_one(body: dict) -> dict:
                                                      t.size, ("%.4g" % rate) if rate else "?"))
     _, start_ok, start_detail = _record_start_check(sc)
     query = getattr(sc, "record_start_s", None)
-    return {"trace": _series(t, rate, max_points), "axis": _axis(rate, int(t.size)),
-            "record_start": {"s": query() if callable(query) else None, "ok": start_ok, "detail": start_detail},
+    start = query() if callable(query) else None
+    return {"trace": _series(t, rate, max_points, start), "axis": _axis(rate, int(t.size), start),
+            "record_start": {"s": start, "ok": start_ok, "detail": start_detail},
             "cycles": out.cycles, "describe": out.describe(), "k_match": k_ok,
             "stats": {"min": float(t.min()), "max": float(t.max()), "mean": float(t.mean()),
                       "std": float(t.std()), "n": int(t.size)},
@@ -1079,18 +1085,22 @@ def api_acquire_trigger_check(_body: dict) -> dict:
     result = {"pulse_us": out.cycles / C.CORE_MHZ, "cycles": out.cycles}
     if trace is not None:
         rate = sc.sample_rate()
-        axis = _axis(rate, int(trace.size))
+        query = getattr(sc, "record_start_s", None)
+        start = query() if callable(query) else None
+        axis = _axis(rate, int(trace.size), start)
         if not axis.get("duration_us"):
             checks.append(("record covers the BMUL windows", None, "sample rate unknown -- cannot tell"))
-        elif axis["bmul_outside"]:
-            checks.append(("record covers the BMUL windows", False, "%.1f us captured, %d BMUL window(s) cut off: "
-                           "lengthen the timebase to at least %s us after the trigger"
-                           % (axis["duration_us"], axis["bmul_outside"], axis["needed_us"])))
+        elif axis["bmul_outside"] or axis["bmul_cut"]:
+            checks.append(("record covers the BMUL windows", False, "the record spans %.2f .. %.2f us after the trigger; "
+                           "%d BMUL window(s) missing, %d cut: it must reach from 0 to at least %s us after the trigger "
+                           "(trigger at the left edge, timebase long enough)"
+                           % ((start or 0.0) * 1e6, axis["end_us"], axis["bmul_outside"], axis["bmul_cut"],
+                              axis["needed_us"])))
         else:
             checks.append(("record covers the BMUL windows", True, "%.1f us captured, all three BMUL windows inside "
                            "(need %s us)" % (axis["duration_us"], axis["needed_us"])))
         checks.append(_record_start_check(sc))
-        result.update(trace=_series(trace, rate, 4000), axis=axis)
+        result.update(trace=_series(trace, rate, 4000, start), axis=axis)
     rows = [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks]
     result.update(checks=rows, ok=all(r["ok"] is not False for r in rows))
     log("trigger check: " + "; ".join("%s %s" % ("PASS" if r["ok"] else "SKIP" if r["ok"] is None else "FAIL", r["name"])
@@ -1232,13 +1242,18 @@ def _reports_for(path: str) -> list[dict]:
 
 
 def _cpa_summary(rep: dict) -> dict:
-    """The numbers a CPA report is compared by (GUI: Compare models)."""
-    best = [x["best_corr"] for x in rep.get("results", []) if x.get("best_corr") is not None]
-    model, rprev = _report_model(rep)
-    return dict({k: rep.get(k) for k in ("n_traces_used", "oracle_assisted", "rank1_fraction",
-                                         "median_true_rank", "mean_true_corr")},
-                model=model, rprev=rprev, mean_best_corr=float(np.mean(best)) if best else None,
-                max_best_corr=float(np.max(best)) if best else None, mtd=(rep.get("curve") or {}).get("mtd"))
+    """The numbers a CPA report is compared by (GUI: Compare tab). Reports made with the removed model
+    catalogue (no ``format`` field) are listed but carry no comparable numbers."""
+    if rep.get("format") != CPA_FORMAT:
+        return {"model": rep.get("model") or (rep.get("model_config") or {}).get("model") or "?", "legacy": True}
+    res = [x for x in rep.get("results", []) if x.get("informative")]
+    return {"model": rep.get("model"), "legacy": False, "n_traces_used": rep.get("n_traces_used"),
+            "oracle_assisted": rep.get("oracle_assisted"), "search": rep.get("search"),
+            "n_coefficients": len(rep.get("results", [])), "rank1_fraction": rep.get("rank1_fraction"),
+            "median_true_rank": rep.get("median_true_rank"), "mean_true_corr": rep.get("mean_true_corr"),
+            "mean_best_corr": rep.get("mean_best_corr"), "max_best_corr": rep.get("max_best_corr"),
+            "noise_floor_corr": rep.get("noise_floor_corr"), "n_above_floor": rep.get("n_above_floor"),
+            "n_stable": rep.get("n_stable"), "n_informative": len(res)}
 
 
 def _tags_of(md) -> list[str]:
@@ -1327,7 +1342,7 @@ def api_traces_detail(body: dict) -> dict:
         "recipe": js("recipe"), "board": js("board"), "scope": js("scope"),
         "core_mhz": md.get("core_mhz"), "cycles": cycles, "cycles_distinct": int(values.size),
         "n_failed_checks": n_bad, "dk_hash": s.get("dk_hash"), "reports": _reports_for(str(p)),
-        "axis": _axis(row["sample_rate_hz"] or 0.0, int(row["n_samples"] or 0)),
+        "axis": _axis(row["sample_rate_hz"] or 0.0, int(row["n_samples"] or 0), s.get("record_start_s")),
     })
     return row
 
@@ -1471,14 +1486,10 @@ def _csv_paths(h5_path: str, job_id: str) -> tuple[Path, Path]:
 
 
 def _model_version(model: str = "") -> str:
-    """Content hash of the model file, models/base.py and mlkem_ref.py: which
-    version of the leakage model produced a report."""
+    """Content hash of cpa_attack.py and mlkem_ref.py: which version of the attack produced a report."""
     import mlkem_ref
-    files = [Path(LM.__file__).with_name("base.py"), Path(mlkem_ref.__file__)]
-    if model:
-        files.insert(0, Path(LM.get(model).source))
-    h = hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest()[:12]
-    return "%s:%s" % (model or "models", h)
+    h = hashlib.sha256(Path(CA.__file__).read_bytes() + Path(mlkem_ref.__file__).read_bytes()).hexdigest()[:12]
+    return "%s:%s" % (model or "cpa_attack", h)
 
 
 def _save_analysis_report(kind: str, file: str, job_id: str, summary: dict) -> str:
@@ -1526,10 +1537,7 @@ def _inside(path: Path, directory: Path) -> Path:
 
 
 def api_results_load(body: dict) -> dict:
-    rep = json.loads(_inside(Path(body["path"]), ANALYSIS_DIR).read_text())
-    if rep.get("kind") == "cpa":
-        rep["model"], rep["rprev"] = _report_model(rep)
-    return rep
+    return json.loads(_inside(Path(body["path"]), ANALYSIS_DIR).read_text())
 
 
 def api_results_delete(body: dict) -> dict:
@@ -1569,35 +1577,23 @@ def _dk_ref(file: str, source: str) -> bytes | None:
     return Path(source).read_bytes()
 
 
-def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str, max_traces: int, dk_source: str,
-                          curve: bool, features: str = "auto", offsets: str = "", coeffs: int = 0) -> None:
+def _run_cpa_analysis_job(job_id: str, file: str, model: str, max_traces: int, dk_source: str, polys: str,
+                          coeffs: str, search: str, margin: int, delay: float) -> None:
     try:
         dk_ref = _dk_ref(file, dk_source)
-        aligned = LM.get(model).aligned
-        _update_job(job_id, message="running CPA analysis (%s%s)..." % (model, ", R_prev " + rprev if rprev else ""))
+        _update_job(job_id, message="running CPA (%s)..." % model)
 
         def progress(done, total):
-            _update_job(job_id, progress=done, total=total,
-                        message="correlating %d / %d coefficients" % (done, total))
+            _update_job(job_id, progress=done, total=total, message="correlating %d / %d coefficients" % (done, total))
 
-        summary = CA.run_attack(file, model, rprev, max_traces, None, dk_ref, features, offsets, progress, coeffs)
-        summary["model_config"] = {"model": model, "target": summary["target"], "rprev": rprev,
-                                   "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None,
-                                   "coeffs": coeffs}
-        if aligned:
-            summary["model_config"].update(features=summary["features"]["mode"],
-                                           offsets=list(summary["features"]["offsets_searched"]))
-        results_csv, curve_csv = _csv_paths(file, job_id)
+        summary = CA.run_attack(file, model, max_traces, dk_ref, polys, coeffs, search, margin, delay, progress)
+        summary["format"] = CPA_FORMAT
+        summary["model_config"] = {"model": model, "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None,
+                                   "polys": polys, "coeffs": coeffs, "search": search, "margin_cycles": margin,
+                                   "delay_cycles": delay}
+        results_csv, _ = _csv_paths(file, job_id)
         CA.write_results_csv(summary["results"], str(results_csv))
         summary["results_csv"] = str(results_csv)
-        if curve:
-            if dk_ref is None:
-                raise ValueError("the key-rank curve needs the true key (oracle-assisted evaluation)")
-            _update_job(job_id, message="computing key-rank-vs-trace-count curve...")
-            c = CA.run_curve(file, model, rprev, max_traces, dk_ref, features=features, offsets=offsets)
-            CA.write_curve_csv(c, str(curve_csv))
-            c["curve_csv"] = str(curve_csv)
-            summary["curve"] = c
         summary["report_path"] = _save_analysis_report("cpa", file, job_id, summary)
         _update_job(job_id, status="done", result=summary, message="done")
         log("CPA analysis job %s finished (%s)" % (job_id, Path(file).name))
@@ -1606,36 +1602,33 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, rprev: str, max_tr
         log("[error] CPA analysis job %s: %s" % (job_id, e))
 
 
-def _model_of(body: dict) -> tuple[str, str]:
-    """(model, R_prev) of a request: a model name (old preset names and, for
-    old "custom" reports, a target register also work) and an R_prev it accepts."""
-    name = LM.resolve(str(body.get("model", "") or ""), str(body.get("target", "") or ""))
-    if not name and not body.get("model") and not body.get("target"):
-        name = _default_model()[0]
-    if not name:
-        raise ValueError("no such leakage model: %s" % (body.get("model") or body.get("target")))
-    model = LM.get(name, reload=True)
-    return model.name, model.resolve_rprev(str(body.get("rprev", "") or ""))
+def _cpa_settings(body: dict) -> dict:
+    """The attack settings of a request, checked now so a bad value fails here and not inside the job."""
+    model = CA.get_model(str(body.get("model", "") or "") or (C.CPA_MODEL if C.CPA_MODEL in CA.MODELS else CA.DEFAULT_MODEL)).name
+    search = str(body.get("search", "full") or "full")
+    if search not in ("full", "gate"):
+        raise ValueError("search must be 'full' or 'gate'")
+    polys, coeffs = str(body.get("polys", "") or ""), str(body.get("coeffs", "8") or "8")
+    CA.parse_polys(polys)
+    CA.parse_range(coeffs, 256)
+    return {"model": model, "search": search, "polys": polys, "coeffs": coeffs,
+            "margin": max(1, int(float(body.get("margin", 10) or 10))), "delay": float(body.get("delay", 0) or 0),
+            "max_traces": int(body.get("max_traces", 0) or 0)}
 
 
 def api_analysis_cpa_start(body: dict) -> dict:
     file = body["file"]
     if not Path(file).is_file():
         raise ValueError("no such file: %s" % file)
-    model, rprev = _model_of(body)
+    st = _cpa_settings(body)
     dk_source = str(body.get("dk_ref", body.get("dk_ref_path", ""))).strip()
-    features = str(body.get("features", "auto") or "auto")
-    offsets = str(body.get("offsets", "") or "")
-    coeffs = int(body.get("coeffs", 0) or 0)
-    if LM.get(model).aligned:          # fail here, not inside the job, on a setting we can check now
-        CA.feature_mode(LM.get(model), features)
-        CA.parse_offsets(offsets)
     job_id = _new_job("cpa_analysis")
     threading.Thread(target=_run_cpa_analysis_job, daemon=True,
-                     args=(job_id, file, model, rprev, int(body.get("max_traces", 0) or 0),
-                           dk_source, bool(body.get("curve", False)), features, offsets, coeffs)).start()
-    log("started CPA analysis job %s: %s model=%s%s%s" % (job_id, Path(file).name, model,
-        " R_prev=" + rprev if rprev else "", " (oracle-assisted)" if dk_source else ""))
+                     args=(job_id, file, st["model"], st["max_traces"], dk_source, st["polys"], st["coeffs"],
+                           st["search"], st["margin"], st["delay"])).start()
+    log("started CPA analysis job %s: %s model=%s polys=%s coeffs=%s search=%s%s" % (
+        job_id, Path(file).name, st["model"], st["polys"] or "0-2", st["coeffs"], st["search"],
+        " (oracle-assisted ranking)" if dk_source else ""))
     return {"job_id": job_id}
 
 
@@ -1662,17 +1655,17 @@ def api_analysis_tvla_start(body: dict) -> dict:
     return {"job_id": job_id}
 
 
-def api_analysis_correlation_curve(body: dict) -> dict:
+def api_analysis_coefficient(body: dict) -> dict:
+    """One coefficient in detail for the inspector: correlation over time, every candidate's peak,
+    a heat map of the top candidates and the convergence with the trace count."""
     file = body["file"]
     if not Path(file).is_file():
         raise ValueError("no such file: %s" % file)
-    dk_source = str(body.get("dk_ref", body.get("dk_ref_path", ""))).strip()
+    st = _cpa_settings(body)
     try:
-        model, rprev = _model_of(body)
-        return CA.correlation_curve_for_coefficient(
-            file, model, rprev, int(body.get("poly", 0) or 0), int(body.get("coeff", 0) or 0),
-            int(body.get("max_traces", 0) or 0), _dk_ref(file, dk_source),
-            str(body.get("features", "auto") or "auto"), str(body.get("offsets", "") or ""))
+        return CA.coefficient_detail(file, st["model"], int(body.get("poly", 0) or 0), int(body.get("coeff", 0) or 0),
+                                     st["max_traces"], _dk_ref(file, str(body.get("dk_ref", "")).strip()),
+                                     st["search"], st["margin"], st["delay"])
     except SystemExit as e:
         raise ValueError(str(e))
 
@@ -1700,6 +1693,7 @@ def api_analysis_raw_traces(body: dict) -> dict:
         if n_avail == 0:
             raise ValueError("the file has no completed traces yet")
         rate = r.sample_rate
+        start = r.record_start_s
         ok_all = r.ok
         cls_all = r.classes if r.mode == "tvla" else None
         cls_sel = body.get("cls", "")
@@ -1720,7 +1714,7 @@ def api_analysis_raw_traces(body: dict) -> dict:
         traces = [{"index": i, "ok": bool(ok_all[i]), "cycles": int(cycles[i]),
                    "class": int(cls_all[i]) if cls_all is not None else None,
                    "ct_preview": bytes(cts[i][:12]).hex() + "…",
-                   **_series(ds[i], rate, max_points)} for i in idx]
+                   **_series(ds[i], rate, max_points, start)} for i in idx]
         stats = None
         if body.get("stats"):
             stats_n = min(n_avail, max(2, int(body.get("stats_n", 500) or 500)))
@@ -1734,58 +1728,12 @@ def api_analysis_raw_traces(body: dict) -> dict:
                     continue
                 sel = block[mask]
                 mean, std = sel.mean(axis=0), sel.std(axis=0)
-                m = _series(mean, rate, max_points)
-                hi = _series(mean + std, rate, max_points)
-                lo = _series(mean - std, rate, max_points)
+                m = _series(mean, rate, max_points, start)
+                hi = _series(mean + std, rate, max_points, start)
+                lo = _series(mean - std, rate, max_points, start)
                 stats[name] = {"n": int(mask.sum()), "x": m["x"], "mean": m["y"], "hi": hi["y"], "lo": lo["y"]}
     return {"file": file, "n_completed": n_avail, "mode": "tvla" if cls_all is not None else "cpa",
-            "axis": _axis(rate, n_samples), "traces": traces, "stats": stats}
-
-
-def _report_model(rep: dict) -> tuple[str, str]:
-    """(model, R_prev) a CPA report was made with, also for reports from before models/."""
-    mc = rep.get("model_config") or {}
-    name = LM.resolve(mc.get("model") or rep.get("model") or mc.get("preset") or "", mc.get("target") or rep.get("target") or "")
-    rprev = mc.get("rprev", rep.get("rprev", ""))
-    if name == "hw_scalar":
-        rprev = ""          # older HW reports said "zero": the same hypothesis
-    return name, rprev or ""
-
-
-def api_analysis_success_rate(body: dict) -> dict:
-    """Success rate vs trace count across >= 2 independent, oracle-assisted
-    campaigns analysed with the same model and R_prev -- never for a single one."""
-    model, rprev = _model_of(body)
-    ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
-    curves, dataset_paths = [], []
-    for p in sorted(ANALYSIS_DIR.glob("*_cpa_report.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            rep = json.loads(p.read_text())
-        except (OSError, ValueError):
-            continue
-        curve = rep.get("curve")
-        if not curve or not curve.get("checkpoints") or _report_model(rep) != (model, rprev):
-            continue
-        ds_path = rep.get("dataset", {}).get("path", "")
-        if not ds_path or ds_path in dataset_paths:
-            continue
-        dataset_paths.append(ds_path)
-        curves.append(curve["checkpoints"])
-    if len(curves) < 2:
-        return {"available": False, "model": model, "rprev": rprev, "n_campaigns": len(curves),
-                "reason": "need >=2 independent campaigns analysed oracle-assisted with --curve at "
-                          "this model config; have %d" % len(curves)}
-    grid = sorted({row["n_traces"] for ckpts in curves for row in ckpts})
-    stacked = np.array([np.interp(grid, [r["n_traces"] for r in c], [r["rank1_fraction"] for r in c],
-                                  left=np.nan, right=np.nan) for c in curves])
-    mean, lo, hi = np.nanmean(stacked, axis=0), np.nanmin(stacked, axis=0), np.nanmax(stacked, axis=0)
-
-    def f(v):
-        return float(v) if np.isfinite(v) else None
-    rows = [{"n_traces": n, "mean_rank1_fraction": f(mean[i]), "min_rank1_fraction": f(lo[i]),
-             "max_rank1_fraction": f(hi[i])} for i, n in enumerate(grid)]
-    return {"available": True, "model": model, "rprev": rprev, "n_campaigns": len(curves),
-            "dataset_paths": dataset_paths, "checkpoints": rows}
+            "axis": _axis(rate, n_samples, start), "traces": traces, "stats": stats}
 
 
 ROUTES = {
@@ -1811,7 +1759,6 @@ ROUTES = {
     ("POST", "/api/scope/disconnect"): api_scope_disconnect,
     ("POST", "/api/scope/save_config"): api_scope_save_config,
     ("GET", "/api/model/list"): api_model_list,
-    ("POST", "/api/model/selftest"): api_model_selftest,
     ("POST", "/api/model/save_default"): api_model_save_default,
     ("GET", "/api/jobs/status"): api_job_status,
     ("POST", "/api/jobs/stop"): api_job_stop,
@@ -1838,9 +1785,8 @@ ROUTES = {
     ("POST", "/api/analysis/cpa/start"): api_analysis_cpa_start,
     ("POST", "/api/analysis/tvla/start"): api_analysis_tvla_start,
     ("GET", "/api/analysis/download"): api_analysis_download,
-    ("POST", "/api/analysis/correlation_curve"): api_analysis_correlation_curve,
+    ("POST", "/api/analysis/coefficient"): api_analysis_coefficient,
     ("POST", "/api/analysis/raw_traces"): api_analysis_raw_traces,
-    ("POST", "/api/analysis/success_rate"): api_analysis_success_rate,
     ("POST", "/api/results/list"): api_results_list,
     ("POST", "/api/results/load"): api_results_load,
     ("POST", "/api/results/delete"): api_results_delete,

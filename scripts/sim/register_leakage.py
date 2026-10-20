@@ -19,7 +19,7 @@ This is the **noise-free, equal-weight Hamming-distance ceiling**: no probe, no
 transfer function, no measurement noise. It ranks where to look; it does not
 predict a measured correlation. Pipeline depth is deliberately not reported
 here (words issue every 2 cycles, so a cycle offset is ambiguous for a deep
-register): ``model_vs_rtl.py`` finds the cycle at which each *model* lines up.
+register); ``cpa_attack.py`` predicts the cycle of its hypothesis from the same schedule.
 
     python scripts/sim/register_leakage.py                 # 200 ciphertexts
     python scripts/sim/register_leakage.py -n 400 --csv regs.csv

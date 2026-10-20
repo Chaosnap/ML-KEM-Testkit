@@ -358,9 +358,10 @@ function peak(name, color, x, y) {
 }
 const hLine = (y, color) => ({ type: "line", xref: "paper", x0: 0, x1: 1, yref: "y", y0: y, y1: y, line: { color, width: 1, dash: "dash" } });
 const hLabel = (y, color, text) => ({ xref: "paper", x: 1, y, text, showarrow: false, xanchor: "right", yanchor: "bottom", font: { size: 9, color } });
-function windowBands(windows) {
+function windowBands(windows, index) {
   const shapes = [], annotations = [];
-  (windows || []).forEach((w, i) => {
+  (windows || []).forEach((w, k) => {
+    const i = index ? index[k] : k;     // a window outside the record is not drawn, but the others keep their own number
     shapes.push({ type: "rect", xref: "x", x0: w[0], x1: w[1], yref: "paper", y0: 0, y1: 1, fillcolor: C.band[i % 3], line: { width: 0 }, layer: "below" });
     annotations.push({ x: (w[0] + w[1]) / 2, y: 1, yref: "paper", text: "BMUL " + i, showarrow: false, yanchor: "top", font: { size: 9, color: C.sub } });
   });
@@ -384,7 +385,7 @@ function phaseBands(phases, key) {
   return { shapes, annotations };
 }
 // BMUL windows + Decaps phases of a trace axis, for charts whose x is the axis unit.
-const axisBands = (axis) => mergeBands(windowBands(axis.bmul_windows), phaseBands(axis.phases, "x"));
+const axisBands = (axis) => mergeBands(windowBands(axis.bmul_windows, axis.bmul_index), phaseBands(axis.phases, "x"));
 // Merge any number of {shapes, annotations}.
 function mergeBands(...bs) {
   return { shapes: bs.flatMap((b) => b.shapes || []), annotations: bs.flatMap((b) => b.annotations || []) };
@@ -402,9 +403,11 @@ function startTxt(s) {
 }
 function coverageKpi(axis) {
   if (!axis || !axis.duration_us) return ["trace length", axis ? `${axis.n_samples} samples` : "—", "sample rate unknown"];
-  const ok = !axis.bmul_outside;
-  return ["trace length", axis.duration_us.toFixed(1) + " µs", ok ? `covers all BMULs (≥ ${axis.needed_us} µs)` :
-          `${axis.bmul_outside} BMUL window(s) cut off — lengthen the timebase to ≥ ${axis.needed_us} µs`, ok ? "good" : "bad"];
+  const missing = axis.bmul_outside + (axis.bmul_cut || 0);
+  const span = axis.record_start_known ? `${(axis.record_start_s * 1e6).toFixed(2)} … ${axis.end_us} µs after the trigger`
+                                       : `${axis.duration_us.toFixed(1)} µs (trigger position not recorded: sample 0 taken as the trigger)`;
+  return ["record", span, missing ? `${missing} BMUL window(s) missing or cut — the record must reach 0 … ${axis.needed_us} µs after the trigger`
+                                  : `covers all BMULs (≥ ${axis.needed_us} µs)`, missing ? "bad" : "good"];
 }
 
 // =====================================================================================
@@ -1066,7 +1069,7 @@ async function libEmptyTrash() {
 }
 function libDetailEmpty() {
   $("lib-detail").innerHTML = `<div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div>`;
-  $("lib-viewer").classList.add("hidden");
+  libViewer(false);
 }
 async function libShow(path) {
   if (tvPlay && tvPlay.file !== path) tvPlayReset();
@@ -1082,7 +1085,7 @@ async function libShow(path) {
       `<div class="btn-row"><button class="btn primary" id="lib-restore">Restore to library</button><span class="grow"></span><button class="btn danger sm" id="lib-purge">Delete permanently</button></div>`;
     $("lib-restore").addEventListener("click", () => libRestore([f]));
     $("lib-purge").addEventListener("click", () => libPurge([f]));
-    $("lib-viewer").classList.add("hidden");
+    libViewer(false);
     return;
   }
   if (f.status === "recording" || f.status === "unreadable") {
@@ -1125,7 +1128,7 @@ async function libShow(path) {
       ["Board", bd.version ? `core ${bd.version} · ${bd.port} @ ${bd.baud}` : "—"], ["Scope", sc.id ? `${sc.id}${sc.channel ? " · " + sc.channel : ""}` : "—"],
       ["Sample rate", rateTxt(d.sample_rate_hz)], ["Core clock", d.core_mhz ? d.core_mhz + " MHz" : "—"], ["dk hash", d.dk_hash]]);
     $("ld-analyse").addEventListener("click", () => { showPage("analysis"); anSelectDataset(path); });
-    $("ld-view").addEventListener("click", () => { tvOpen(); $("lib-viewer").scrollIntoView({ behavior: "smooth", block: "nearest" }); });
+    $("ld-view").addEventListener("click", () => tvOpen());
     if ($("ld-resume")) $("ld-resume").addEventListener("click", () => { showPage("acquire"); acqRefreshResume().then(() => { $("acq-resume").value = path; $("acq-resume").closest("details").open = true; applyState(S); }); });
     $("ld-dl").addEventListener("click", (e) => { e.stopPropagation(); $("ld-dl").parentElement.classList.toggle("open"); });
     $("ld-dl-h5").addEventListener("click", () => download("/api/traces/download", { path }));
@@ -1169,23 +1172,20 @@ async function libPreview(path) {
     chart("ld-preview", tr, { height: 220, xTitle: xTitle(r.axis), shapes: wb.shapes, annotations: wb.annotations, margin: { l: 48, r: 10, t: 6, b: 38 } });
   } catch (e) { chartEmpty("ld-preview", e.message); }
 }
-// The docked viewer shares the screen with the campaign list, so its plot is shorter than a full-page one.
-const tvH = () => vh(0.34, 220, 420);
-function tvCollapse(force) {
-  const v = $("lib-viewer"), c = force === undefined ? !v.classList.contains("collapsed") : force;
-  v.classList.toggle("collapsed", c);
-  $("tv-collapse").textContent = c ? "▴" : "▾";
-  if (c && tvPlay && tvPlay.running) tvPause();           // nothing to watch while collapsed
-  if (!c) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+// The viewer takes the place of the campaign list (left column) while it is open; the detail card stays on the right.
+const tvH = () => vh(0.56, 320, 680);
+function libViewer(show) {
+  $("lib-viewer").classList.toggle("hidden", !show);
+  $("lib-list").classList.toggle("hidden", show);
+  if (show) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
 }
 function tvClose() {
   if (tvPlay) tvPlayReset();
-  $("lib-viewer").classList.add("hidden");
+  libViewer(false);
 }
 function tvOpen() {
   if (!libDetail) return;
-  tvCollapse(false);
-  $("lib-viewer").classList.remove("hidden");
+  libViewer(true);
   $("tv-sub").textContent = libDetail.label || libDetail.filename;
   $("tv-cls").disabled = libDetail.mode !== "tvla";
   tvLoad();
@@ -1348,12 +1348,11 @@ async function tvScrub() {
 // =====================================================================================
 // Analysis page
 // =====================================================================================
-let anFiles = [], anReports = [], anModels = [], anRprevDesc = {}, anOracle;
+let anFiles = [], anReports = [], anModels = [], anOracle, anSearch;
 const anModelOf = (name) => anModels.find((m) => m.name === name);
 let cur = null;          // report being shown (cpa or tvla)
 let insp = null;         // {poly, coeff} selected in the CPA inspector
 const ccCache = new Map();
-let heatMetric = "corr";
 let anJob = null;        // running analysis job
 let anDrawn = new Set(); // tabs of the current report already drawn (Plotly needs a visible container)
 
@@ -1402,7 +1401,7 @@ function anSetupFor(f) {
   const cpa = !f || f.mode === "cpa";
   $("an-cpa-setup").classList.toggle("hidden", !cpa);
   $("an-cpa-scoring").classList.toggle("hidden", !cpa);
-  $("an-run-n").textContent = cpa ? "3" : "1";
+  $("an-run-n").textContent = cpa ? "4" : "1";
   $("an-config-title").textContent = cpa ? "New CPA analysis" : "New TVLA analysis";
   $("an-config-sub").textContent = f ? (f.label || f.filename) : "";
   $("an-run").textContent = cpa ? "Run CPA" : "Run TVLA";
@@ -1419,9 +1418,7 @@ function anConfig(open) {
   $("an-config").classList.toggle("hidden", !open);
   $("an-new").classList.toggle("hidden", open);
 }
-// "model / R_prev" of a CPA report (the server resolves older reports' preset / target names)
-const modelTxt = (r) => (r.model || r.model_config?.model || r.model_config?.preset || "?") + (r.rprev ? " / " + r.rprev : "");
-const reportLabel = (r) => r.kind === "cpa" ? `CPA · ${modelTxt(r)} · ${r.model_config?.oracle_assisted ? "scored" : "blind"}` : "TVLA · Welch t-test";
+const reportLabel = (r) => r.kind === "cpa" ? (r.legacy ? `CPA · ${r.model || "?"} · older format` : `CPA · ${r.model || "?"} · ${r.oracle_assisted ? "ranked" : "blind"}`) : "TVLA · Welch t-test";
 async function anReportsList(selectPath) {
   const f = anFile();
   anReports = f ? (await api("POST", "/api/results/list", { file: f.path }).catch(() => ({ results: [] }))).results : [];
@@ -1476,36 +1473,18 @@ function summaryText(r) {
   const file = String(r.file || r.dataset?.path || "").split("/").pop();
   const lines = [];
   if (r.kind === "cpa") {
-    const oracle = r.oracle_assisted, rows = r.results || [];
-    const m = anModelOf(r.model);
+    const oracle = r.oracle_assisted, rows = r.results || [], m = anModelOf(r.model);
+    if (!cpaOk(r)) return `CPA report from the removed model catalogue (${r.model || "?"}) -- run a new analysis.`;
     lines.push(`CPA key recovery -- ${file}`);
-    lines.push(`Model: ${r.model}${m ? " -- " + m.title : ""}`);
-    lines.push(r.features
-      ? `Feature: ${r.features.mode}, ${r.features.rows} clock cycles/coefficient, cycle offset ${bestOffset(r.features)}`
-      : `Register / R_prev: ${r.target} / ${r.rprev || "--"}`);
-    lines.push(`Traces used: ${r.n_traces_used}  --  coefficients attacked: ${r.coefficients_attacked ?? rows.length} of 768` +
-      ((r.coefficients_per_poly ?? 256) < 256 ? " (partial run)" : ""));
-    if (oracle) {
-      lines.push(`Scoring: oracle-assisted (the true key scores the guesses only -- it never builds the hypotheses)`);
-      lines.push(`Rank-1: ${pct(r.rank1_fraction)} of coefficients (${rows.filter((x) => x.true_rank === 1).length}/${rows.length})` +
-        `  --  median true-key rank ${Math.round(r.median_true_rank)} of ${r.n_candidates} (chance ~= ${Math.round(r.chance_rank_mean)})`);
-      lines.push(`Mean |rho| at the true key: ${r.mean_true_corr.toFixed(4)}`);
-      if (r.curve) lines.push(`MTD (traces to >50% rank-1): ${r.curve.mtd ?? `not reached within ${r.n_traces_used} traces`}`);
-      lines.push("");
-      if (r.rank1_fraction > 0.5)
-        lines.push("=> the modelled leakage recovers the key from these traces: the implementation (as captured) is NOT resistant to this attack.");
-      else if (r.median_true_rank > 0.8 * r.chance_rank_mean)
-        lines.push("=> ranks are close to chance: no confident recovery under this model at this trace count. This does NOT prove security.");
-      else
-        lines.push("=> partial leakage (better than chance, not full recovery) -- more traces are needed before concluding either way.");
-    } else {
-      const best = rows.map((x) => x.best_corr), mean = best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0;
-      lines.push("Scoring: blind attack (no ground truth -- this is what a real adversary would run)");
-      lines.push(`Mean peak |rho|: ${mean.toFixed(4)}  --  max peak |rho|: ${best.length ? Math.max(...best).toFixed(4) : "--"}`);
-      lines.push("");
-      lines.push('A blind run reports best-guess candidates only, with no success/fail verdict. Pair it with a scored run of the ' +
-        'same campaign ("Score with campaign key") or a TVLA report on the same seed to judge whether the correlation is significant.');
-    }
+    lines.push(`Hypothesis: ${r.model}${m ? " -- " + m.equation + " (" + m.register + ")" : ""}`);
+    lines.push(`Traces used: ${r.n_traces_used}  --  coefficients attacked: ${rows.length} (polynomials ${(r.polys || []).join(",")})  --  search: ${cpaSearchTxt(r)}`);
+    lines.push(`Noise floor |rho| ~ ${r.noise_floor_corr.toFixed(3)}  --  peaks above it: ${r.n_above_floor} of ${rows.length - r.n_uninformative}  --  stable in 4/4 windows: ${r.n_stable}`);
+    if (r.alignment && r.alignment.n) lines.push(`Alignment: confident peaks ${r.alignment.median_offset_cycles >= 0 ? "+" : ""}${r.alignment.median_offset_cycles.toFixed(1)} core cycles from the RTL prediction (spread ${r.alignment.spread_cycles.toFixed(1)})`);
+    lines.push(oracle ? "Scoring: the true key ranks the guesses only; it never builds the hypotheses" : "Scoring: blind");
+    if (oracle) lines.push(`Rank-1: ${pct(r.rank1_fraction)} (${rows.filter((x) => x.true_rank === 1).length}/${rows.length})  --  top-10: ${pct(r.top10_fraction)}  --  median true-key rank ${Math.round(r.median_true_rank)} of ${r.n_candidates} (chance ~ ${Math.round(r.chance_rank_mean)})`);
+    lines.push("");
+    lines.push("=> " + cpaVerdict(r).text);
+    if (!oracle) lines.push("A blind run reports best guesses only; rank the campaign key to learn which are right. A result under this hypothesis and trace count does not prove the implementation secure.");
   } else {
     lines.push(`TVLA leakage assessment -- ${file}`);
     lines.push(`Traces: ${r.n_fixed} fixed + ${r.n_random} random  --  threshold |t| > ${r.leakage_threshold}`);
@@ -1525,53 +1504,44 @@ function summaryText(r) {
 function anPrefill(r) {
   const mc = r.model_config || {};
   $("an-max-traces").value = mc.max_traces_requested ?? 0;
-  if (r.kind !== "cpa") return;
-  if (anModelOf(r.model)) { $("an-model").value = r.model; anModel(r.rprev); }
-  else toast(`The model of this report (${modelTxt(r)}) is not in cpa_toolkit/models/ any more`, "warn");
-  const f = anFile();
-  const v = r.oracle_assisted ? (f && f.has_recipe ? "vector_set" : "file") : "";
+  if (r.kind !== "cpa" || !cpaOk(r)) return;
+  if (anModelOf(r.model)) { $("an-model").value = r.model; anModel(); }
+  else toast(`The hypothesis of this report (${r.model}) is not in cpa_attack.py any more`, "warn");
+  $("an-polys").value = mc.polys || "0-2"; $("an-coeffs").value = mc.coeffs || "8";
+  anSearch.set(r.search || "full"); anSearchChanged(r.search || "full");
+  $("an-margin").value = r.margin_cycles ?? 10; $("an-delay").value = r.delay_cycles ?? 0;
+  const f = anFile(), v = r.oracle_assisted ? (f && f.has_recipe ? "vector_set" : "file") : "";
   anOracle.set(v); anOracleChanged(v);
-  $("an-curve").checked = !!r.curve && !!v;
 }
 
-// model selection: the files in cpa_toolkit/models/, one per model
+// the hypotheses of cpa_attack.py
 async function anLoadModels(quiet) {
   try {
-    const r = await api("GET", "/api/model/list"), keep = $("an-model").value, keepRprev = $("an-rprev").value;
-    anModels = r.models; anRprevDesc = r.rprevs;
-    const fams = [...new Set(anModels.map((m) => m.family || "other"))];
-    $("an-model").innerHTML = fams.map((f) => `<optgroup label="${esc(f)}">` + anModels.filter((m) => (m.family || "other") === f)
-      .map((m) => `<option value="${esc(m.name)}">${esc(m.name)} — ${esc(m.title)}</option>`).join("") + "</optgroup>").join("");
-    const name = anModelOf(keep) ? keep : r.default_model;
-    $("an-model").value = name;
-    anModel(name === keep ? keepRprev : r.default_rprev);
-    $("model-status").textContent = `${anModels.length} models in cpa_toolkit/models/` + (r.errors.length ? ` · ${r.errors.length} file(s) failed to load` : "");
-    r.errors.forEach((e) => toast(`${e.file}: ${e.error}`, "bad", 10000));
-    if (!quiet) toast(`${anModels.length} leakage models loaded`, "ok");
+    const r = await api("GET", "/api/model/list"), keep = $("an-model").value;
+    anModels = r.models;
+    $("an-model").innerHTML = anModels.map((m) => `<option value="${esc(m.name)}">${esc(m.name)} — ${esc(m.title)}</option>`).join("");
+    $("an-model").value = anModelOf(keep) ? keep : r.default_model;
+    anModel();
+    if (!quiet) toast(`${anModels.length} hypotheses loaded`, "ok");
   } catch (e) { err(e); }
 }
-function anModel(rprev) {
+function anModel() {
   const m = anModelOf($("an-model").value);
-  $("model-selftest-wrap").classList.add("hidden");
-  if (!m) { $("an-model-detail").innerHTML = ""; return; }
-  $("an-model-detail").innerHTML = [["Equation", m.equation],
-    [m.aligned ? "Flops" : "Register", m.aligned ? `${m.bits} across the pipeline${m.rtl_register ? " · " + m.rtl_register : ""}`
-                                                 : `${m.register} (${m.bits} bit)${m.rtl_register ? " · " + m.rtl_register : ""}`],
-    ["Stage", m.pipeline_stage], ["Needs", m.required_inputs], ["Limits", m.limitations], ["File", "cpa_toolkit/" + m.file]].filter(([, v]) => v)
-    .map(([k, v]) => `<div class="md-row"><span class="md-k">${k}</span><span class="md-v${k === "Limits" || k === "Needs" ? " prose" : ""}">${esc(v)}</span></div>`).join("");
-  $("an-rprev-wrap").classList.toggle("hidden", !m.rprevs.length);
-  $("an-aligned-wrap").classList.toggle("hidden", !m.aligned);
-  $("an-rprev").innerHTML = m.rprevs.map((x) => `<option value="${esc(x.name)}" title="${esc(x.desc)}">${esc(x.name)} — ${esc(x.desc.replace(/^R_prev = /, ""))}</option>`).join("");
-  if (typeof rprev === "string" && m.rprevs.some((x) => x.name === rprev)) $("an-rprev").value = rprev;
+  $("an-model-detail").innerHTML = !m ? "" : [["Equation", m.equation], ["Register", `${m.register} (${m.bits} bit)`],
+    ["When", `core cycle T + ${m.cycles_after_read.join(" / T + ")}: T is the cycle the word holding the coefficient is read, 2 cycles later for every further word`],
+    ["Source", m.source], ["Limits", m.limitations]]
+    .map(([k, v]) => `<div class="md-row"><span class="md-k">${k}</span><span class="md-v${k === "Limits" || k === "When" ? " prose" : ""}">${esc(v)}</span></div>`).join("");
 }
-const anRprev = () => (anModelOf($("an-model").value)?.rprevs.length ? $("an-rprev").value : "");
+function anSearchChanged(v) {
+  $("an-gate-fields").classList.toggle("hidden", v !== "gate");
+  $("an-search-hint").textContent = v === "gate"
+    ? "Only ± the given number of core cycles around where the RTL schedule puts the register: far fewer samples, so fewer false peaks and a much faster run — but a wrong prediction (probe delay, record start) finds nothing. “shift” moves the prediction."
+    : "The whole window finds the peak wherever it is — use it first, then read the offset column and switch to the predicted cycle (faster, fewer false peaks).";
+}
 function anOracleChanged(v) {
   $("an-dkref").classList.toggle("hidden", v !== "file");
-  $("an-oracle-warn").textContent = v ? "Oracle-assisted: the true key only ranks the attack's guesses (key rank, MTD); it never builds them."
-    : "Blind: what a real attacker gets — the best guess per coefficient and its correlation.";
-  if (!v) $("an-curve").checked = false;
-  $("an-curve").disabled = !v;
-  $("an-curve-wrap").title = v ? "" : "needs the true key";
+  $("an-oracle-warn").textContent = v ? "The true key only ranks the attack's guesses afterwards (rank, recovered ✓); the hypotheses are built from the public ciphertext alone."
+    : "Blind: what a real attacker gets — the best guess per coefficient, its correlation and stability.";
 }
 const anDkRef = () => (anOracle.get() === "file" ? $("an-dkref").value.trim() : anOracle.get());
 
@@ -1580,9 +1550,9 @@ async function anRun() {
   if (!f || anJob) return;
   const kind = f.mode === "cpa" ? "cpa" : "tvla";
   if (kind === "cpa" && anOracle.get() === "file" && !$("an-dkref").value.trim()) return toast("Enter the path of the dk file", "warn");
-  const body = kind === "cpa" ? { file: f.path, model: $("an-model").value, rprev: anRprev(),
-      max_traces: $("an-max-traces").value, dk_ref: anDkRef(), curve: $("an-curve").checked,
-      coeffs: $("an-coeffs").value, features: $("an-features").value, offsets: $("an-offsets").value.trim() }
+  const body = kind === "cpa" ? { file: f.path, model: $("an-model").value, max_traces: $("an-max-traces").value, dk_ref: anDkRef(),
+      polys: $("an-polys").value.trim(), coeffs: $("an-coeffs").value.trim(), search: anSearch.get(),
+      margin: $("an-margin").value, delay: $("an-delay").value }
     : { file: f.path, max_traces: $("an-max-traces").value };
   const pr = $("an-progress"), t0 = Date.now();
   try {
@@ -1622,144 +1592,114 @@ function showTab(kind, t, draw) {
   if (!anDrawn.has(t)) { anDrawn.add(t); draw(t); }
   else window.dispatchEvent(new Event("resize"));
 }
-// The cycle offset most coefficients agreed on, with how strong that agreement was: a real
-// alignment piles up on one value, noise spreads roughly evenly over the whole search (chance
-// agreement is about 1 / number-of-offsets-searched). Returns {text, weak}.
-function bestOffset(f) {
-  const h = Object.entries(f.offset_histogram || {}).sort((a, b) => b[1] - a[1]);
-  const nOff = (f.offsets_searched || []).length || 1;
-  if (!h.length) return { text: "—", weak: true };
-  const total = h.reduce((a, [, n]) => a + n, 0);
-  const share = h[0][1] / total;
-  const chance = 1 / nOff;
-  const text = `${+h[0][0] >= 0 ? "+" : ""}${h[0][0]} (${Math.round(100 * share)}% of coefficients)`;
-  // "weak" when the winning offset barely beats chance agreement (no real pile-up) or sits on
-  // the edge of the searched range (the true offset may be outside it) -- either way this run
-  // found no reliable alignment, so its correlations cannot be trusted at face value.
-  const railed = f.offsets_railed || String(h[0][0]) === String(Math.min(...(f.offsets_searched || [0])))
-    || String(h[0][0]) === String(Math.max(...(f.offsets_searched || [0])));
-  return { text, weak: share < 2.5 * chance || (railed && share < 0.5) };
-}
+// ---- CPA report: header, details ----
+const CPA_FORMAT = "simple-cpa-1";
+const cpaOk = (r) => r.format === CPA_FORMAT;
+const cpaSearchTxt = (r) => (r.search === "gate" ? `±${r.margin_cycles} cycles around the predicted cycle${r.delay_cycles ? `, shifted ${r.delay_cycles >= 0 ? "+" : ""}${r.delay_cycles}` : ""}` : "whole BMUL window");
 function reportHead(r) {
-  const mc = r.model_config || {};
-  const off = r.features ? bestOffset(r.features) : null;
   const chips = r.kind === "cpa"
-    ? [chip("model", r.model || "?"),
-       ...(r.features
-         ? [chip("feature", `${r.features.mode} · ${r.features.rows} cycles/coefficient`),
-            chip("cycle offset", off.weak ? off.text + " — no real alignment found" : off.text, off.weak ? "bad" : "good")]
-         : [chip("register / R_prev", `${r.target} / ${r.rprev || "—"}`)]),
-       chip("scoring", r.oracle_assisted ? "true key (oracle-assisted)" : "blind", r.oracle_assisted ? "warn" : ""), chip("traces", r.n_traces_used),
-       ...(r.n_uninformative ? [chip("no key info", `${r.n_uninformative} of ${(r.results || []).length} coefficients`, "bad")] : [])]
+    ? (cpaOk(r)
+      ? [chip("hypothesis", r.model), chip("traces", r.n_traces_used), chip("coefficients", (r.results || []).length),
+         chip("search", r.search === "gate" ? `±${r.margin_cycles} cycles` : "whole BMUL window"),
+         chip("scoring", r.oracle_assisted ? "true key ranks the guesses" : "blind", r.oracle_assisted ? "warn" : ""),
+         ...(r.n_uninformative ? [chip("no key info", `${r.n_uninformative} coefficients`, "bad")] : [])]
+      : [chip("format", "made with the removed model catalogue", "warn")])
     : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold)];
   chips.push(chip("analysed", fmtDate(r.analysis_timestamp_unix)));
   return `<div class="report-head">${modeBadge(r.kind)}<span class="title">${r.kind === "cpa" ? "CPA key recovery" : "TVLA leakage assessment"}</span><div class="chips">${chips.join("")}</div></div>`;
 }
 function detailsKv(r) {
-  const d = r.dataset || {}, mc = r.model_config || {};
-  const m = anModelOf(r.model);
+  const d = r.dataset || {};
   const common = [["Campaign", String(r.file || d.path || "").split("/").pop()], ["Traces in file", d.n_completed], ["Samples / trace", d.n_samples],
-    ["Sample rate", rateTxt(d.sample_rate_hz || r.sample_rate_hz)], ["K correct (acquisition)", pct(d.k_match_fraction)]];
-  const specific = r.kind === "cpa"
-    ? [["Leakage model", r.model || "?"], ["Equation", m ? m.equation : "—"],
-       ...(r.features ? [["Trace feature", `${r.features.mode}, one per core clock cycle (${r.features.rows} cycles per coefficient)`],
-                         ["Cycle offset", Object.entries(r.features.offset_histogram || {}).sort((a, b) => b[1] - a[1])
-                           .slice(0, 3).map(([o, n]) => `${o >= 0 ? "+" : ""}${o} (${n})`).join(", ") +
-                           ` of ${(r.features.offsets_searched || []).length} searched` +
-                           (bestOffset(r.features).weak ? " — no pile-up: alignment not found, treat correlations as unreliable" : "")]]
-                      : [["Register / R_prev", `${r.target} / ${r.rprev || "—"}`]]),
-       ["Scoring", r.oracle_assisted ? "oracle-assisted (true key)" : "blind"], ["Traces used", r.n_traces_used], ["Candidates", r.n_candidates],
-       ["Coefficients", r.coefficients_attacked ?? (r.results || []).length],
-       ...(r.n_uninformative ? [["Coefficients with no key info", `${r.n_uninformative} of ${(r.results || []).length} -- the ciphertexts used, not the model (see Gotchas)`]] : []),
-       ["Chance rank (mean)", r.chance_rank_mean], ["Model version", r.model_version]]
+    ["Sample rate", rateTxt(d.sample_rate_hz || r.sample_rate_hz)],
+    ["Record start", r.record_start_s === null || r.record_start_s === undefined ? "not recorded (taken as the trigger)" : startTxt(r.record_start_s) + " from the trigger"],
+    ["K correct (acquisition)", pct(d.k_match_fraction)]];
+  const m = anModelOf(r.model);
+  const specific = r.kind === "cpa" && cpaOk(r)
+    ? [["Hypothesis", r.model], ["Equation", m ? m.equation : (r.model_info?.equation || "—")], ["Register", r.model_info?.register || "—"],
+       ["Search", cpaSearchTxt(r)], ["Scoring", r.oracle_assisted ? "the true key only ranks the guesses (it never builds them)" : "blind"],
+       ["Traces used", `${r.n_traces_used} (${r.n_traces_failed_check || 0} failed their integrity check and were left out)`],
+       ["Noise floor |ρ|", r.noise_floor_corr?.toFixed(4)], ["Candidates", r.n_candidates],
+       ["Model version", r.model_version]]
+    : r.kind === "cpa" ? [["Model", r.model || "?"], ["Note", "this report predates cpa_toolkit/cpa_attack.py's simple CPA; run a new analysis"]]
     : [["Fixed / random", `${r.n_fixed} / ${r.n_random}`], ["Threshold", "|t| > " + r.leakage_threshold], ["max |t|", r.max_abs_t?.toFixed(3)]];
   return common.concat(specific, [["Analysed", fmtDate(r.analysis_timestamp_unix)], ["Job", r.job_id], ["Report file", String(r.report_path || "").split("/").pop()],
-    ["Results CSV", r.results_csv ? String(r.results_csv).split("/").pop() : "—"], ["Curve CSV", r.curve?.curve_csv ? String(r.curve.curve_csv).split("/").pop() : "—"]]);
+    ["Results CSV", r.results_csv ? String(r.results_csv).split("/").pop() : "—"]]);
 }
 
 // ---- CPA results ----
+// Plain-language reading of a report: is there a signal, is it where the hardware says it should be,
+// and (when the key is known) did the right candidate win.
+function cpaVerdict(r) {
+  const rows = (r.results || []).filter((x) => x.informative), floor = r.noise_floor_corr, n = rows.length;
+  if (!n) return { cls: "bad", text: "No coefficient carries key information: the ciphertexts give u = 0 or too few traces were used." };
+  const above = rows.filter((x) => x.best_corr > floor).length, al = r.alignment || {};
+  if (!above) return { cls: "bad", text: `No signal: no coefficient's best peak clears the noise floor (|ρ| ≈ ${floor.toFixed(3)} for ${r.n_traces_used} traces). ` +
+    `More traces, a lower-noise setup, the other hypothesis, or a check of the trigger/record start (Acquisition → Check trigger) are the next steps.` };
+  const where = al.n ? ` The confident peaks sit ${al.median_offset_cycles >= 0 ? "+" : ""}${al.median_offset_cycles.toFixed(1)} core cycles from where the RTL schedule puts the register ` +
+    `(spread ${al.spread_cycles.toFixed(1)} cycles): ${al.spread_cycles <= 3 ? "a tight pile-up, so the traces are aligned and the leakage is real." : "scattered, so treat these peaks with caution."}` : "";
+  if (r.oracle_assisted)
+    return { cls: r.rank1_fraction >= 0.5 ? "good" : "bad", text: `${rows.filter((x) => x.true_rank === 1).length} of ${n} coefficients recovered (the true key has the highest peak); ` +
+      `median true-key rank ${Math.round(r.median_true_rank)} of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean)}).` + where };
+  return { cls: "good", text: `${above} of ${n} coefficients have a peak above the noise floor, ${r.n_stable} are stable in all 4 windows.` + where +
+    " A blind run cannot say which guesses are right — rank the campaign key to find out." };
+}
 function renderCPA(r) {
   cur = r; insp = null; ccCache.clear(); anDrawn = new Set();
-  const oracle = r.oracle_assisted, rows = r.results || [];
-  // prefer the server's mean/max (computed over informative coefficients only, see cpa_attack.py
-  // _score_summary); fall back to a client-side calc over everything for older saved reports that
-  // predate those fields (which then still includes the forced best_corr=0 of uninformative rows)
-  const infoRows = rows.filter((x) => x.informative !== false);
-  const best = infoRows.map((x) => x.best_corr);
-  const mean = "mean_best_corr" in r ? r.mean_best_corr : (best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0);
-  const maxCorr = "max_best_corr" in r ? r.max_best_corr : (best.length ? Math.max(...best) : 0);
-  const floor = r.noise_floor_corr;
-  const aboveFloor = floor != null && mean > 1.5 * floor;
-  heatMetric = oracle ? "rank" : "corr";
-  const t = tabsHtml("cpa", [["map", "Key map"], ["conv", r.curve ? "Convergence" : "Distribution"], ["table", "Coefficients"], ["models", "Compare models"], ["details", "Details"]]);
+  if (!cpaOk(r)) {
+    $("an-results").innerHTML = reportHead(r) + `<div class="card"><div class="empty"><div class="t">An older report</div>This report was made with the model catalogue that has been removed ` +
+      `(${esc(r.model || "?")}). Press <b>New analysis</b> to run the current simple CPA on this campaign.</div></div><div class="card"><div class="kv" id="an-details-kv"></div></div>`;
+    kv("an-details-kv", detailsKv(r));
+    return;
+  }
+  const oracle = r.oracle_assisted, rows = r.results || [], floor = r.noise_floor_corr, v = cpaVerdict(r);
+  const t = tabsHtml("cpa", [["overview", "Overview"], ["coef", "Coefficient"], ["compare", "Compare"], ["details", "Details"]]);
   const pan = (id, html) => `<div class="tab-panel ${id === t.active ? "active" : ""}" data-t="${id}">${html}</div>`;
-  $("an-results").innerHTML = reportHead(r) + `<div class="kpis" id="cpa-kpis"></div>` + t.html +
-    pan("map", `<div class="card"><div class="card-head"><h2>ŝ coefficients</h2><span class="sub">3 polynomials × ${r.coefficients_per_poly ?? 256}${(r.coefficients_per_poly ?? 256) < 256 ? " of 256 (partial run)" : ""} — click a cell to inspect it</span>
-        <div class="actions"><div class="seg" id="heat-metric"><button data-v="corr">peak |ρ|</button>${oracle ? '<button data-v="rank">true-key rank</button><button data-v="ok">recovered</button>' : ""}</div></div></div>
-        <div class="chart" id="cpa-heat"></div></div>
-      <div class="split">
-        <div class="card"><div class="card-head"><h3>Per polynomial</h3></div><table class="t poly-sum" id="cpa-poly"></table></div>
-        <div class="card" id="cpa-insp"><div class="empty"><div class="t">Coefficient inspector</div>Click a cell above (then use ← → ↑ ↓) to see that coefficient's correlation over time.</div></div>
-      </div>`) +
-    pan("conv", `<div class="card"><div class="card-head"><h2>${r.curve ? "Key rank vs trace count" : "Peak |ρ| of the best guess"}</h2>
-        <span class="sub">${r.curve ? "how many traces the attack needs (oracle-assisted)" : "blind run: no key to rank against — enable scoring + MTD for a convergence curve"}</span>
-        ${r.curve ? '<div class="actions"><button class="btn ghost sm" id="cpa-dl-curve">CSV</button></div>' : ""}</div><div class="chart" id="cpa-side"></div></div>
-      <div class="card" id="cpa-sr-card"><div class="card-head"><h2>Success rate across campaigns</h2><span class="sub">independent campaigns, same model / R_prev</span></div>
-        <div class="chart" id="cpa-sr"></div><div class="chart-note" id="cpa-sr-note"></div></div>`) +
-    pan("table", `<div class="card"><div class="card-head"><h2>All coefficients</h2><span class="sub" id="cpa-table-sub"></span>
+  $("an-results").innerHTML = reportHead(r) + `<div class="kpis" id="cpa-kpis"></div><div class="verdict ${v.cls}" style="margin:-4px 0 14px;font-weight:500">${esc(v.text)}</div>` + t.html +
+    pan("overview", `<div class="card"><div class="card-head"><h2>One row per coefficient</h2><span class="sub" id="cpa-table-sub"></span>
         <div class="actions">${oracle ? '<div class="seg" id="cpa-filter"><button data-v="" class="active">all</button><button data-v="wrong">not recovered</button><button data-v="right">recovered</button></div>' : ""}
         <button class="btn ghost sm" id="cpa-dl-results">CSV</button></div></div>
         <div class="table-wrap tall"><table class="t click" id="cpa-table"><thead></thead><tbody></tbody></table></div>
-        <div class="chart-note">Click a row to open the coefficient in the Key map inspector.</div></div>`) +
-    pan("models", `<div class="card"><div class="card-head"><h2>Leakage models on this campaign</h2><span class="sub" id="cpa-models-sub"></span></div>
+        <div class="chart-note"><b>best</b> = the candidate with the highest peak |ρ| anywhere in the searched window · <b>×floor</b> = that peak divided by the level pure noise reaches
+          (below 1 it means nothing) · <b>offset</b> = how many core cycles the peak is from where the RTL puts the register (should be similar for every coefficient) ·
+          <b>votes</b> = in how many of the 4 windows (3, 5, 7, 9 samples around the peak) the candidate is in the top 10 · click a row for the full picture.</div></div>
+      <div class="grid grid-2">
+        <div class="card"><div class="card-head"><h2>Is the peak real?</h2><span class="sub">best peak per coefficient vs the noise floor</span></div><div class="chart" id="cpa-bars"></div>
+          <div class="chart-note">Bars above the dashed line are stronger than noise could produce over ${r.n_candidates} candidates × the searched samples${oracle ? "; the diamond is the true key's own peak" : ""}.</div></div>
+        <div class="card"><div class="card-head"><h2>Where do the peaks sit?</h2><span class="sub">peak position − predicted cycle, confident peaks only</span></div><div class="chart" id="cpa-align"></div>
+          <div class="chart-note" id="cpa-align-note"></div></div>
+      </div>`) +
+    pan("coef", `<div class="card" id="cpa-insp"><div class="empty"><div class="t">Pick a coefficient</div>Click a row in the Overview, or use the selector here once a coefficient is open.</div></div>`) +
+    pan("compare", `<div class="card"><div class="card-head"><h2>Every CPA report of this campaign</h2><span class="sub" id="cpa-models-sub"></span></div>
         <div class="table-wrap"><table class="t click" id="cpa-models"><thead></thead><tbody></tbody></table></div>
-        <div class="chart-note">Every CPA report of this campaign, one row per run. Run <b>New analysis</b> with another model (or R_prev) to add one; click a row to open it.
-          Compare like with like: scored runs by rank-1 and median true rank, blind runs by peak |ρ|, and the same number of traces.</div></div>`) +
+        <div class="chart-note">Run <b>New analysis</b> with the other hypothesis (or another search) to add a row. Compare like with like: the same trace count and coefficients; scored runs by rank-1 and median rank, blind runs by peaks above the floor.</div></div>`) +
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
-  kpis("cpa-kpis", [["traces used", r.n_traces_used, modelTxt(r)],
-    oracle ? ["recovered (rank 1)", pct(r.rank1_fraction), `${rows.filter((x) => x.true_rank === 1).length} of ${rows.length} coefficients`, r.rank1_fraction > 0 ? "bad" : "good"] : ["mode", "blind", "no key used"],
-    oracle ? ["median true rank", Math.round(r.median_true_rank), `of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean || r.n_candidates / 2)})`]
-           : ["mean peak |ρ|", mean.toFixed(3), floor != null ? `noise floor ≈ ${floor.toFixed(3)} — ${aboveFloor ? "above it" : "AT OR BELOW IT: no signal"}` : "best guess per coefficient", floor != null ? (aboveFloor ? "good" : "bad") : ""],
-    oracle ? ["mean |ρ| (true key)", r.mean_true_corr.toFixed(3)] : ["max peak |ρ|", best.length ? maxCorr.toFixed(3) : "—"],
-    r.curve ? ["MTD", r.curve.mtd ?? "not reached", "traces to disclosure", r.curve.mtd ? "bad" : "good"] : null]);
+  const best = rows.filter((x) => x.informative).map((x) => x.best_corr);
+  kpis("cpa-kpis", [["traces used", r.n_traces_used, r.model],
+    ["peaks above noise", `${r.n_above_floor} / ${rows.length - r.n_uninformative}`, `floor |ρ| ≈ ${floor.toFixed(3)}`, r.n_above_floor ? "good" : "bad"],
+    oracle ? ["recovered (rank 1)", pct(r.rank1_fraction), `top-10: ${pct(r.top10_fraction)} · median rank ${Math.round(r.median_true_rank)}`, r.rank1_fraction >= 0.5 ? "good" : "bad"]
+           : ["stable (4/4 windows)", `${r.n_stable} / ${rows.length - r.n_uninformative}`, "candidate stays in the top 10"],
+    ["strongest peak", best.length ? Math.max(...best).toFixed(3) : "—", `mean ${r.mean_best_corr.toFixed(3)}`],
+    ["alignment", r.alignment?.n ? `${r.alignment.median_offset_cycles >= 0 ? "+" : ""}${r.alignment.median_offset_cycles.toFixed(1)} cycles` : "—",
+      r.alignment?.n ? `spread ${r.alignment.spread_cycles.toFixed(1)} cycles (${r.alignment.n} peaks)` : "no confident peak", r.alignment?.n && r.alignment.spread_cycles <= 3 ? "good" : ""]]);
   $("an-tabs").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => showTab("cpa", b.dataset.t, drawCPATab)));
   anDrawn.add(t.active); drawCPATab(t.active);
 }
 function drawCPATab(t) {
-  const r = cur, oracle = r.oracle_assisted, rows = r.results || [];
-  if (t === "map") {
-    seg("heat-metric", (v) => { heatMetric = v; drawHeat(); }).set(heatMetric);
-    drawHeat();
-    const per = [0, 1, 2].map((p) => rows.filter((x) => x.poly === p));
-    const med = (a) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null; };
-    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
-    $("cpa-poly").innerHTML = (oracle ? "<thead><tr><th>polynomial</th><th class='num'>recovered</th><th class='num'>median true rank</th><th class='num'>mean |ρ| true key</th></tr></thead>"
-      : "<thead><tr><th>polynomial</th><th class='num'>mean peak |ρ|</th><th class='num'>max peak |ρ|</th></tr></thead>") + "<tbody>" +
-      per.map((a, p) => oracle
-        ? `<tr><td>ŝ${p} (BMUL ${p})</td><td class="num">${a.filter((x) => x.true_rank === 1).length} / ${a.length}</td><td class="num">${med(a.map((x) => x.true_rank)) ?? "—"}</td><td class="num">${avg(a.map((x) => x.true_corr || 0)).toFixed(3)}</td></tr>`
-        : `<tr><td>ŝ${p} (BMUL ${p})</td><td class="num">${avg(a.map((x) => x.best_corr)).toFixed(3)}</td><td class="num">${a.length ? Math.max(...a.map((x) => x.best_corr)).toFixed(3) : "—"}</td></tr>`).join("") + "</tbody>";
-  } else if (t === "conv") {
-    if (r.curve) {
-      const ck = r.curve.checkpoints;
-      const shapes = r.curve.mtd ? [{ type: "line", xref: "x", x0: r.curve.mtd, x1: r.curve.mtd, yref: "paper", y0: 0, y1: 1, line: { color: C.s[2], width: 1, dash: "dash" } }] : [];
-      chart("cpa-side", [line("rank-1 %", C.s[0], ck.map((c) => c.n_traces), ck.map((c) => 100 * c.rank1_fraction)),
-        line("mean |ρ| at true key", C.s[3], ck.map((c) => c.n_traces), ck.map((c) => c.mean_true_corr), { yaxis: "y2" })],
-        { height: 300, yRange: [0, 100], xTitle: "trace count", yTitle: "rank-1 %", y2: true, y2Title: "mean |ρ|", shapes,
-          annotations: r.curve.mtd ? [{ x: r.curve.mtd, y: 1, yref: "paper", text: "MTD " + r.curve.mtd, showarrow: false, yanchor: "bottom", font: { size: 10, color: C.s[2] } }] : [] });
-      $("cpa-dl-curve").addEventListener("click", () => r.curve.curve_csv ? download("/api/analysis/download", { path: r.curve.curve_csv }) : toast("no CSV", "warn"));
-    } else {
-      chart("cpa-side", [{ type: "histogram", x: rows.map((x) => x.best_corr), marker: { color: C.s[0] }, nbinsx: 40, name: "peak |ρ|" }],
-        { height: 280, xTitle: "peak |ρ| of the best guess", yTitle: "coefficients", showlegend: false, hovermode: "closest" });
-    }
-    srDraw(r.model, r.rprev);
-  } else if (t === "table") {
+  const r = cur, oracle = r.oracle_assisted, rows = r.results || [], floor = r.noise_floor_corr;
+  if (t === "overview") {
     const tbl = makeTable("cpa-table", [
-      { key: "poly", label: "poly", num: true }, { key: "coeff", label: "coeff", num: true }, { key: "best_guess", label: "best guess", num: true },
+      { key: "poly", label: "poly", num: true }, { key: "coeff", label: "coeff", num: true },
+      { key: "best_guess", label: "best", num: true, render: (x) => (x.informative ? x.best_guess : "—") },
       { key: "best_corr", label: "peak |ρ|", num: true, render: (x) => x.best_corr.toFixed(4) },
+      { key: "x_floor", label: "×floor", num: true, value: (x) => x.best_corr / floor, render: (x) => (x.informative ? `<span class="${x.best_corr > floor ? "good" : "dim"}">${(x.best_corr / floor).toFixed(1)}</span>` : "—") },
+      { key: "gap", label: "lead over #2", num: true, value: (x) => x.best_corr - x.second_corr, render: (x) => (x.informative ? (x.best_corr - x.second_corr).toFixed(4) : "—") },
+      { key: "best_time_us", label: "peak time (us)", num: true, render: (x) => x.best_time_us ?? "—" },
+      { key: "offset_cycles", label: "offset (cycles)", num: true, render: (x) => (x.offset_cycles === undefined ? "—" : (x.offset_cycles >= 0 ? "+" : "") + x.offset_cycles.toFixed(1)) },
+      { key: "votes_best", label: "votes", num: true, render: (x) => (x.informative ? `${x.votes_best}/4` : "—") },
       ...(oracle ? [{ key: "true_value", label: "true", num: true }, { key: "true_rank", label: "true rank", num: true },
-        { key: "true_corr", label: "|ρ| true", num: true, render: (x) => (x.true_corr ?? 0).toFixed(4) },
-        { key: "ok", label: "", sortable: false, value: (x) => x.true_rank === 1, render: (x) => (x.true_rank === 1 ? '<span class="bad">recovered</span>' : '<span class="dim">—</span>') }] : []),
-    ], { key: (x) => `${x.poly}:${x.coeff}`, onRow: (x) => { showTab("cpa", "map", drawCPATab); selectCoef(x.poly, x.coeff); },
+        { key: "ok", label: "", sortable: false, value: (x) => x.true_rank === 1, render: (x) => (x.true_rank === 1 ? '<span class="good">✓ recovered</span>' : '<span class="dim">—</span>') }] : []),
+    ], { key: (x) => `${x.poly}:${x.coeff}`, onRow: (x) => { showTab("cpa", "coef", drawCPATab); selectCoef(x.poly, x.coeff); },
          sortKey: oracle ? "true_rank" : "best_corr", dir: oracle ? 1 : -1 });
     const setRows = (f) => {
       const list = f === "wrong" ? rows.filter((x) => x.true_rank !== 1) : f === "right" ? rows.filter((x) => x.true_rank === 1) : rows;
@@ -1768,113 +1708,145 @@ function drawCPATab(t) {
     setRows("");
     if (oracle) seg("cpa-filter", setRows);
     $("cpa-dl-results").addEventListener("click", () => r.results_csv ? download("/api/analysis/download", { path: r.results_csv }) : toast("no CSV", "warn"));
-  } else if (t === "models") drawModelCompare();
+    // peaks vs the floor
+    const lab = rows.map((x) => `p${x.poly}[${x.coeff}]`);
+    const tr = [{ type: "bar", x: lab, y: rows.map((x) => x.best_corr), name: "best peak", marker: { color: rows.map((x) => (oracle ? (x.true_rank === 1 ? C.s[1] : C.s[2]) : (x.best_corr > floor ? C.s[0] : "#475569"))) },
+      hovertemplate: "%{x}: |ρ| %{y:.4f}<extra></extra>" }];
+    if (oracle) tr.push({ type: "scatter", mode: "markers", x: lab, y: rows.map((x) => x.true_corr), name: "true key's peak", marker: { symbol: "diamond", size: 8, color: "#fff" },
+      hovertemplate: "%{x}: true key |ρ| %{y:.4f}<extra></extra>" });
+    chart("cpa-bars", tr, { height: 250, yTitle: "peak |ρ|", hovermode: "closest", showlegend: oracle, shapes: [hLine(floor, C.s[3])], annotations: [hLabel(floor, C.s[3], "noise floor")] });
+    // alignment histogram
+    const offs = r.alignment?.offsets || [];
+    if (!offs.length) chartEmpty("cpa-align", "No peak clears the noise floor, so there is no alignment to show.");
+    else chart("cpa-align", [{ type: "histogram", x: offs, xbins: { size: 1 }, marker: { color: C.s[0] }, hovertemplate: "%{x} cycles: %{y} coefficients<extra></extra>" }],
+      { height: 250, xTitle: "core cycles from the predicted position", yTitle: "coefficients", showlegend: false, hovermode: "closest" });
+    $("cpa-align-note").textContent = offs.length
+      ? `Real leakage piles up on one value (here ${r.alignment.median_offset_cycles >= 0 ? "+" : ""}${r.alignment.median_offset_cycles.toFixed(1)} cycles, spread ${r.alignment.spread_cycles.toFixed(1)}). ` +
+        `A constant non-zero offset is a probe / amplifier delay: enter it as “shift” and use the predicted-cycle search. Peaks scattered over the whole window are noise.`
+      : "";
+  } else if (t === "coef") {
+    if (!insp) {
+      const first = rows.find((x) => x.informative) || rows[0];
+      if (first) selectCoef(first.poly, first.coeff);
+    }
+  } else if (t === "compare") drawModelCompare();
   else if (t === "details") kv("an-details-kv", detailsKv(r));
 }
-function heatData() {
-  const rows = cur.results || [], z = [[], [], []], text = [[], [], []];
-  for (let p = 0; p < 3; p++) for (let j = 0; j < 256; j++) { z[p][j] = null; text[p][j] = ""; }
-  rows.forEach((x) => {
-    const v = heatMetric === "rank" ? Math.log10(Math.max(1, x.true_rank)) : heatMetric === "ok" ? (x.true_rank === 1 ? 1 : 0) : x.best_corr;
-    z[x.poly][x.coeff] = v;
-    text[x.poly][x.coeff] = `poly ${x.poly} · coeff ${x.coeff}<br>best guess ${x.best_guess} · |ρ| ${x.best_corr.toFixed(3)}` +
-      (cur.oracle_assisted ? `<br>true ${x.true_value} · rank ${x.true_rank}` : "");
-  });
-  return { z, text };
-}
-function drawHeat() {
-  const el = $("cpa-heat");
-  if (!el || !cur || cur.kind !== "cpa") return;
-  const { z, text } = heatData();
-  const scale = heatMetric === "rank" ? [[0, "#4ade80"], [0.15, "#fbbf24"], [1, "#1c2840"]] : heatMetric === "ok" ? [[0, "#1c2840"], [1, "#f87171"]] : "Viridis";
-  const cbar = heatMetric === "rank" ? { title: "rank", tickvals: [0, 1, 2, 3], ticktext: ["1", "10", "100", "1000"] } : heatMetric === "ok" ? { tickvals: [0, 1], ticktext: ["no", "yes"] } : { title: "|ρ|" };
-  const shapes = insp ? [{ type: "rect", x0: insp.coeff - 0.5, x1: insp.coeff + 0.5, y0: insp.poly - 0.5, y1: insp.poly + 0.5, line: { color: "#fff", width: 2 } }] : [];
-  chart(el, [{ type: "heatmap", z, text, hovertemplate: "%{text}<extra></extra>", colorscale: scale, zmin: heatMetric === "rank" ? 0 : undefined,
-    zmax: heatMetric === "rank" ? Math.log10(3329) : undefined, colorbar: Object.assign({ thickness: 10, len: 0.9, tickfont: { size: 9 } }, cbar), xgap: 1, ygap: 3 }],
-    { height: 190, hovermode: "closest", showlegend: false, xTitle: "coefficient", margin: { l: 56, r: 10, t: 6, b: 38 },
-      yaxis: { tickvals: [0, 1, 2], ticktext: ["poly 0", "poly 1", "poly 2"], autorange: "reversed" }, xaxis: { range: [-0.5, 255.5] }, shapes, uirevision: "heat" })
-    .then((gd) => { if (!gd._clickBound) { gd.on("plotly_click", (e) => { const p = e.points[0]; selectCoef(p.y, p.x); }); gd._clickBound = true; } });
-}
+
+// One coefficient in detail (computed on the server from the campaign, cached per coefficient)
 async function selectCoef(poly, coeff) {
-  if (!cur || cur.kind !== "cpa" || !cur.results || !$("cpa-insp")) return;
+  if (!cur || cur.kind !== "cpa" || !cpaOk(cur) || !$("cpa-insp")) return;
   poly = Math.max(0, Math.min(2, poly)); coeff = Math.max(0, Math.min(255, coeff));
   insp = { poly, coeff };
-  drawHeat();
-  const row = cur.results.find((x) => x.poly === poly && x.coeff === coeff);
+  const row = (cur.results || []).find((x) => x.poly === poly && x.coeff === coeff);
   const el = $("cpa-insp");
-  el.innerHTML = `<div class="card-head inspector-head"><button class="btn ghost sm" id="in-prev" title="previous coefficient (←)">‹</button><span class="coef">ŝ${poly}[${coeff}]</span><button class="btn ghost sm" id="in-next" title="next coefficient (→)">›</button>
-      <span class="sub">← → coefficient · ↑ ↓ polynomial</span></div>
-    <div class="kpis compact" id="in-kpis"></div><div class="chart" id="in-chart"><div class="chart-empty">computing correlation…</div></div><div class="chart-note" id="in-note"></div>`;
+  el.innerHTML = `<div class="card-head inspector-head"><button class="btn ghost sm" id="in-prev" title="previous coefficient (←)">‹</button><span class="coef">ŝ${poly}[${coeff}]</span>
+      <button class="btn ghost sm" id="in-next" title="next coefficient (→)">›</button><span class="sub">← → coefficient · ↑ ↓ polynomial · ${row ? "from this report" : "computed now, not part of this report's table"}</span></div>
+    <div class="kpis compact" id="in-kpis"></div>
+    <div class="section-title">1 · Correlation over time</div><div class="chart" id="in-time"><div class="chart-empty">computing…</div></div><div class="chart-note" id="in-time-note"></div>
+    <div class="grid grid-2" style="margin-top:14px">
+      <div><div class="section-title">2 · Which candidate wins?</div><div class="chart" id="in-guess"></div><div class="chart-note" id="in-guess-note"></div></div>
+      <div><div class="section-title">3 · Does it hold as traces are added?</div><div class="chart" id="in-conv"></div><div class="chart-note" id="in-conv-note"></div></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:14px">
+      <div><div class="section-title">4 · Top 10 and stability</div><div class="table-wrap"><table class="t" id="in-top"></table></div><div class="chart-note" id="in-top-note"></div></div>
+      <div><div class="section-title">5 · Top candidates over time</div><div class="chart" id="in-heat"></div><div class="chart-note">Each row is one candidate, each column a slice of the window; bright = high |ρ|. The right key is one bright row at one moment.</div></div>
+    </div>`;
   $("in-prev").addEventListener("click", () => selectCoef(poly, coeff - 1));
   $("in-next").addEventListener("click", () => selectCoef(poly, coeff + 1));
-  if (row) kpis("in-kpis", [["best guess", row.best_guess, `peak |ρ| ${row.best_corr.toFixed(4)}`],
-    ...(cur.oracle_assisted ? [["true value", row.true_value, row.true_rank === 1 ? "recovered" : "not recovered", row.true_rank === 1 ? "bad" : "good"],
-      ["true-key rank", row.true_rank, `|ρ| ${(row.true_corr ?? 0).toFixed(4)}`]] : [])]);
   const key = `${poly}:${coeff}`;
   try {
-    let c = ccCache.get(key);
-    if (!c) {
+    let d = ccCache.get(key);
+    if (!d) {
       const f = anFiles.find((x) => x.path === cur.file) || {};
-      c = await api("POST", "/api/analysis/correlation_curve", { file: cur.file, model: cur.model, target: cur.target, rprev: cur.rprev || "", poly, coeff,
-        max_traces: cur.model_config?.max_traces_requested || 0, dk_ref: cur.oracle_assisted && f.has_recipe ? "vector_set" : "",
-        features: cur.model_config?.features || "auto", offsets: (cur.model_config?.offsets || []).join(",") });
-      ccCache.set(key, c);
+      const mc = cur.model_config || {};
+      d = await api("POST", "/api/analysis/coefficient", { file: cur.file, model: cur.model, poly, coeff, max_traces: mc.max_traces_requested || 0,
+        dk_ref: cur.oracle_assisted && f.has_recipe ? "vector_set" : "", search: cur.search, margin: cur.margin_cycles, delay: cur.delay_cycles });
+      ccCache.set(key, d);
     }
     if (!insp || insp.poly !== poly || insp.coeff !== coeff) return;
-    // a pipeline model gives one correlation per clock cycle of the word's own schedule, a register
-    // model one per sample of the whole BMUL window
-    const rows = c.unit === "row", xs = rows ? c.rows : c.best_curve.map((v, i) => i);
-    const tr = [line(`best guess ${c.best_guess}`, C.s[0], xs, c.best_curve), peak("best", C.s[0], xs, c.best_curve)];
-    if (c.oracle_assisted) tr.push(line(`true key ${c.true_value}`, C.s[1], xs, c.true_curve), peak("true", C.s[1], xs, c.true_curve));
-    chart("in-chart", tr, { height: vh(0.30, 240, 380), yRange: [-1, 1], yTitle: "ρ",
-      xTitle: rows ? `core clock cycle after the read of word ${coeff >> 1} (ŝ${poly}[${coeff}])` : "sample within the BMUL " + poly + " window",
-      xaxis: rows ? { dtick: 1 } : {} });
-    $("in-note").textContent = `${c.n_traces} traces · ` +
-      (rows ? `${c.n_samples} clock cycles carry this coefficient · cycle offset ${c.offset >= 0 ? "+" : ""}${c.offset}`
-            : `${c.n_samples} samples in the window`) +
-      (c.oracle_assisted ? ` · true key rank ${c.true_rank} of 3329` : "");
-  } catch (e) { chartEmpty("in-chart", e.message); }
+    drawCoef(d);
+  } catch (e) { chartEmpty("in-time", e.message); }
+}
+function drawCoef(d) {
+  const floor = d.noise_floor_corr, oracle = d.true_value !== null && d.true_value !== undefined;
+  if (!d.informative) {
+    kpis("in-kpis", [["no key information", "—", "u is constant for this coefficient, or too few traces", "bad"]]);
+    ["in-time", "in-guess", "in-conv", "in-heat"].forEach((id) => chartEmpty(id, "nothing to correlate"));
+    return;
+  }
+  const top = d.top, best = top[0], second = top[1];
+  kpis("in-kpis", [["best candidate", d.best_guess, `peak |ρ| ${d.best_corr.toFixed(4)} · ${(d.best_corr / floor).toFixed(1)}× the noise floor`, d.best_corr > floor ? "good" : "bad"],
+    ["lead over #2", (d.best_corr - (second ? Math.abs(second.corr) : 0)).toFixed(4), second ? `#2 is ${second.guess}` : ""],
+    ["stability", `${d.votes_best} / 4 windows`, "best candidate in the top 10 of windows of 3 / 5 / 7 / 9 samples", d.votes_best === 4 ? "good" : ""],
+    ...(oracle ? [["true value", d.true_value, d.true_rank === 1 ? "✓ recovered" : `not recovered · true key ranks ${d.true_rank} of 3329`, d.true_rank === 1 ? "good" : "bad"]] : []),
+    ["traces", d.n_traces, `${d.x.length} samples searched`]]);
+  // 1: correlation over time with the predicted position and the noise band
+  const x = d.x, cycUs = 1 / 206.25;
+  const shapes = [{ type: "rect", xref: "x", x0: d.predicted_us[0], x1: d.predicted_us[1] + cycUs, yref: "paper", y0: 0, y1: 1, fillcolor: "#fbbf2433", line: { width: 0 }, layer: "below" },
+    hLine(floor, C.s[3]), hLine(-floor, C.s[3])];
+  const tr = [line(`best candidate ${d.best_guess}`, C.s[0], x, d.curve), peak("best", C.s[0], x, d.curve)];
+  if (oracle && d.true_value !== d.best_guess) tr.push(line(`true key ${d.true_value}`, C.s[1], x, d.true_curve), peak("true", C.s[1], x, d.true_curve));
+  chart("in-time", tr, { height: vh(0.30, 240, 360), yTitle: "ρ", xTitle: d.x_unit === "us" ? "time after the trigger (µs)" : "sample", shapes,
+    annotations: [{ x: d.predicted_us[0], y: 1, yref: "paper", text: "predicted", showarrow: false, yanchor: "top", xanchor: "left", font: { size: 9, color: C.s[3] } }] });
+  $("in-time-note").textContent = `Pearson ρ between the hypothesis and every sample. The yellow band is where the RTL schedule says the register holds this product ` +
+    `(cycle ${d.predicted_cycle[0]}${d.predicted_cycle[1] !== d.predicted_cycle[0] ? "–" + d.predicted_cycle[1] : ""}); dashed lines ±${floor.toFixed(3)} = what noise alone reaches. ` +
+    `A real result: one sharp peak at the right key, inside or near the band, well above the dashed lines.`;
+  // 2: peak of every candidate
+  const pp = d.peak_per_guess, idx = pp.map((_, i) => i);
+  const gtr = [{ type: "scattergl", mode: "markers", x: idx, y: pp, name: "candidates", marker: { size: 3, color: "#64748b" }, hovertemplate: "candidate %{x}: |ρ| %{y:.4f}<extra></extra>" },
+    { type: "scatter", mode: "markers", x: [d.best_guess], y: [d.best_corr], name: "best", marker: { size: 10, color: C.s[0], line: { color: "#0b1220", width: 1 } } }];
+  if (oracle && d.true_value !== d.best_guess) gtr.push({ type: "scatter", mode: "markers", x: [d.true_value], y: [d.true_corr], name: "true key", marker: { size: 11, symbol: "diamond", color: C.s[1], line: { color: "#0b1220", width: 1 } } });
+  chart("in-guess", gtr, { height: 270, xTitle: "candidate value (0 … 3328)", yTitle: "peak |ρ|", hovermode: "closest", shapes: [hLine(floor, C.s[3])], annotations: [hLabel(floor, C.s[3], "noise floor")] });
+  $("in-guess-note").textContent = `Every one of the 3329 candidates, scored by its highest |ρ| anywhere in the window. ` +
+    (d.best_corr - (second ? Math.abs(second.corr) : 0) > 0.02 ? "The winner stands clear of the cloud." : "The winner barely leaves the cloud: with this many traces it is a guess.");
+  // 3: convergence
+  const cv = d.convergence, pts = cv.points;
+  chart("in-conv", [line(`${cv.reference} (${cv.ref_guess})`, oracle ? C.s[1] : C.s[0], pts.map((p) => p.n_traces), pts.map((p) => p.ref)),
+    line("best wrong candidate", "#94a3b8", pts.map((p) => p.n_traces), pts.map((p) => p.best_other)),
+    line("noise floor", C.s[3], pts.map((p) => p.n_traces), pts.map((p) => p.floor), { width: 1 })],
+    { height: 270, xTitle: "traces used", yTitle: "peak |ρ| near the POI", xaxis: { type: "log" } });
+  const last = pts[pts.length - 1];
+  $("in-conv-note").textContent = `The ${cv.reference} should climb above the grey line (the best wrong candidate) and stay there as traces are added; ` +
+    `after ${last.n_traces} traces it ranks ${last.rank} of 3329.`;
+  // 4: top-10
+  $("in-top").innerHTML = `<thead><tr><th class="num">#</th><th class="num">candidate</th><th class="num">ρ</th><th class="num">time (us)</th><th class="num">votes</th>${oracle ? "<th></th>" : ""}</tr></thead><tbody>` +
+    top.map((t, i) => `<tr class="${t.guess === d.true_value ? "sel" : ""}"><td class="num">${i + 1}</td><td class="num">${t.guess}</td><td class="num">${t.corr.toFixed(4)}</td><td class="num">${t.time_us ?? "—"}</td>` +
+      `<td class="num">${t.votes}/4</td>${oracle ? `<td>${t.guess === d.true_value ? "✓ true key" : ""}</td>` : ""}</tr>`).join("") + "</tbody>";
+  $("in-top-note").textContent = "votes: sum ρ² over windows of 3, 5, 7 and 9 samples around the best peak, keep the 10 best, count how many windows each candidate appears in. " +
+    "A key that is in all four is not riding on one noisy sample.";
+  // 5: heat map
+  const hm = d.heat, labels = hm.guesses.map((g) => (g === d.best_guess ? "★ " : g === d.true_value ? "✓ " : "") + g);
+  chart("in-heat", [{ type: "heatmap", x: hm.x, y: labels, z: hm.z, colorscale: "Viridis", zmin: 0, colorbar: { thickness: 8, len: 0.9, tickfont: { size: 9 }, title: "|ρ|" },
+    hovertemplate: "candidate %{y}<br>%{x} µs<br>|ρ| %{z}<extra></extra>" }],
+    { height: 270, hovermode: "closest", showlegend: false, xTitle: d.x_unit === "us" ? "time after the trigger (µs)" : "sample", margin: { l: 64, r: 10, t: 6, b: 38 }, yaxis: { type: "category", autorange: "reversed" } });
 }
 document.addEventListener("keydown", (e) => {
   if (currentPage !== "analysis" || !insp || e.target.closest("input,textarea,select")) return;
-  if (!document.querySelector('#an-results .tab-panel[data-t="map"].active')) return;
+  if (!document.querySelector('#an-results .tab-panel[data-t="coef"].active')) return;
   const m = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.key];
   if (m) { e.preventDefault(); selectCoef(insp.poly + m[0], insp.coeff + m[1]); }
 });
-// The CPA reports of the open campaign, one row per model run (anReports carries their summary numbers).
+// The CPA reports of the open campaign, one row per run (anReports carries their summary numbers).
 function drawModelCompare() {
-  const rows = anReports.filter((x) => x.kind === "cpa");
-  $("cpa-models-sub").textContent = `${rows.length} CPA report(s) · ${new Set(rows.map((x) => modelTxt(x))).size} model / R_prev combination(s)`;
+  const rows = anReports.filter((x) => x.kind === "cpa" && !x.legacy);
+  $("cpa-models-sub").textContent = `${rows.length} report(s)` + (anReports.some((x) => x.kind === "cpa" && x.legacy) ? " · older-format reports are not listed" : "");
   const num = (v, d) => (v === null || v === undefined ? "—" : v.toFixed(d));
   makeTable("cpa-models", [
-    { key: "model", label: "model", render: (x) => `<div class="name mono">${esc(x.model || "?")}</div><div class="sub">${esc(anModelOf(x.model)?.equation || "")}</div>` },
-    { key: "rprev", label: "R_prev", render: (x) => esc(x.rprev || "—") },
-    { key: "oracle_assisted", label: "scoring", value: (x) => (x.oracle_assisted ? 1 : 0), render: (x) => (x.oracle_assisted ? '<span class="badge warn">scored</span>' : '<span class="badge">blind</span>') },
-    { key: "n_traces_used", label: "traces", num: true },
+    { key: "model", label: "hypothesis", render: (x) => `<div class="name mono">${esc(x.model || "?")}</div><div class="sub">${esc(anModelOf(x.model)?.equation || "")}</div>` },
+    { key: "oracle_assisted", label: "scoring", value: (x) => (x.oracle_assisted ? 1 : 0), render: (x) => (x.oracle_assisted ? '<span class="badge warn">ranked</span>' : '<span class="badge">blind</span>') },
+    { key: "search", label: "search", render: (x) => (x.search === "gate" ? "predicted cycle" : "whole window") },
+    { key: "n_traces_used", label: "traces", num: true }, { key: "n_coefficients", label: "coefficients", num: true },
+    { key: "n_above_floor", label: "above floor", num: true, render: (x) => `${x.n_above_floor ?? "—"} / ${x.n_informative ?? "—"}` },
+    { key: "n_stable", label: "stable 4/4", num: true },
     { key: "rank1_fraction", label: "rank-1", num: true, render: (x) => (x.oracle_assisted ? pct(x.rank1_fraction) : "—") },
     { key: "median_true_rank", label: "median rank", num: true, render: (x) => (x.oracle_assisted ? num(x.median_true_rank, 0) : "—") },
-    { key: "mean_true_corr", label: "|ρ| true key", num: true, render: (x) => (x.oracle_assisted ? num(x.mean_true_corr, 4) : "—") },
     { key: "mean_best_corr", label: "mean peak |ρ|", num: true, render: (x) => num(x.mean_best_corr, 4) },
-    { key: "mtd", label: "MTD", num: true, render: (x) => x.mtd ?? "—" },
     { key: "analysis_timestamp_unix", label: "analysed", render: (x) => fmtAgo(x.analysis_timestamp_unix) },
-  ], { key: (x) => x.path, onRow: (x) => anOpenReport(x.path), sortKey: rows.some((x) => x.oracle_assisted) ? "rank1_fraction" : "mean_best_corr", dir: -1,
+  ], { key: (x) => x.path, onRow: (x) => anOpenReport(x.path), sortKey: "analysis_timestamp_unix", dir: -1,
        empty: '<div class="empty">No CPA reports for this campaign yet.</div>' }).set(rows);
   const t = $("cpa-models").querySelector(`tr[data-key="${CSS.escape(cur.report_path || "")}"]`);
   if (t) t.classList.add("sel");
-}
-async function srDraw(model, rprev) {
-  try {
-    const r = await api("POST", "/api/analysis/success_rate", { model, rprev: rprev || "" });
-    const what = esc(model) + (rprev ? " / " + esc(rprev) : "");
-    if (!r.available) {
-      $("cpa-sr").innerHTML = `<div class="chart-empty">Needs at least two independent campaigns analysed with scoring + MTD with ${what}.</div>`;
-      return;
-    }
-    const b = r.checkpoints.filter((c) => c.min_rank1_fraction !== null), m = r.checkpoints.filter((c) => c.mean_rank1_fraction !== null);
-    chart("cpa-sr", [...band("min–max", "#38bdf82e", b.map((c) => c.n_traces), b.map((c) => 100 * c.min_rank1_fraction), b.map((c) => 100 * c.max_rank1_fraction)),
-      line("mean rank-1 %", C.s[0], m.map((c) => c.n_traces), m.map((c) => 100 * c.mean_rank1_fraction))], { height: 240, yRange: [0, 100], xTitle: "trace count", yTitle: "rank-1 %" });
-    $("cpa-sr-note").textContent = `${r.n_campaigns} independent campaigns with ${r.model}${r.rprev ? " / " + r.rprev : ""}`;
-  } catch (e) { chartEmpty("cpa-sr", e.message); }
 }
 
 // ---- TVLA results ----
@@ -1890,7 +1862,7 @@ async function renderTVLA(r) {
     pan("det", `<div class="card"><div class="card-head"><h2>Detection vs trace count</h2><span class="sub">max |t| as traces accumulate</span></div><div class="chart" id="tvla-det"></div></div>`) +
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
   const th = r.leakage_threshold, leak = r.leakage_detected;
-  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz) * 1e6 : null);
+  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz + ((r._axis && r._axis.record_start_s) || 0)) * 1e6 : null);
   try { r._axis = (await api("POST", "/api/analysis/raw_traces", { file: r.file, count: 1, max_points: 500 })).axis; } catch (e) { r._axis = null; }
   if (cur !== r) return;   // another report was opened meanwhile
   r._peakPhase = r._axis ? phaseAt(r._axis.phases, r.max_abs_t_sample) : "";
@@ -1905,14 +1877,15 @@ function drawTVLATab(t) {
   const r = cur, th = r.leakage_threshold;
   const wins = r._axis ? r._axis.bmul_windows_samples || [] : [];
   const phases = r._axis ? r._axis.phases || [] : [];
-  const wb = mergeBands(windowBands(wins), phaseBands(phases, "samples"));
-  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz) * 1e6 : null);
+  const winIdx = r._axis ? r._axis.bmul_index : null;
+  const wb = mergeBands(windowBands(wins, winIdx), phaseBands(phases, "samples"));
+  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz + ((r._axis && r._axis.record_start_s) || 0)) * 1e6 : null);
   if (t === "t") {
     const tEl = $("tvla-t"), absT = r.t_curve.map(Math.abs);
     // zoom targets: the whole record, each BMUL window (the CPA target), or a Decaps phase
     const zr = { all: null };
-    wins.forEach((w, i) => { zr["b" + i] = w; });
-    const zooms = [["all", "All"]].concat(wins.map((w, i) => ["b" + i, "BMUL " + i]));
+    wins.forEach((w, k) => { zr["b" + (winIdx ? winIdx[k] : k)] = w; });
+    const zooms = [["all", "All"]].concat(wins.map((w, k) => ["b" + (winIdx ? winIdx[k] : k), "BMUL " + (winIdx ? winIdx[k] : k)]));
     phases.filter((p) => /^(J|re-enc)/.test(p.label)).forEach((p, i) => { zr["p" + i] = p.samples; zooms.push(["p" + i, p.label]); });
     $("tvla-zoom").innerHTML = zooms.map(([v, l], i) => `<button data-v="${v}" class="${i === 0 ? "active" : ""}">${esc(l)}</button>`).join("");
     seg("tvla-zoom", (v) => Plotly.relayout(plotDiv(tEl), zr[v] ? { "xaxis.range": zr[v] } : { "xaxis.autorange": true }));
@@ -1924,7 +1897,7 @@ function drawTVLATab(t) {
         if (!pt) return;
         const i = pt.pointIndex, s = r.sample_indices[i], fm = r.fixed_mean_curve[i], rm = r.random_mean_curve[i];
         if (fm === undefined) return;
-        const inWin = wins.findIndex((w) => s >= w[0] && s <= w[1]);
+        const inWinK = wins.findIndex((w) => s >= w[0] && s <= w[1]), inWin = inWinK < 0 ? -1 : (winIdx ? winIdx[inWinK] : inWinK);
         const ph = phaseAt(phases, s);
         $("tvla-readout").textContent = `sample ${s}${toUs(s) !== null ? ` (${toUs(s).toFixed(3)} µs)` : ""}${inWin >= 0 ? ` · inside BMUL ${inWin}` : ph ? ` · in ${ph}` : ""} · t = ${r.t_curve[i].toFixed(2)}` +
           ` · fixed mean ${fm.toPrecision(4)} · random mean ${rm.toPrecision(4)} · difference ${(fm - rm).toPrecision(3)}`;
@@ -1941,20 +1914,9 @@ function drawTVLATab(t) {
   } else if (t === "details") kv("an-details-kv", detailsKv(r));
 }
 
-// model self-test and CLI default
-async function modelSelftest() {
-  const name = $("an-model").value;
-  await busy($("model-selftest"), async () => {
-    try {
-      const r = await api("POST", "/api/model/selftest", { model: name });
-      $("model-selftest-table").innerHTML = r.checks.map((c) => `<tr><td>${esc(c.name)}</td><td class="${c.ok ? "pass" : "fail"}">${c.ok ? "PASS" : "FAIL"}</td><td>${esc(c.detail)}</td></tr>`).join("");
-      $("model-selftest-wrap").classList.remove("hidden");
-      toast(r.ok ? `${name}: all self-test checks pass` : `${name}: self-test FAILED — do not trust CPA results from it`, r.ok ? "ok" : "bad", 7000);
-    } catch (e) { err(e); }
-  });
-}
+// CLI default
 async function modelSaveDefault() {
-  try { await api("POST", "/api/model/save_default", { model: $("an-model").value, rprev: anRprev() }); toast("Saved as the cpa_attack.py default (config.py)", "ok"); }
+  try { await api("POST", "/api/model/save_default", { model: $("an-model").value }); toast("Saved as the cpa_attack.py default (config.py)", "ok"); }
   catch (e) { err(e); }
 }
 
@@ -2211,7 +2173,7 @@ async function init() {
   $("tv-prev").addEventListener("click", () => tvStep(-1));
   $("tv-next").addEventListener("click", () => tvStep(1));
   $("tv-play").addEventListener("click", tvPlayToggle);
-  $("tv-collapse").addEventListener("click", () => tvCollapse());
+  $("tv-back").addEventListener("click", tvClose);
   $("tv-close").addEventListener("click", tvClose);
   $("tv-pos").addEventListener("input", tvScrub);
   $("tv-cls").addEventListener("change", () => { if (tvPlay) tvPlayReset(); });
@@ -2226,6 +2188,8 @@ async function init() {
   // analysis
   anOracle = seg("an-oracle", anOracleChanged);
   anOracleChanged("");
+  anSearch = seg("an-search", anSearchChanged);
+  anSearchChanged("full");
   $("an-dataset").addEventListener("change", () => anDatasetChanged());
   $("an-report").addEventListener("change", () => $("an-report").value && anOpenReport($("an-report").value));
   $("an-new").addEventListener("click", () => { anConfig(true); $("an-config").scrollIntoView({ behavior: "smooth", block: "nearest" }); });
@@ -2233,9 +2197,7 @@ async function init() {
   $("an-more-btn").addEventListener("click", (e) => { e.stopPropagation(); $("an-more").classList.toggle("open"); });
   $("an-more").querySelectorAll("a").forEach((a) => a.addEventListener("click", () => anReportAction(a.dataset.act)));
   $("an-model").addEventListener("change", () => anModel());
-  $("an-model-reload").addEventListener("click", () => anLoadModels(false));
   $("an-run").addEventListener("click", anRun);
-  $("model-selftest").addEventListener("click", modelSelftest);
   $("model-save-default").addEventListener("click", modelSaveDefault);
   await anLoadModels(true);
 

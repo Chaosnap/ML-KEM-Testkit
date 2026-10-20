@@ -260,14 +260,9 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 2. **用 TVLA 判断位置，不要用眼睛**。在每个候选位置采 300–500 条 TVLA，看 BMUL 窗口里的 \|t\|
    （Analysis → \|t\| over time → 缩放到 *BMUL 0/1/2*）。注意整条 trace 的最强峰几乎一定在 J(z‖c) 或
    重加密里（1.3 节），那个峰在任何位置都看得到，**不能用来挑位置**；要看的是三个 BMUL 窗口内的值。
-3. 位置固定后再采 CPA。采样率够高最好（每个核心周期 ≥ 8 个采样点，206.25 MHz 对应 ≥ 1.65 GSa/s）：
-   `pipe_*` 模型要把 trace 折成每周期一个值，周期内的点越多，`pca` 学到的单周期波形越准。
-4. 分析时用 `pipe_*` 模型（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md) 第 7 节）。它自己估时钟相位、自己学
-   探头的单周期响应，所以探头正负、响铃形状都不用你去猜；只有整数周期偏移需要搜一次
-   （*Cycle offsets to search* 留 `-6:6`），结果里会告诉你偏移是多少，之后填回去即可。
-5. 同一批 trace 把 `pipe_dsp` / `pipe_barrett` / `pipe_output` 都跑一遍（*Compare models*）。
-   **哪个子模型明显更好，就说明探头主要耦合到那一组触发器**，这是判断"探头看到的是芯片哪一块"
-   最直接的办法，也可以据此再微调位置。
+3. 位置固定后再采 CPA。采样率越高越好（每个核心周期 ≥ 8 个采样点，206.25 MHz 对应 ≥ 1.65 GSa/s）：CPA 对 BMUL 窗口里的每个采样点都算相关系数，周期内的点越多，峰值落在正确采样点上的机会越大。
+4. 分析时先用默认的 `hw_product_mod`，搜索范围选 **整个 BMUL 窗口**、每个多项式先看 8 个系数（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md)）。结果里的 *offset* 列是峰的位置和 RTL 预测周期的差：所有系数堆在同一个值上就说明对齐了、泄漏是真的；这个值就是探头 / 放大器延迟，填进 *shift* 后改用 *Around the predicted cycle* 再跑全部系数。
+5. 同一批 trace 把 `hw_product_mod` 和 `hw_product_raw` 都跑一遍（*Compare* 标签）。**哪个明显更好，就说明探头主要耦合到哪一组触发器**（DSP 乘积寄存器还是 Barrett 输出），可以据此微调位置。
 
 ### 3.4 网络
 
@@ -304,7 +299,7 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 
 ### 4.2 触发位置为什么重要
 
-GUI 和分析脚本都按“第 0 个采样点 = Decaps 开始”来计算 BMUL 窗口的位置。如果示波器保留了触发前的数据（比如默认把触发点放在屏幕中间），整条 trace 就会错位，窗口阴影画在错误的地方，CPA 切出的窗口也是错的。
+采集时会把示波器报告的“第一个采样点相对触发的时间”（LeCroy 的 `HORIZ_OFFSET`）存进 campaign（`record_start_s`），GUI 和 CPA 按**触发后的时间**放 BMUL 窗口，所以触发点在屏幕中间（有预触发数据）时位置也是对的；但驱动不报告这个值的示波器（Keysight / Rigol / Siglent / Tektronix 的通用驱动）、以及旧 campaign，仍按“第 0 个采样点 = Decaps 开始”处理，这时预触发数据会让窗口错位。无论如何，**触发点放在屏幕最左边**仍然最稳妥，也是 *Check trigger* 检查的内容。记录必须覆盖触发后 0 … 约 23 µs（预触发部分不需要）。
 
 不同品牌的叫法不同，目标都是让**触发点出现在屏幕最左边**：
 
@@ -480,7 +475,7 @@ Acquisition 页左边 *Campaign* 卡片：
 Analysis 页顶部选 campaign，点 *New analysis*：
 
 - **TVLA**：直接 *Run analysis*。看 \|t\| 曲线：超过 ±4.5 的峰说明检测到泄漏。峰会标出它落在哪个阶段（KPI 里的 *peak at*、点击读数）；整条 Decaps 的最强峰在 J(z‖c) 或重加密里是预期的（见 1.3 节），要看 BMUL 有没有泄漏，用工具栏缩放到 *BMUL 0/1/2* 看窗口内的 \|t\|。
-- **CPA**：*Leakage model* 建议先用 `pipe_all`（按 RTL 发射时序建模，每个时钟周期一个假设；需要采样率，见 [LEAKAGE_MODELS.md](LEAKAGE_MODELS.md) 第 7 节），`hd_basemul_word`（`cpa_toolkit/models/` 里每个文件是一个模型，可以换别的模型再跑一次，在报告的 *Compare models* 标签中对比）；*Scoring* 选 *Blind attack*（真实攻击，不使用真实密钥）或 *Score with campaign key*（用真实密钥给结果打分，结果会标注 oracle-assisted，**不能当作真实攻击结果展示**）。结果在 *Key map* 中显示 3×256 个系数的排名，*Convergence* 显示 key rank 随 trace 数的变化。
+- **CPA**：*Hypothesis* 先用 `hw_product_mod`（默认），*What to attack* 先用前 8 个系数、*Whole BMUL window*（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md)）；*Scoring* 选 *Blind attack*（真实攻击，不使用真实密钥）或 *Rank the campaign key*（用真实密钥给猜测排名，结果会标注 oracle-assisted，**不能当作真实攻击结果展示**）。结果在 *Overview* 里是一行一个系数的表（峰值、是噪声底的几倍、峰值位置和 RTL 预测的差、稳定性），*Coefficient* 里是单个系数的五张图（相关系数随时间、候选排名、随 trace 数的收敛、top-10、热图）；换另一个假设再跑一次，在 *Compare* 标签里对比。
 
 结果怎么解读，见 [cpa_toolkit/README.md](../cpa_toolkit/README.md) 第 7、8 节。
 

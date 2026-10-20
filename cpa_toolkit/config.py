@@ -77,8 +77,8 @@ BMUL_WINDOWS = [(1289, 1570), (2855, 3136), (4421, 4702)]
 
 #: The cycle in which the RAM read address of the first word of each decryption BMUL is issued
 #: (``T`` of word 0 in ``mlkem_poly_alu.sv``; word ``w`` is read at ``T + 2 w``): the datapath's
-#: first active cycle plus one. The row-aligned attack (``aligned_cpa.py``) places the pipeline
-#: schedule of every word on the trace with these. Measured by ``scripts/sim/bmul_timing.py`` (the
+#: first active cycle plus one. ``cpa_attack.py`` predicts the cycle of every coefficient from
+#: these (``T + 2 * (j // 2)``) and compares it with where the correlation peak actually is. Measured by ``scripts/sim/bmul_timing.py`` (the
 #: ALU start event of each BMUL, plus 2), same run as BMUL_WINDOWS.
 BMUL_READ_CYCLES = [1290, 2856, 4422]
 
@@ -116,8 +116,9 @@ DECAPS_PHASES: list[tuple[str, int, int]] = [
 #: the SAKURA-X (2.5 V logic: trigger level ~1.25 V, not 1.6 V or 2.5 V)
 #: -- see the boards' constraints.xdc.
 #: No LED carries it: the status LEDs are frozen while the core is busy.
-#: Allow this many samples of slack when the analysis slices a window out of
-#: a trace, for the trigger/start latency.
+#: Slack in CORE CLOCK CYCLES added on both sides of every BMUL window when a
+#: window is cut out of a trace (trigger latency, probe delay). Converted to
+#: samples with the campaign's sample rate (acquire_cpa.window_sample_ranges).
 TRIGGER_SLACK_CYCLES = 40
 
 # =============================================================================
@@ -127,12 +128,9 @@ IN_BASE = 0x0000
 OUT_BASE = 0x0E00
 
 # =============================================================================
-# CPA leakage model default (set from the GUI's Analysis page, or by hand)
+# CPA hypothesis default (set from the GUI's Analysis page, or by hand)
 # =============================================================================
-#: The leakage model cpa_attack.py uses without --model: a file in models/
-#: (one per model; `cpa_attack.py --list-models` lists them). The default is
-#: HD(R_prev, {c1, c0}) of the 24-bit RAM word -- see docs/ATTACK_MODEL.md.
-CPA_MODEL = "hd_basemul_word"
-
-#: Its R_prev (a choice that model accepts: zero / prev-word / acc).
-CPA_RPREV = "prev-word"
+#: The hypothesis cpa_attack.py uses without --model: a key of cpa_attack.MODELS
+#: (`cpa_attack.py --list-models`). hw_product_mod = HW(u * g mod q), the multiplier's
+#: reduced output; hw_product_raw = HW(u * g), the DSP product register.
+CPA_MODEL = "hw_product_mod"

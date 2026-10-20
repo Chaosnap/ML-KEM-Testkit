@@ -53,22 +53,32 @@ TRACES_DIR = os.path.join(ROOT, "data", "traces")
 
 
 # --- the three BMUL windows, per sample-rate ------------------------------------
-def cycle_to_sample(cycle: int, sample_rate_hz: float) -> int:
-    return int(round(cycle / C.CORE_MHZ / 1e6 * sample_rate_hz))
+def cycle_to_sample(cycle: float, sample_rate_hz: float, record_start_s: float = 0.0) -> int:
+    """Sample index of core clock cycle ``cycle`` after the trigger (the Decaps start).
+
+    ``record_start_s`` is the time of sample 0 relative to the trigger, as the scope
+    reports it (LeCroy HORIZ_OFFSET): negative when the record has pre-trigger data,
+    e.g. -1 us with the trigger in the middle of a 2 us record. Without it (old
+    campaigns, drivers that do not report it) sample 0 is taken as the trigger.
+    """
+    return int(round((cycle / (C.CORE_MHZ * 1e6) - (record_start_s or 0.0)) * sample_rate_hz))
 
 
-def window_sample_ranges(sample_rate_hz: float, n_samples: int) -> list[tuple[int, int]]:
-    """BMUL_WINDOWS (core cycles) mapped to sample indices, clipped to the trace.
+def window_sample_ranges(sample_rate_hz: float, n_samples: int,
+                         record_start_s: float = 0.0) -> list[tuple[int, int]]:
+    """BMUL_WINDOWS (core cycles) mapped to sample indices, clipped to the trace,
+    each widened by TRIGGER_SLACK_CYCLES core cycles on both sides.
 
     If sample_rate_hz is 0 (the scope preamble didn't report one), the cycle
     numbers are used unchanged, i.e. one sample per core cycle.
     """
     sr = sample_rate_hz if sample_rate_hz > 0 else C.CORE_MHZ * 1e6
+    start = record_start_s if sample_rate_hz > 0 else 0.0
     out = []
     for c0, c1 in C.BMUL_WINDOWS:
-        s0 = min(n_samples, max(0, cycle_to_sample(c0, sr) - C.TRIGGER_SLACK_CYCLES))
-        s1 = min(n_samples, cycle_to_sample(c1, sr) + C.TRIGGER_SLACK_CYCLES)
-        out.append((s0, max(s0, s1)))  # a window beyond the trace end is empty, never inverted
+        s0 = min(n_samples, max(0, cycle_to_sample(c0 - C.TRIGGER_SLACK_CYCLES, sr, start)))
+        s1 = min(n_samples, max(0, cycle_to_sample(c1 + C.TRIGGER_SLACK_CYCLES, sr, start)))
+        out.append((s0, max(s0, s1)))  # a window outside the trace is empty, never inverted
     return out
 
 
@@ -135,7 +145,7 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
         dk, mode, n = vectors.dk, vectors.mode, vectors.n
         meta = {
             "mode": mode, "strategy": vectors.meta["strategy"], "op": "decaps",
-            "model": "ML-KEM-768 BaseMul, HD(R_prev, X) leakage model (docs/ATTACK_MODEL.md)",
+            "model": "ML-KEM-768 BaseMul, HW(u * g) product hypotheses (docs/LEAKAGE_MODELS.md)",
             "n_traces": n, "core_mhz": C.CORE_MHZ, "bmul_windows_cycles": json.dumps(C.BMUL_WINDOWS),
             "scope": json.dumps(sc.info()), "board": json.dumps(target.info()),
             "simulated": False, "created_unix": time.time(),
@@ -219,7 +229,8 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
                 stopped_early = True
                 break
     finally:
-        writer.set_sample_rate(sc.sample_rate())
+        query = getattr(sc, "record_start_s", None)
+        writer.set_sample_rate(sc.sample_rate(), query() if callable(query) else None)
         writer.close()
     summary = summarize(out_path)
     summary.update(stopped_early=stopped_early, link_lost=link_lost, k_mismatches=k_mismatches,

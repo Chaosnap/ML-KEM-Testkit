@@ -234,13 +234,7 @@ table.t td .sub { color: var(--sub); font-size: 11.5px; font-family: var(--mono)
 .chart.tall { min-height: 280px; }
 .chart-empty { color: var(--sub); font-size: 12.5px; padding: 40px 16px; text-align: center; }
 .chart-note { font-size: 12px; color: var(--sub); margin-top: 6px; }
-/* Trace viewer: docked to the bottom edge of the page while its natural position is below the fold,
-   so the campaign list and details stay reachable above it; it rests in place at the end of the page. */
-/* bottom: -46px = the content area's 80px bottom padding minus the 34px console bar, so the viewer sits right above the bar. */
-#lib-viewer.docked { position: sticky; bottom: -46px; z-index: 30; margin-top: 16px; border-color: var(--accent-strong);
-  box-shadow: 0 -12px 28px rgba(0, 0, 0, 0.5); }
-#lib-viewer.collapsed > :not(.card-head) { display: none; }
-#lib-viewer.collapsed .card-head { margin-bottom: 0; }
+/* Trace viewer: replaces the campaign list in the left column while open (index.html #lib-viewer / #lib-list). */
 .tv-scrub { display: flex; gap: 12px; align-items: center; margin: -4px 0 10px; }
 .tv-scrub input[type=range] { flex: 1; accent-color: var(--accent); }
 .tv-scrub .mono { color: var(--sub); white-space: nowrap; min-width: 150px; text-align: right; }

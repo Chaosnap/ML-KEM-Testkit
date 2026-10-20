@@ -186,9 +186,15 @@ class TraceWriter:
     def flush(self) -> None:
         self.f.flush()
 
-    def set_sample_rate(self, hz: float) -> None:
+    def set_sample_rate(self, hz: float, record_start_s: float | None = None) -> None:
+        """Sample rate and, when the scope reports it, the time of sample 0 relative
+        to the trigger (negative = pre-trigger data). ``samples`` becomes the time
+        after the trigger of every sample."""
+        if record_start_s is not None:
+            self.f["metadata"].attrs["record_start_s"] = float(record_start_s)
         if hz > 0:
-            self.f["samples"][:] = np.arange(self.n_samples, dtype=np.float64) / hz
+            start = float(self.f["metadata"].attrs.get("record_start_s", 0.0))
+            self.f["samples"][:] = start + np.arange(self.n_samples, dtype=np.float64) / hz
             self.f["metadata"].attrs["sample_rate"] = hz
 
     def close(self) -> None:
@@ -263,6 +269,13 @@ class TraceReader:
         return float(self.f["metadata"].attrs.get("sample_rate", 0.0))
 
     @property
+    def record_start_s(self) -> float | None:
+        """Time of sample 0 relative to the trigger (s), or None if the campaign did
+        not record it (taken as 0: sample 0 = Decaps start)."""
+        v = self.f["metadata"].attrs.get("record_start_s")
+        return None if v is None else float(v)
+
+    @property
     def simulated(self) -> bool:
         """True only for files from the removed synthetic dry-run flow."""
         return bool(self.f["metadata"].attrs.get("simulated", False))
@@ -296,6 +309,7 @@ def summarize(path: str | pathlib.Path) -> dict:
                               and "k_expected" in r.f["intermediates"]),
             "n_samples": r.f["traces"].shape[1],
             "sample_rate_hz": r.sample_rate,
+            "record_start_s": r.record_start_s,
             "dk_hash": r.dk_hash.hex()[:16] + "...",
             "ok_fraction": float(np.mean(r.ok)) if r.n_completed else 0.0,
             "metadata": r.metadata,

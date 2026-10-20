@@ -254,36 +254,35 @@
           <button class="btn secondary sm icon" id="lib-refresh" title="Refresh">↻</button>
         </div>
         <div class="grid grid-side-r">
-          <div class="card" style="padding:0">
+          <div class="card" style="padding:0" id="lib-list">
             <div class="bulk hidden" id="lib-bulk" style="margin:10px 10px 0"></div>
             <div class="table-wrap tall" style="border:none"><table class="t click" id="lib-table"><thead></thead><tbody></tbody></table></div>
           </div>
+          <div class="card hidden" id="lib-viewer">
+            <div class="card-head"><button class="btn ghost sm" id="tv-back" title="Back to the campaign list">‹ Campaigns</button><h2>Trace viewer</h2><span class="sub" id="tv-sub"></span>
+              <div class="actions"><button class="btn ghost sm" id="tv-export-csv">CSV</button>
+                <button class="btn ghost sm icon" id="tv-close" title="Close the viewer">✕</button></div></div>
+            <div class="toolbar">
+              <label class="muted" style="font-size:12px">from #</label><input id="tv-start" type="text" value="0" style="width:80px">
+              <label class="muted" style="font-size:12px">count</label><input id="tv-count" type="text" value="4" style="width:64px">
+              <select id="tv-cls" style="width:120px"><option value="">any class</option><option value="0">fixed</option><option value="1">random</option></select>
+              <input id="tv-indices" type="text" placeholder="or indices: 0, 17, 250" style="width:200px">
+              <button class="btn ghost sm" id="tv-prev">‹ prev</button><button class="btn ghost sm" id="tv-next">next ›</button>
+              <label class="check"><input type="checkbox" id="tv-stats" checked> mean ± σ</label>
+              <label class="check"><input type="checkbox" id="tv-bands" checked> BMUL windows</label>
+              <button class="btn primary sm" id="tv-load">Plot</button>
+              <span class="spacer"></span>
+              <button class="btn secondary sm" id="tv-play" title="Play the campaign one trace at a time (space)">▶ Play</button>
+              <select id="tv-speed" style="width:92px" title="playback speed"><option value="2">2 / s</option><option value="5" selected>5 / s</option><option value="10">10 / s</option><option value="20">20 / s</option></select>
+            </div>
+            <div class="tv-scrub hidden" id="tv-scrub">
+              <input type="range" id="tv-pos" min="0" max="0" value="0" step="1" aria-label="trace position">
+              <span class="mono" id="tv-pos-txt"></span>
+            </div>
+            <div class="chart tall" id="tv-chart"></div>
+            <div class="chart-note" id="tv-note"></div>
+          </div>
           <div class="card" id="lib-detail"><div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div></div>
-        </div>
-        <div class="card hidden docked" id="lib-viewer">
-          <div class="card-head"><h2>Trace viewer</h2><span class="sub" id="tv-sub"></span>
-            <div class="actions"><button class="btn ghost sm" id="tv-export-csv">CSV</button>
-              <button class="btn ghost sm icon" id="tv-collapse" title="Collapse / expand the viewer">▾</button>
-              <button class="btn ghost sm icon" id="tv-close" title="Close the viewer">✕</button></div></div>
-          <div class="toolbar">
-            <label class="muted" style="font-size:12px">from #</label><input id="tv-start" type="text" value="0" style="width:80px">
-            <label class="muted" style="font-size:12px">count</label><input id="tv-count" type="text" value="4" style="width:64px">
-            <select id="tv-cls" style="width:120px"><option value="">any class</option><option value="0">fixed</option><option value="1">random</option></select>
-            <input id="tv-indices" type="text" placeholder="or indices: 0, 17, 250" style="width:200px">
-            <button class="btn ghost sm" id="tv-prev">‹ prev</button><button class="btn ghost sm" id="tv-next">next ›</button>
-            <label class="check"><input type="checkbox" id="tv-stats" checked> mean ± σ</label>
-            <label class="check"><input type="checkbox" id="tv-bands" checked> BMUL windows</label>
-            <button class="btn primary sm" id="tv-load">Plot</button>
-            <span class="spacer"></span>
-            <button class="btn secondary sm" id="tv-play" title="Play the campaign one trace at a time (space)">▶ Play</button>
-            <select id="tv-speed" style="width:92px" title="playback speed"><option value="2">2 / s</option><option value="5" selected>5 / s</option><option value="10">10 / s</option><option value="20">20 / s</option></select>
-          </div>
-          <div class="tv-scrub hidden" id="tv-scrub">
-            <input type="range" id="tv-pos" min="0" max="0" value="0" step="1" aria-label="trace position">
-            <span class="mono" id="tv-pos-txt"></span>
-          </div>
-          <div class="chart tall" id="tv-chart"></div>
-          <div class="chart-note" id="tv-note"></div>
         </div>
       </section>
 
@@ -311,39 +310,33 @@
             <div class="actions"><button class="btn ghost sm" id="an-config-close">Close</button></div></div>
           <div class="an-config-grid">
             <div id="an-cpa-setup">
-              <div class="step-title"><span class="n">1</span>Leakage model</div>
+              <div class="step-title"><span class="n">1</span>Hypothesis</div>
               <div class="row"><select id="an-model" class="grow"></select>
-                <button class="btn ghost sm icon" id="an-model-reload" title="Re-read cpa_toolkit/models/ (new or edited model files)">↻</button></div>
+                <button class="btn ghost sm" id="model-save-default" title="Use this hypothesis when cpa_attack.py is run without --model">Save as default</button></div>
               <div class="model-detail" id="an-model-detail"></div>
-              <div id="an-rprev-wrap"><label class="f">R_prev — what the register held before</label><select id="an-rprev"></select></div>
-              <div id="an-aligned-wrap" class="hidden">
-                <div class="cols-2">
-                  <div><label class="f">Trace feature — one value per core clock cycle</label>
-                    <select id="an-features">
-                      <option value="auto">pca — the probe's per-cycle shape, learned from the traces</option>
-                      <option value="energy">energy — sum of squares (no shape assumed)</option>
-                      <option value="abs">abs — sum of absolute values</option>
-                    </select></div>
-                  <div><label class="f">Cycle offsets to search</label>
-                    <input id="an-offsets" type="text" placeholder="-6:6" title="integer cycles between the RTL schedule and sample 0 of the record; a range (-6:6), a list (-2,0,2) or one value once it is known"></div>
-                </div>
-                <div class="hint">This model has one hypothesis per clock cycle, so it needs the campaign's sample rate and the cycle the record starts at. The offset that wins for most coefficients is reported with the result — put it in here afterwards to make the run faster and the result cleaner.</div>
+              <div class="step-title"><span class="n">2</span>What to attack</div>
+              <div class="cols-2">
+                <div><label class="f">Polynomials</label><input id="an-polys" type="text" value="0-2" title="0-2, 0,2 or 1"></div>
+                <div><label class="f">Coefficients per polynomial</label><input id="an-coeffs" type="text" value="8" title="8 = the first 8 · 0 = all 256 · 0-15 or 3,7 = those"></div>
               </div>
-              <div class="btn-row"><button class="btn ghost sm" id="model-selftest">Self-test this model</button>
-                <button class="btn ghost sm" id="model-save-default">Save as CLI default</button><span class="hint" id="model-status" style="margin:0"></span></div>
-              <div class="table-wrap short hidden" id="model-selftest-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody id="model-selftest-table"></tbody></table></div>
+              <div class="hint">8 = the first 8 coefficients of each polynomial (a few seconds); 0 = all 256 (minutes); <code>0-15</code> or <code>3,7</code> pick exact ones. Every coefficient is attacked on its own.</div>
+              <label class="f">Where in the trace</label>
+              <div class="seg full" id="an-search"><button data-v="full" class="active">Whole BMUL window</button><button data-v="gate">Around the predicted cycle</button></div>
+              <div class="cols-2 hidden" id="an-gate-fields" style="margin-top:8px">
+                <div><label class="f">± cycles</label><input id="an-margin" type="text" value="10" title="half-width of the search, core clock cycles"></div>
+                <div><label class="f">shift (cycles)</label><input id="an-delay" type="text" value="0" title="move the prediction: probe / amplifier delay"></div>
+              </div>
+              <div class="hint" id="an-search-hint">The whole window finds the peak wherever it is — use it first, then read the <b>offset</b> column and switch to the predicted cycle (faster, fewer false peaks).</div>
             </div>
             <div>
               <div id="an-cpa-scoring">
-                <div class="step-title"><span class="n">2</span>Scoring</div>
-                <div class="seg full" id="an-oracle"><button data-v="" class="active">Blind attack</button><button data-v="vector_set">Score with campaign key</button><button data-v="file">dk file</button></div>
+                <div class="step-title"><span class="n">3</span>Scoring</div>
+                <div class="seg full" id="an-oracle"><button data-v="" class="active">Blind attack</button><button data-v="vector_set">Rank the campaign key</button><button data-v="file">dk file</button></div>
                 <input id="an-dkref" type="text" class="hidden" placeholder="path to a 2400-byte dk file" style="margin-top:8px">
                 <div class="hint" id="an-oracle-warn"></div>
-                <label class="check" id="an-curve-wrap"><input type="checkbox" id="an-curve"> Key rank vs trace count (MTD) — slower</label>
               </div>
-              <div class="step-title" id="an-run-step"><span class="n" id="an-run-n">3</span>Run</div>
+              <div class="step-title" id="an-run-step"><span class="n" id="an-run-n">4</span>Run</div>
               <div class="row"><label class="f" style="margin:0">Traces to use</label><input id="an-max-traces" type="text" value="0" title="0 = all" style="width:110px"><span class="hint" style="margin:0">0 = all</span></div>
-              <div class="row" id="an-coeffs-row"><label class="f" style="margin:0">Coefficients per polynomial</label><input id="an-coeffs" type="text" value="0" title="0 = all 256; a smaller number is a quick look at the model before the full 768" style="width:110px"><span class="hint" style="margin:0">0 = all 256</span></div>
               <div class="btn-row"><button class="btn primary" id="an-run">Run analysis</button><span class="hint" id="an-status" style="margin:0"></span></div>
               <div class="progress indet hidden" id="an-progress"><div class="fill"></div><div class="txt"></div></div>
             </div>

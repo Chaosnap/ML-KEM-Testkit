@@ -1,5 +1,7 @@
 # CPA 攻击模型设计文档 — 打的是哪里、怎么打
 
+> **2026-10-20：本文第 5 节描述的泄漏模型目录（`models/`：hw / hd / `pipe_*`）和逐周期对齐的攻击（`aligned_cpa.py`、`cycle_features.py`）已经从代码里移除**，换成更简单的逐系数 CPA（`cpa_attack.py`，说明见 [`LEAKAGE_MODELS.md`](LEAKAGE_MODELS.md)）。第 1–4 节（原理、攻击目标、BMUL 在硬件里的时序、窗口位置）仍然有效；第 5 节及之后涉及 `models/`、`R_prev`、`pipe_*`、`--curve` 的内容只作为设计记录保留，对应旧代码在 git 历史里。
+
 这份文档只回答一个问题：**这套 CPA 工具的攻击假设模型具体是怎么设计的，物理上对应
 硬件里的哪个信号、哪一拍、哪一行代码**。用法（怎么跑、怎么连示波器）见
 [`README.md`](../cpa_toolkit/README.md)；这里只讲设计本身，带着源码行号和 RTL 行号，方便你答辩时
@@ -435,16 +437,15 @@ CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 
 | 内容 | 文件 |
 | --- | --- |
 | 本文档引用的 FIPS 203 软件参考实现 | [`mlkem_ref.py`](../cpa_toolkit/mlkem_ref.py) |
-| 泄漏模型（一个文件一个模型）、`Guess`、R_prev、汉明重量 / 距离、模型自检 | [`models/`](../cpa_toolkit/models/) |
+| ~~泄漏模型（一个文件一个模型）~~（已移除，见 [`LEAKAGE_MODELS.md`](LEAKAGE_MODELS.md)） | ~~`models/`~~ |
 | 乘法器流水线的软件孪生（`pipe_*` 的基础） | [`mlkem_pipeline.py`](../cpa_toolkit/mlkem_pipeline.py) |
-| 每周期一个特征（时钟相位、PCA / energy / abs） | [`cycle_features.py`](../cpa_toolkit/cycle_features.py) |
-| 逐拍对齐的 CPA 引擎 | [`aligned_cpa.py`](../cpa_toolkit/aligned_cpa.py) |
-| 仿真侧测量脚本（窗口、寄存器排序、孪生比对、模型对齐） | [`scripts/sim/`](../scripts/sim/) |
+| ~~每周期一个特征 / 逐拍对齐的 CPA 引擎~~（已移除） | ~~`cycle_features.py`~~、~~`aligned_cpa.py`~~ |
+| 仿真侧测量脚本（窗口、寄存器排序、孪生比对） | [`scripts/sim/`](../scripts/sim/) |
 | 明文检查预言机（PC-oracle）密钥恢复 | [`pc_oracle.py`](../cpa_toolkit/pc_oracle.py) |
 | BMUL 流水线 RTL（第 4.2 节表格的全部行号出处） | [`../hdl/core/mlkem_poly_alu.sv`](../hdl/core/mlkem_poly_alu.sv) |
 | Decaps 微码（第 4.1 节的 ROM 地址） | [`../hdl/core/mlkem_ucode_rom.sv`](../hdl/core/mlkem_ucode_rom.sv) |
 | 微码生成器（slot/操作码定义） | [`../scripts/gen/gen_mlkem_ucode.py`](../scripts/gen/gen_mlkem_ucode.py) |
-| CPA 相关系数引擎、`--curve`、oracle-assisted 标注 | [`cpa_attack.py`](../cpa_toolkit/cpa_attack.py) |
+| 简单逐系数 CPA：两个假设、相关系数、top-10 与稳定性、oracle-assisted 排名 | [`cpa_attack.py`](../cpa_toolkit/cpa_attack.py) |
 | TVLA 实测分析引擎（Welch's t） | [`tvla_analysis.py`](../cpa_toolkit/tvla_analysis.py) |
 | CPA/TVLA 采集、三种密文策略、结构化密文生成调用方 | [`acquire_cpa.py`](../cpa_toolkit/acquire_cpa.py) |
 | 用法、正负对照、TVLA 流程、泄漏模型与新增模型、常见问题 | [`README.md`](../cpa_toolkit/README.md) |

@@ -1,6 +1,6 @@
 """Software twin of the BMUL multiplier pipeline (``mlkem_poly_alu.sv`` + ``mlkem_modmul.sv``).
 
-The leakage models of ``models/base.py`` hypothesise one register; the chip toggles
+The CPA hypotheses (``cpa_attack.py``, and the removed ``models/``) name one register; the chip toggles
 ~1400 flops per cycle. This module reproduces, bit for bit, what the *stage registers of
 the two Barrett multipliers and the registers that copy their output stream* hold, so a
 hypothesis can be built from the transitions that really happen on them.
