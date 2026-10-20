@@ -32,6 +32,7 @@ import zlib
 from dataclasses import dataclass
 
 import config as C
+import sakura_lbus
 
 CMD_READ_REG, CMD_WRITE_REG, CMD_WRITE_DATA, CMD_READ_DATA = 0x01, 0x02, 0x03, 0x04
 CMD_RUN = 0x05  # write CTRL, reply only when the core is done (status block + result)
@@ -127,8 +128,12 @@ class Link:
         self._serial_exc = (serial.SerialException, OSError, TypeError, AttributeError)
         try:
             # exclusive: a second program (or a second GUI tab) must not share the port
-            self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
-                                     timeout=BASE_TIMEOUT, write_timeout=2.0, exclusive=True)
+            if sakura_lbus.is_sakura_port(port):   # SAKURA-X board USB (local bus)
+                self.ser = sakura_lbus.LbusPort(port, baud, timeout=BASE_TIMEOUT,
+                                                write_timeout=2.0, exclusive=True)
+            else:
+                self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
+                                         timeout=BASE_TIMEOUT, write_timeout=2.0, exclusive=True)
         except Exception as e:  # serial.SerialException and OS errors
             msg = str(e)
             if "busy" in msg.lower() or "Errno 16" in msg:
@@ -437,6 +442,8 @@ def _port_hint(p) -> tuple[str, int]:
     desc = " ".join(str(x) for x in (p.description, p.manufacturer) if x)
     if "Bluetooth" in p.device or "debug-console" in p.device:
         return "not a board", 9
+    if _is_sakura_channel_a(p):
+        return "SAKURA-X channel A raw -- use the sakura: entry", 7
     iface = None
     if p.serial_number and p.device.endswith(p.serial_number + "0"):
         iface = 0
@@ -454,6 +461,17 @@ def _port_hint(p) -> tuple[str, int]:
     return "", 5
 
 
+def _is_sakura_channel_a(p) -> bool:
+    """Channel A of an FT2232H programmed with AIST's sasebo_giii.xml (no
+    Digilent strings; product "USB <-> Serial Converter")."""
+    desc = " ".join(str(x) for x in (p.description, p.manufacturer, p.product) if x)
+    if p.vid != 0x0403 or p.pid != 0x6010 or "Digilent" in desc:
+        return False
+    if p.serial_number and p.device.endswith(p.serial_number + "0"):
+        return True
+    return bool(p.location) and p.location.endswith(":1.0")
+
+
 def list_ports() -> list:
     """``[(device, description, hint, recommended)]``, best candidates first."""
     try:
@@ -464,12 +482,16 @@ def list_ports() -> list:
     for p in lp.comports():
         hint, rank = _port_hint(p)
         rows.append((rank, p.device, p.description or "", hint))
+        if _is_sakura_channel_a(p):
+            rows.append((1, sakura_lbus.PREFIX + p.device, p.description or "",
+                         "SAKURA-X board USB via the Spartan-6 local bus"))
     rows.sort()
     return [(dev, desc, hint, rank == 0) for rank, dev, desc, hint in rows]
 
 
 def port_exists(device: str) -> bool:
     try:
-        return any(dev == device for dev, *_ in list_ports())
+        device = sakura_lbus.device_of(device)
+        return any(sakura_lbus.device_of(dev) == device for dev, *_ in list_ports())
     except LinkError:
         return True

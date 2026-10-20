@@ -1012,7 +1012,7 @@ def api_acquire_capture_one(body: dict) -> dict:
 
 #: Where trig_out comes out, for the trigger-check messages.
 TRIG_PINS = ("Arty A7: Pmod JA1, Arty Z7: Pmod JA3 -- 3.3 V, level about 1.6 V; "
-             "SAKURA-X: CN8 pin 3, ground on CN8 pin 11 -- 2.5 V, level about 1.25 V")
+             "SAKURA-X: CN8 pin 3, ground on CN8 pin 13 (or 11) -- 2.5 V, level about 1.25 V")
 
 #: A record may start this many core cycles off the trigger (LeCroy reports the
 #: trigger time to a fraction of a sample) before the BMUL windows are misplaced.

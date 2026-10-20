@@ -2,10 +2,10 @@
 # for the SAKURA-X (SASEBO-GIII) side-channel evaluation board.
 #
 # Targets the board's cryptographic FPGA, the Kintex-7 XC7K160T-1FBG676C
-# (U11). The Spartan-6 control FPGA is not touched (Vivado does not support
-# Spartan-6 anyway): the host reaches the ML-KEM core through an external
-# 2.5 V USB-UART adapter on the Kintex-7 header CN8 -- see
-# hdl/xilinx/sakura_x/sakura_x_top.sv.
+# (U11). The Spartan-6 control FPGA keeps its factory bitstream (Vivado does
+# not support Spartan-6 anyway): the host reaches the ML-KEM core through the
+# board USB and the inter-FPGA local bus (sakura_lbus_bridge.sv), or an
+# optional 2.5 V USB-UART on CN8 -- see hdl/xilinx/sakura_x/sakura_x_top.sv.
 #
 # A STANDALONE script, like build_arty_z7.tcl: own project directory
 # (build/vivado/sakura-x_mlkem), own board wrapper and XDC under

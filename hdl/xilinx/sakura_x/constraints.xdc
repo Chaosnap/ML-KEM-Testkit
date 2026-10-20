@@ -34,15 +34,41 @@ set_clock_groups -asynchronous \
 set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
 
 ## -----------------------------------------------------------------------------
+## Local bus to the Spartan-6 control FPGA = host link over the board USB
+## (CN15). Pins copied from AIST's reference design for the factory Spartan-6
+## bitstream, sasebo_giii/sasebo_giii_aes/pin_sasebo_giii_k7.ucf (and the
+## matching sasebo_giii_ctrl/pin_sasebo_giii_sp6.ucf); they are the KS_HPIC /
+## KS_HRIC interconnects of spec Table 29. lbus_do is the only direction the
+## Kintex-7 drives. lbus_clkn (AB11, 3 MHz) and lbus_rstn (AA13) are not used:
+## the bridge samples the bus with its own clock.
+## Pull-ups on wrn/rdn keep the bus idle if the Spartan-6 is unconfigured.
+## -----------------------------------------------------------------------------
+set_property -dict {PACKAGE_PIN AD10 IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_wrn]
+set_property -dict {PACKAGE_PIN Y13  IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_rdn]
+set lbus_do_pins {V4 V2 W1 AB1 Y3 U7 V3 AF10 AC13 AE12 U6 AE13 AA10 AB12 AA4 AE8}
+set lbus_di_pins {T22 M24 K25 R26 M25 U17 N26 R16 T20 R22 M21 T24 P23 N21 R21 N18}
+for {set i 0} {$i < 16} {incr i} {
+    set_property -dict [list PACKAGE_PIN [lindex $lbus_do_pins $i] IOSTANDARD LVCMOS15 \
+        SLEW SLOW DRIVE 4] [get_ports "lbus_do[$i]"]
+    set_property -dict [list PACKAGE_PIN [lindex $lbus_di_pins $i] IOSTANDARD LVCMOS25] \
+        [get_ports "lbus_di_a[$i]"]
+}
+
+## K_CLK_INH_B (Table 13): driven high = both 200 MHz oscillators enabled,
+## as in AIST's reference design (osc_en_b).
+set_property -dict {PACKAGE_PIN J8 IOSTANDARD LVCMOS25 DRIVE 4 SLEW SLOW} [get_ports osc_en_b]
+
+## -----------------------------------------------------------------------------
 ## Kintex-7 GPIO header CN8 (Table 7 pinout, Table 19 pins), 2.5 V:
-##   CN8.1  K_HEADER_0 = D19  uart_rxd  (FPGA input,  from the adapter's TXD)
-##   CN8.2  K_HEADER_1 = N17  uart_txd  (FPGA output, to the adapter's RXD)
+##   CN8.1  K_HEADER_0 = D19  uart_rxd  (optional adapter TXD; pull-up, so it
+##                                       idles high when nothing is connected)
+##   CN8.2  K_HEADER_1 = N17  uart_txd  (optional adapter RXD)
 ##   CN8.3  K_HEADER_2 = N16  trig_out  (scope trigger = STATUS.busy)
 ##   CN8.11 / CN8.13 GND,  CN8.12 2.5 V (adapter VCCIO),  CN8.14 VIN -- not a logic pin!
 ## The adapter must drive 2.5 V logic: 3.3 V on an HR pin at VCCO = 2.5 V is
 ## above the absolute maximum (VCCO + 0.55 V).
 ## -----------------------------------------------------------------------------
-set_property -dict {PACKAGE_PIN D19 IOSTANDARD LVCMOS25} [get_ports uart_rxd]
+set_property -dict {PACKAGE_PIN D19 IOSTANDARD LVCMOS25 PULLUP TRUE} [get_ports uart_rxd]
 set_property -dict {PACKAGE_PIN N17 IOSTANDARD LVCMOS25} [get_ports uart_txd]
 set_property -dict {PACKAGE_PIN N16 IOSTANDARD LVCMOS25} [get_ports trig_out]
 
@@ -70,6 +96,12 @@ set_false_path -from [get_ports uart_rxd]
 set_false_path -to   [get_ports uart_txd]
 set_false_path -to   [get_ports {led[*]}]
 set_false_path -to   [get_ports trig_out]
+set_false_path -to   [get_ports osc_en_b]
+## Local bus: 3 MHz, asynchronous, synchronised in sakura_lbus_bridge; every
+## sample is taken >= 60 ns after the bus settled, lbus_do is read ~1 us after
+## it was set.
+set_false_path -from [get_ports {lbus_di_a[*] lbus_wrn lbus_rdn}]
+set_false_path -to   [get_ports {lbus_do[*]}]
 
 ## -----------------------------------------------------------------------------
 ## Configuration and bitstream
@@ -78,8 +110,8 @@ set_false_path -to   [get_ports trig_out]
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 2.5 [current_design]
 ## Leave unused pins floating instead of Vivado's default weak pull-down: the
-## board's own resistors define them (oscillator inhibit K_CLK_INH_B on J8,
-## the supervisor's watchdog lines, the Spartan-6 interconnect, DIP switches).
+## board's own resistors define them (the supervisor's watchdog lines,
+## lbus_clkn / lbus_rstn and the rest of the Spartan-6 interconnect, DIP switches).
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullnone [current_design]
 ## The 160T bitstream is ~6.7 MB uncompressed; compression shortens JTAG loads.
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]

@@ -235,7 +235,13 @@ class UartTarget:
             raise SystemExit("pyserial is missing: run the script with `uv run python ...` "
                              "or install it with `python3 -m pip install pyserial`")
         try:
-            self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=timeout)
+            if port.startswith("sakura:"):   # SAKURA-X board USB (cpa_toolkit/sakura_lbus.py)
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "..", "..", "cpa_toolkit"))
+                import sakura_lbus
+                self.ser = sakura_lbus.LbusPort(port, baud, timeout=timeout)
+            else:
+                self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=timeout)
         except Exception as e:  # serial.SerialException and OS errors
             raise SystemExit("cannot open %s: %s" % (port, e))
         self.op_timeout = op_timeout
@@ -606,6 +612,7 @@ def cmd_ports(_args):
         print("%-32s %s  %s" % (p.device, p.description, p.hwid))
     print("\nArty A7: the FTDI chip has two interfaces; the UART is the second one "
           "(macOS: /dev/cu.usbserial-XXXXXXXX1, Linux: /dev/ttyUSB1, Windows: the higher COM number).")
+    print("SAKURA-X board USB: pass sakura:<channel A port>, e.g. sakura:/dev/ttyUSB0.")
     return 0
 
 

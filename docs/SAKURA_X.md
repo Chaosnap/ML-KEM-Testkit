@@ -1,59 +1,82 @@
 # SAKURA-X（SASEBO-GIII）移植与 LeCroy HDO6104 设置
 
-ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1FBG676C（U11）。控制 FPGA（Spartan-6，U17）不改动。`hdl/core/` 和主机协议（[UART_PROTOCOL.md](UART_PROTOCOL.md)）与 Arty 版完全相同，只多了一个板级顶层、一份约束和两份 Tcl。Arty A7 / Z7 的文件没有任何改动。
+ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1FBG676C（U11）。控制 FPGA（Spartan-6，U17）**保持出厂 bitstream 不动**。`hdl/core/` 和主机协议（[UART_PROTOCOL.md](UART_PROTOCOL.md)）与 Arty 版完全相同。
 
 | 文件 | 内容 |
 | ---- | ---- |
 | `hdl/xilinx/sakura_x/sakura_x_top.sv` | 时钟（200 MHz 差分 → MMCM）、复位、引脚、LED 映射 |
+| `hdl/xilinx/sakura_x/sakura_lbus_bridge.sv` | 板载 USB 链路：local bus 寄存器 ↔ 字节流 |
 | `hdl/xilinx/sakura_x/constraints.xdc` | 引脚约束，每个引脚都注明了出处 |
+| `cpa_toolkit/sakura_lbus.py` | 主机端：把 local bus 包装成一个“串口”（端口名 `sakura:<设备>`） |
+| `testbench/sakura/` | 桥接逻辑对 AIST 原版 Spartan-6 控制器源码的仿真（`make sim-sakura`） |
 | `scripts/vivado/build_sakura_x.tcl` | 独立的构建脚本，工程在 `build/vivado/sakura-x_mlkem/` |
 | `scripts/vivado/program_sakura_x.tcl` | 经 JTAG（CN5）烧录，只认 Kintex-7 器件 |
 
-引脚来源：*SASEBO-GIII Specification* v1.1（产综研 AIST，2013-04-26）第 3.1 节表 13–20、表 7；每个引脚的 bank 和 HR/HP 类型都用 AMD 的封装文件 `xc7k160tfbg676pkg.txt` 核对过。
+引脚来源：*SASEBO-GIII Specification* v1.1 第 3.1 节表 13–20、表 7、表 29；local bus 引脚和协议取自 AIST 参考设计 `sasebo_giii/`（`sasebo_giii_ctrl/` 是出厂 Spartan-6 设计的源码，`sasebo_giii_aes/pin_sasebo_giii_k7.ucf` 是对应的 Kintex-7 引脚）。
 
 ---
 
-## 1. 为什么串口不走板载 USB
+## 1. 主机链路：板载 USB（CN15）
 
-板载 USB（CN15）上的 FT2232H **只连到 Spartan-6**（规格书表 26），Kintex-7 碰不到它。SAKURA 官方的方式是在 Spartan-6 里放一个控制电路，再经两片 FPGA 之间的总线转给 Kintex-7，但这需要另一套主机协议，而且 Spartan-6 只能用 ISE 14.7 编译（Vivado 不支持）。
+板载 USB 上的 FT2232H 只连到 Spartan-6（规格书表 26）。Spartan-6 的出厂 bitstream（`sasebo_giii_ctrl`）把 FT2232H 通道 A（245 FIFO 模式）收到的字节翻译成两片 FPGA 之间 16 位 **local bus** 上的寄存器读写：
 
-所以和 Arty Z7 纯 PL 版一样，这里用一个**外接 USB-UART 适配器**，接在 Kintex-7 的 GPIO 排针 CN8 上。主机端代码完全不用改，GUI 里选适配器对应的串口即可。
+```
+主机 → USB:  01 AH AL DH DL   写地址 AH:AL，数据 DH:DL（无应答）
+             00 AH AL         读地址 AH:AL，应答 DH DL
+```
+
+Kintex-7 里的 `sakura_lbus_bridge` 用几个寄存器把它变回字节流（两个方向各一个 FIFO），再经内部的高速串行线（CLK/16 ≈ 6.4 Mbaud）接到原封不动的 `mlkem_uart_system`。主机端 `cpa_toolkit/sakura_lbus.py` 的 `LbusPort` 看起来就是一个 `serial.Serial`，所以 GUI、`acquire_cpa.py`、`acvp_test.py` 只需要换一个端口名：
+
+| 系统 | 端口名 |
+| ---- | ------ |
+| Linux | `sakura:/dev/ttyUSB0`（板子的第一个 ttyUSB = 通道 A） |
+| macOS | `sakura:/dev/cu.usbserial-XXXX0` |
+
+GUI 的端口列表里会单独列出一项 “SAKURA-X board USB via the Spartan-6 local bus”。
+
+| 寄存器 | 方向 | 作用 |
+| ------ | ---- | ---- |
+| 0x0010 / 0x0012 | 写 | 推入 1 / 2 个字节（主机 → FPGA） |
+| 0x0030 | 写 | bit0 清空 FPGA → 主机 FIFO，bit1 清空主机 → FPGA FIFO |
+| 0x0002 | 读 | FPGA → 主机待取字节数 |
+| 0x0004 | 读 | 主机 → FPGA 剩余空间 |
+| 0x0020 / 0x0022 | 读 | 取出 1 / 2 个字节 |
+| 0xFFFC | 读 | ID 0x4D4B，连接时检查 |
+
+**速度**：上传 1088 字节密文约 10 ms 量级，比 115200 波特 UART（~94 ms）快。
+
+**侧信道注意**：应答靠轮询。每次写完之后，第一次轮询推迟 `quiet` = 2 ms（Decaps 约 128 µs），所以运算期间 USB、Spartan-6 和 local bus 上都没有主机流量。Spartan-6 自己的 3 MHz local bus 时钟（`lbus_clkn`，Kintex-7 管脚 AB11）是出厂设计一直在跑的，本设计不用它，但它会出现在 trace 的背景里；需要更干净的测量时，这是剩下的噪声源之一。
+
+Linux 前提：`ftdi_sio` 驱动（内核自带）会把通道 A 识别成 `/dev/ttyUSB0`。用户需要在 `dialout` 组里（或者用 udev 规则放开权限）。`LbusPort` 会尝试把 FTDI 的 latency timer 设成 1 ms，失败也能用，只是慢一些。
+
+SW3：Spartan-6 必须从它自己的 Flash 正常启动（出厂状态，上电后 LED11 心跳灯闪烁）。如果有人改写过 Spartan-6 的 Flash，用 `sasebo_giii/sasebo_giii_ctrl.mcs` 经 CN10 恢复。
+
+### 1.1 备用：CN8 外接 2.5 V USB-UART
+
+CN8.1（D19，FPGA 输入，带上拉）/ CN8.2（N17，FPGA 输出）仍然接着同一个系统（两条接收线相与，应答两边都发）。只在没有板载 USB 时用，一次只用一条链路。适配器必须是 **2.5 V** 电平：CN8 所在的 HR bank VCCO = 2.5 V，3.3 V 的 TXD 超出绝对最大值（VCCO + 0.55 V）。VCCIO 可以接 CN8.12（2.5 V），**不要**把适配器的电源输出接到 CN8.12。
 
 ---
 
 ## 2. 接线
 
-### 2.1 CN8 引脚（单排 14 针，Samtec TSW-114）
+### 2.1 CN8 引脚（单排 14 针）
 
 ```
   脚号:   1      2      3     4 … 10    11     12     13     14
         ┌──────┬──────┬──────┬────────┬──────┬──────┬──────┬──────┐
-        │ RX ← │ TX → │ TRIG │  ---   │ GND  │ 2.5V │ GND  │ VIN  │
+        │(RX)  │(TX)  │ TRIG │  ---   │ GND  │ 2.5V │ GND  │ VIN  │
         └──────┴──────┴──────┴────────┴──────┴──────┴──────┴──────┘
          D19    N17    N16              地     电源    地    危险！
 ```
 
-| CN8 | 信号 | FPGA 管脚 | 方向 | 接到 |
-| --- | ---- | --------- | ---- | ---- |
-| 1 | `uart_rxd` | D19 | FPGA 输入 | 适配器的 **TXD** |
-| 2 | `uart_txd` | N17 | FPGA 输出 | 适配器的 **RXD** |
-| 3 | `trig_out` | N16 | FPGA 输出 | 示波器触发探头针尖 |
-| 11 / 13 | GND | — | — | 适配器 GND、探头地夹 |
-| 12 | 2.5 V | — | 电源 | 只给适配器的 VCCIO / VIO **输入**脚（见 2.2） |
-| 14 | VIN | — | 电源 | **什么都不要接**（板子输入电源，规格书表 7 写作 “VIN (12V)”） |
+示波器触发：探头针尖接 **CN8.3**（从上往下第 3 针），地接 **CN8.13**（从下往上第 2 针）或 CN8.11。CN8.14 是 VIN，什么都不要接。第 1 脚以丝印为准（CN8 那一列旁边印着 “1”）。
 
-第 1 脚的位置以板上丝印为准。接线前用万用表确认（板子上电）：第 12 脚对第 11 脚应为 **+2.5 V**。读数不对就先别接。
+### 2.2 其他连接
 
-### 2.2 USB-UART 适配器必须是 2.5 V 电平
-
-CN8 所在的 bank 13/14/15 是 HR bank，VCCO = **2.5 V**。HR 引脚的输入电压绝对最大值是 VCCO + 0.55 V = **3.05 V**（DS182），**3.3 V 适配器的 TXD 直接接上会超出这个值**。Arty Z7 用的那个 3.3 V 适配器不能直接拿来用。
-
-可用的做法：
-
-- 带独立 VCCIO / VIO 引脚的适配器（FT232R、FT232H、CP2102N 等模块常有），VCCIO 接 CN8 第 12 脚（2.5 V），I/O 电平就是 2.5 V；
-- 3.3 V 适配器加一片双向电平转换（3.3 V ↔ 2.5 V）。
-
-**不要**把适配器自己的 3.3 V / 5 V 电源**输出**接到 CN8 第 12 脚。
+| 连接 | 接到 |
+| ---- | ---- |
+| USB 线 | CN15（供电 + 主机链路），SW1 = USB |
+| Platform Cable USB II | **CN5**（Kintex-7 JTAG，“Cryptographic FPGA Flash ROM Programming Connector”）。CN10 是 Spartan-6 的，不要动 |
 
 ### 2.3 开关
 
@@ -61,7 +84,7 @@ CN8 所在的 bank 13/14/15 是 HR bank，VCCO = **2.5 V**。HR 引脚的输入�
 | ---- | ---- | ---- |
 | SW1 | USB 或 EXT | 电源（规格书表 11） |
 | SW3.7 | **OFF**（出厂默认） | ON 会关掉 200 MHz 晶振，设计就没有时钟了 |
-| SW3.1–3 | 出厂默认 | Kintex-7 配置模式（默认 BPI）；JTAG 烧录不受影响 |
+| SW3.1–3 | 出厂默认（QSG：只有 SW3.2 ON） | Kintex-7 配置模式（BPI）；JTAG 烧录不受影响 |
 | SW4 | — | 本设计的复位键：按下时两个时钟域都复位，LED5 亮 |
 
 ---
@@ -86,7 +109,11 @@ vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs build/vi
 ```
 
 - JTAG 线接 **CN5**（Kintex-7）。CN10 是 Spartan-6 的 JTAG，接错了脚本会报 “no Kintex-7 found”。
-- Vivado 在 Docker 里、经 XVC 访问 JTAG 时，在 bitstream 后面加 XVC 地址，例如 `host.docker.internal:3721`。
+- 脚本会打印它看到的每个 JTAG target 和上面的器件，报错时把这段输出一起看。
+- **Linux + Platform Cable USB II**：Vivado 自带的线缆驱动要用 root 装一次（`<Vivado>/data/xicom/cable_drivers/lin64/install_script/install_drivers/install_drivers`），装完拔插线缆。固件加载后线缆灯变绿，`lsusb` 显示 `03fd:0008`。没装驱动时脚本会报 “hw_server sees no JTAG cable”。
+- 扫描链出错时降低 JTAG 时钟：第 2 个参数写 `-`，第 3 个参数是频率，例如 `-tclargs <bit> - 3000000`。
+- Vivado 在 Docker 里、经 XVC 访问 JTAG 时，第 2 个参数写 XVC 地址，例如 `host.docker.internal:3721`。
+- 不用 Vivado 也能烧：`openFPGALoader -c xilinxPlatformCableUsb <bit>`。
 - 这是易失性烧录：断电后 Kintex-7 会从板上 BPI Flash 重新配置（出厂内容），所以**每次上电都要重新烧录**。脚本不写 Flash。
 - 构建脚本会额外生成 `io_impl.rpt`（实际布局的引脚），接线前可以对照约束检查一遍。
 
@@ -108,14 +135,14 @@ vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs build/vi
 然后按 Arty 的流程走：
 
 ```bash
-make check PORT=/dev/cu.usbserial-XXXX
+make check PORT=sakura:/dev/ttyUSB0
 ```
 
 ```bash
-make acvp-uart PORT=/dev/cu.usbserial-XXXX
+make acvp-uart PORT=sakura:/dev/ttyUSB0
 ```
 
-先做链路自检，再跑 NIST ACVP 功能测试，全部通过后才开始采集。`XXXX` 是 2.5 V 适配器的串口，不是 SAKURA-X 自己的 USB。
+先做链路自检，再跑 NIST ACVP 功能测试，全部通过后才开始采集。`/dev/ttyUSB0` 是 SAKURA-X 板载 USB 的通道 A；用 CN8 外接适配器时直接写适配器的串口（不加 `sakura:`）。
 
 ---
 
@@ -160,7 +187,7 @@ IP 地址在同一页的 TCP/IP 栏（拍照时是 `192.168.0.174`，已写进 `
 
 下面几点按规格书和公开资料做了选择，第一次上板时请确认：
 
-1. **引脚**：来自规格书 v1.1 和 AMD 封装文件，没有在实物上逐个测过。接线前按 2.1 节用万用表确认 CN8 第 1 脚和第 12 脚。
+1. **引脚**：来自规格书 v1.1、AIST 参考设计和 AMD 封装文件，没有在实物上逐个测过。local bus 桥在仿真里对 AIST 原版控制器源码验证过（`make sim-sakura`），但还没上板。
 2. **时钟输入标准**：U16 按 LVDS 输入、不加片内端接，和一个公开的 SASEBO-GIII 设计相同（规格书信号名写的是 “HSTL”）。LED10 不亮且 SW3.7 已是 OFF 时，先怀疑这一点。
 3. **SW4 和 LED 的极性**：假设按键按下为低、LED 高电平点亮，分别由 `BTN_ACTIVE_LOW`、`LED_ACTIVE_LOW` 参数控制（判断方法见 4.1 节）。
 4. **时序**：还没有在 Vivado 里构建过。Kintex-7 −1 比 Artix-7 −1 快，206.25 MHz 应该比 Arty 上宽松，但以第一次构建的 WNS 为准。

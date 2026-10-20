@@ -7,16 +7,22 @@
 // citations: constraints.xdc (SASEBO-GIII Specification v1.1, Tables 13-20,
 // cross-checked against AMD's xc7k160tfbg676 package file).
 //
-// Host link: the board's own USB port (CN15, FT2232H) is wired only to the
-// Spartan-6 control FPGA (spec Table 26), not to the Kintex-7, so -- like the
-// pure-PL Arty Z7 build -- the UART goes to a header instead: an EXTERNAL
-// USB-UART adapter on the Kintex-7 GPIO header CN8. The host protocol
-// (docs/UART_PROTOCOL.md) and hdl/core/ are unchanged.
+// Host link: the board's own USB port (CN15, FT2232H channel A) through the
+// Spartan-6 control FPGA running its FACTORY bitstream (sasebo_giii_ctrl,
+// AIST). That bitstream turns USB bytes into accesses on the inter-FPGA local
+// bus; sakura_lbus_bridge turns those back into the byte stream of the host
+// protocol (docs/UART_PROTOCOL.md), which reaches mlkem_uart_system over a
+// fast internal serial line. The host opens the port as "sakura:<device>"
+// (cpa_toolkit/sakura_lbus.py). hdl/core/ is unchanged.
 //
-//   !! CN8 is in a 2.5 V bank (HR, VCCO = 2.5 V). The adapter must use
-//   !! 2.5 V I/O (e.g. an FTDI/CP210x breakout whose VCCIO/VIO is fed from
-//   !! CN8 pin 12 = 2.5 V). A 3.3 V adapter's TXD exceeds the pin's absolute
-//   !! maximum (VCCO + 0.55 V = 3.05 V, DS182). CN8 pin 14 is VIN, not logic.
+// Optional second link: an external 2.5 V USB-UART adapter on the Kintex-7
+// GPIO header CN8 (pins 1/2) still works -- both receive lines are ANDed
+// (idle high; CN8.1 has a pull-up) and the reply goes to both. Use one link
+// at a time.
+//
+//   !! CN8 is in a 2.5 V bank (HR, VCCO = 2.5 V). An adapter there must use
+//   !! 2.5 V I/O; 3.3 V exceeds the pin's absolute maximum (VCCO + 0.55 V).
+//   !! CN8 pin 14 is VIN, not logic.
 //
 // Clocks:
 //   clk200   200 MHz differential oscillator U16 (K_CLK_OSC1, pins AA3/AA2).
@@ -27,8 +33,11 @@
 //            AXI-Lite bus between the two (they are treated as asynchronous).
 //
 // Pins (constraints.xdc):
-//   - CN8.1 (D19) uart_rxd  FPGA input  <- adapter TXD
-//   - CN8.2 (N17) uart_txd  FPGA output -> adapter RXD
+//   - local bus to the Spartan-6 (lbus_*, pins from AIST's pin_sasebo_giii_k7.ucf)
+//   - J8 osc_en_b = 1 (K_CLK_INH_B: keep both 200 MHz oscillators running,
+//     as AIST's reference design does)
+//   - CN8.1 (D19) uart_rxd  FPGA input  <- optional adapter TXD
+//   - CN8.2 (N17) uart_txd  FPGA output -> optional adapter RXD
 //   - CN8.3 (N16) trig_out  scope trigger = STATUS.busy (2.5 V logic: trigger
 //                           level about 1.25 V); GND on CN8.11 or CN8.13
 //   - LED1-LED10 (led[0..9]), see the mapping below
@@ -60,7 +69,14 @@ module sakura_x_top #(
     input  logic       clk200_n,
     input  logic       pushsw,        // SW4 (K_PUSHSW): reset.
 
-    // UART via an external 2.5 V USB-UART adapter on CN8 (see above).
+    // Local bus from the Spartan-6 (board USB, see above).
+    input  logic [15:0] lbus_di_a,
+    input  logic        lbus_wrn,
+    input  logic        lbus_rdn,
+    output logic [15:0] lbus_do,
+    output logic        osc_en_b,     // J8, K_CLK_INH_B: 1 = oscillators on.
+
+    // Optional external 2.5 V USB-UART adapter on CN8 (see above).
     input  logic       uart_rxd,      // CN8.1, FPGA input.
     output logic       uart_txd,      // CN8.2, FPGA output.
 
@@ -134,6 +150,26 @@ module sakura_x_top #(
     // =========================================================================
     // UART, bridge, clock crossing, ML-KEM core, trigger and LEDs
     // =========================================================================
+    assign osc_en_b = 1'b1;
+
+    // Board USB: local bus <-> byte stream. The two receive lines are ANDed
+    // (both idle high); the system's reply goes to both links.
+    logic lbus_ser_tx, sys_rxd, sys_txd;
+
+    sakura_lbus_bridge #(.CLK_FREQ (CLK_FREQ)) u_lbus (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .lbus_di_a (lbus_di_a),
+        .lbus_wrn  (lbus_wrn),
+        .lbus_rdn  (lbus_rdn),
+        .lbus_do   (lbus_do),
+        .ser_tx    (lbus_ser_tx),
+        .ser_rx    (sys_txd)
+    );
+
+    assign sys_rxd  = lbus_ser_tx & uart_rxd;
+    assign uart_txd = sys_txd;
+
     logic [3:0] led_sys;
     logic [1:0] rgb_r, rgb_g;
     /* verilator lint_off UNUSEDSIGNAL */   // rgb_b[0]: see below
@@ -150,8 +186,8 @@ module sakura_x_top #(
         .clk_core   (clk_core),
         .core_rst_n (core_rst_n),
         .in_reset   (arst),
-        .uart_rxd   (uart_rxd),
-        .uart_txd   (uart_txd),
+        .uart_rxd   (sys_rxd),
+        .uart_txd   (sys_txd),
         .trig_out   (trig_out),
         .led        (led_sys),
         .rgb_r      (rgb_r),
