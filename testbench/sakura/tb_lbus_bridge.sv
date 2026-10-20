@@ -124,6 +124,19 @@ module tb_lbus_bridge;
         lb_wr(16'h0030, 16'h0003);
         lb_rd(16'h0002, d); expect16(10, d, 16'd0);
 
+        // The factory parser traps on invalid command bytes. Neither reading
+        // again nor a host-side input purge can reset that hardware state.
+        put(8'h7F); put(8'h00); put(8'h00);
+        repeat (50) @(negedge s_clk);
+        put(8'h00); put(8'hFF); put(8'hFC);
+        repeat (100) @(negedge s_clk);
+        if (!h_emp) $fatal(1, "unexpected reply while factory parser is trapped");
+        s_rst = 1;
+        repeat (5) @(negedge s_clk);
+        s_rst = 0;
+        repeat (5) @(negedge s_clk);
+        lb_rd(16'hFFFC, d); expect16(11, d, 16'h4D4B);
+
         if (errors == 0) $display("TB_LBUS_BRIDGE PASS");
         else             $display("TB_LBUS_BRIDGE FAIL (%0d errors)", errors);
         $finish;

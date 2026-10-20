@@ -32,3 +32,14 @@ $(OUT):
 
 clean:
 	rm -rf $(OUT)
+
+# Real board top + ML-KEM UART system, with functional vendor clock models.
+# Covers both directions and response CRC; USB hardware is not simulated.
+.PHONY: integration
+integration: | $(OUT)
+	$(IVERILOG) -g2012 -Wno-timescale -s tb_sakura_top_link -o $(OUT)/tb_sakura_top_link.vvp \
+	    tb_sakura_top_link.sv $(ROOT)/hdl/xilinx/sakura_x/*.sv $(ROOT)/hdl/core/*.sv \
+	    $(CTRL)/ctrl_lbus.v $(CTRL)/syncfifo_8x31.v
+	cd $(ROOT) && $(VVP) -n $(OUT)/tb_sakura_top_link.vvp > $(OUT)/tb_sakura_top_link.log
+	cat $(OUT)/tb_sakura_top_link.log
+	grep -q "TB_SAKURA_TOP_LINK PASS" $(OUT)/tb_sakura_top_link.log

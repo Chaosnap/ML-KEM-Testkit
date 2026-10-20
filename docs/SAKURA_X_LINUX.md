@@ -190,3 +190,28 @@ tclsh scripts/board/program_sakura_dual.tcl \
 ## 7. 本次打包验证范围
 
 固件源自现有构建输出和原版 AIST 参考包；打包过程中没有重新综合，也没有实板烧录。通过隔离目录的默认路径检查、文件哈希核对、烧录流程自动测试及 AIST 控制器对接仿真来确认仓库可搬运性。最终 GUI 连通性以 Linux 实板检查结果为准。
+
+
+## 通信故障定位（2026-10-20）
+
+本地总线桥原先使用 `CLK_FREQ / 16` 的内部串行速率，但顶层 ML-KEM UART 使用
+`BAUD_RATE`（默认 115200），导致 ID 可读而完整协议不通。顶层现在把同一个
+`BAUD_RATE` 传给两端；这不是电脑端 FTDI FIFO 的波特率设置。
+修复需要在 Vivado 重新运行 Synthesis、Implementation、Generate Bitstream，
+再通过 CN5 下载新生成的 `sakura_x_top.bit`。随附固件本次没有重新生成。
+`make -C testbench/sakura integration` 用真实顶层和协议模块验证往返帧及 CRC；
+仅 FPGA 时钟原语采用行为模型，不验证物理 USB、板级接线或实现时序。
+
+对于 ID 读取完全无回复，先关闭 GUI/串口终端，保持板子供电和 Kintex 配置，
+重新下载原厂 Spartan 控制器，然后仅执行：
+
+```bash
+.venv/bin/python scripts/board/sakura_link_check.py --port /dev/ttyUSB0
+```
+
+原厂 `CTRL_LBUS` 只接受命令 0x00/0x01；无效命令会让解析器停在 TRAP，直到
+控制器复位。错误地向普通 `/dev/ttyUSB0` 发送 GUI UART 帧可能触发该状态；
+正确 GUI 入口是 `sakura:/dev/ttyUSB0`。这只是可验证的原因之一，不能从超时
+单独认定它已经发生。原厂控制器还需要时钟锁定、外部复位释放、Kintex DONE
+为高才工作。LED11 应闪烁；仅 DONE 灯亮不能证明控制器或通信正常。
+不要根据 NO REPLY 推断 Flash 被覆盖，也不要先修改 EEPROM。

@@ -2,13 +2,15 @@
 """Where does the SAKURA-X board-USB link break? (FT2232H -> Spartan-6 -> Kintex-7)
 
 The GUI's ``sakura:`` port talks to the Spartan-6's factory control design through
-the FT2232H's channel A (245-FIFO mode). That design answers EVERY register read
-with two bytes, even when the Kintex-7 is blank, so a read that gets no reply at all
-means the problem is before the Kintex-7. This script checks, in order:
+the FT2232H's channel A (245-FIFO mode). The factory controller remains in reset
+until its clock locks, external reset is released, and Kintex-7 DONE is high.
+Once running, it returns two bytes per valid register read; an invalid command
+can latch its parser in TRAP until controller reset. No reply alone does not
+identify a faulty FPGA, EEPROM, or flash. This script checks, in order:
 
 1. which FTDI ports belong to the board, with the USB strings the FT2232H's EEPROM
-   reports (AIST's settings say "USB <-> Serial Converter"; a blank EEPROM says
-   "Dual RS232-HS" and leaves channel A in UART mode, where nothing answers);
+   reports (AIST's settings say "USB <-> Serial Converter"; "Dual RS232-HS" can
+   indicate default settings, but strings alone do not establish the mode);
 2. a raw read of the bridge's ID register (bytes 00 FF FC) on channel A, and on
    channel B in case the channels are swapped on this board;
 3. with --eeprom (needs pyftdi; detaches the ttyUSB driver, replug afterwards): the
@@ -64,8 +66,8 @@ def verdict(got: bytes, reads: int) -> str:
     words = [got[i:i + 2] for i in range(0, len(got), 2)]
     if all(w == BRIDGE_ID for w in words):
         return "OK: Spartan-6 answers and the Kintex-7 bridge returns its ID 0x4D4B"
-    return ("Spartan-6 ANSWERS, but the value is %s, not 4D 4B: the Kintex-7 is not running the "
-            "sakura_x_top bitstream with the local-bus bridge (reprogram it; a power cycle erases it)"
+    return ("Received data %s, not 4D 4B: check the selected port, stale data, Kintex-7 "
+            "bitstream, clock/reset and local-bus signals"
             % " ".join(w.hex() for w in words))
 
 
@@ -113,8 +115,7 @@ def main() -> int:
     for dev, iface, desc, sn, loc in ports:
         print("   %-14s interface %s  %s  serial %s  (%s)" % (dev, iface, desc, sn, loc))
     if any("Dual RS232" in d for _, _, d, _, _ in ports):
-        print("   ! 'Dual RS232-HS' = a blank / default EEPROM: channel A is in UART mode and the Spartan-6 "
-              "cannot answer. Program the EEPROM with AIST's sasebo_giii.xml (FT_Prog on Windows).")
+        print("   ! 'Dual RS232-HS' suggests default USB strings; verify channel A mode before changing EEPROM.")
 
     print("\n2. ID read (00 FF FC) x 3")
     targets = [a.port] if a.port else [d for d, *_ in ports]
@@ -134,13 +135,13 @@ def main() -> int:
         print("   %-14s %-28s %s" % (dev, got.hex(" ") or "-", v))
 
     if not answered:
-        print("\n   Nothing answered on any channel, so the Spartan-6 factory design is not responding:")
-        print("   - board LEDs: LED11 (Spartan-6) should blink about 3 times a second -- the factory design's heartbeat")
-        print("     (bit 19 of a counter on its 3 MHz clock); LED13 shows the Kintex-7 DONE.")
-        print("     Dark or steady: the Spartan-6 did not configure from its flash (XCF32P). Power-cycle the board;")
-        print("     if it stays dark, the flash was overwritten: restore AIST's sasebo_giii_ctrl.mcs through CN10.")
-        print("   - LED20 (Spartan-6, board reset) should be lit.")
-        print("   - FT2232H channel A must be in 245-FIFO mode: run again with --eeprom.")
+        print("\n   No reply: this does not prove failed programming or overwritten flash.")
+        print("   - Keep board power on: both current .bit downloads are volatile.")
+        print("   - Factory Spartan reset release requires clock lock, external reset and Kintex DONE.")
+        print("     Check LED13 (Kintex DONE), LED20 (external reset released), and LED11 (heartbeat must blink).")
+        print("   - Close GUI/other serial clients. Invalid raw UART commands can latch CTRL_LBUS in TRAP;")
+        print("     reset/reload the Spartan controller, then run this probe BEFORE reconnecting the GUI.")
+        print("   - Check FT2232H channel A is 245 FIFO; USB product strings alone do not prove the mode.")
     if a.eeprom:
         print("\n3. FT2232H EEPROM")
         eeprom_dump(0)

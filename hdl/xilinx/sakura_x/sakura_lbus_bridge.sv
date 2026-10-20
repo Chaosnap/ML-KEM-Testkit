@@ -22,7 +22,7 @@
 // This module turns that register bus back into a byte stream so the
 // unchanged host protocol (docs/UART_PROTOCOL.md) and mlkem_uart_system run
 // on top of it. Bytes cross to the system through a fast internal UART pair
-// (ser_tx / ser_rx at CLK_FREQ / 16) -- hdl/core is not touched.
+// (ser_tx / ser_rx at BAUD_RATE) -- hdl/core is not touched.
 //
 // Register map (16-bit addresses, as seen by the host, cpa_toolkit/sakura_lbus.py):
 //   write 0x0010  push DL                     (1 byte host -> FPGA)
@@ -37,6 +37,7 @@
 
 module sakura_lbus_bridge #(
     parameter int CLK_FREQ = 103_125_000,
+    parameter int BAUD_RATE = CLK_FREQ / 16, // Must match the connected system UART.
     parameter int F2H_AW   = 12,              // FPGA -> host FIFO: 4096 bytes (keygen output 3584 + frame)
     parameter int H2F_AW   = 11               // host -> FPGA FIFO: 2048 bytes
 ) (
@@ -54,7 +55,7 @@ module sakura_lbus_bridge #(
     input  logic        ser_rx                 // <- system uart_txd
 );
 
-    localparam int SER_BAUD = CLK_FREQ / 16;   // 16 clocks per bit, exact
+    localparam int SER_BAUD = BAUD_RATE;
     localparam logic [H2F_AW:0] H2F_DEPTH = 1 << H2F_AW;
     localparam logic [F2H_AW:0] F2H_DEPTH = 1 << F2H_AW;
 

@@ -12,7 +12,7 @@
 // AIST). That bitstream turns USB bytes into accesses on the inter-FPGA local
 // bus; sakura_lbus_bridge turns those back into the byte stream of the host
 // protocol (docs/UART_PROTOCOL.md), which reaches mlkem_uart_system over a
-// fast internal serial line. The host opens the port as "sakura:<device>"
+// internal serial line at BAUD_RATE. The host opens the port as "sakura:<device>"
 // (cpa_toolkit/sakura_lbus.py). hdl/core/ is unchanged.
 //
 // Optional second link: an external 2.5 V USB-UART adapter on the Kintex-7
@@ -156,7 +156,8 @@ module sakura_x_top #(
     // (both idle high); the system's reply goes to both links.
     logic lbus_ser_tx, sys_rxd, sys_txd;
 
-    sakura_lbus_bridge #(.CLK_FREQ (CLK_FREQ)) u_lbus (
+    // Share the baud rate with u_sys and the optional CN8 UART.
+    sakura_lbus_bridge #(.CLK_FREQ (CLK_FREQ), .BAUD_RATE (BAUD_RATE)) u_lbus (
         .clk       (clk),
         .rst_n     (rst_n),
         .lbus_di_a (lbus_di_a),
