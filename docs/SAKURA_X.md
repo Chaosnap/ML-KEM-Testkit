@@ -108,6 +108,7 @@ vivado -mode batch -source scripts/vivado/build_sakura_x.tcl
 vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs build/vivado/sakura-x_mlkem/pqc_mlkem_sakura_x.runs/impl_1/sakura_x_top.bit
 ```
 
+- **在 Vivado GUI 里**（Tcl Console）：构建完直接 `source <仓库>/scripts/vivado/program_sakura_x.tcl`，不需要参数。GUI 里没有 `-tclargs`，脚本会自动用当前打开工程 `impl_1` 生成的 `sakura_x_top.bit`（没有打开工程时用 `build/vivado/sakura-x_mlkem/` 下的那个）；烧完 Hardware Manager 保持打开。要换文件 / XVC / JTAG 频率，先 `set sakura_bit <文件>`、`set sakura_xvc <host:port>`、`set sakura_jtag_hz 3000000` 再 `source`。
 - JTAG 线接 **CN5**（Kintex-7）。CN10 是 Spartan-6 的 JTAG，接错了脚本会报 “no Kintex-7 found”。
 - 脚本会打印它看到的每个 JTAG target 和上面的器件，报错时把这段输出一起看。
 - **Linux + Platform Cable USB II**：Vivado 自带的线缆驱动要用 root 装一次（`<Vivado>/data/xicom/cable_drivers/lin64/install_script/install_drivers/install_drivers`），装完拔插线缆。固件加载后线缆灯变绿，`lsusb` 显示 `03fd:0008`。没装驱动时脚本会报 “hw_server sees no JTAG cable”。

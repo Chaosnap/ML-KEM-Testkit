@@ -32,32 +32,74 @@
 # Example:
 #   vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs \
 #       build/vivado/sakura-x_mlkem/pqc_mlkem_sakura_x.runs/impl_1/sakura_x_top.bit
+#
+# From the Vivado GUI Tcl console (no -tclargs there):
+#   source <repo>/scripts/vivado/program_sakura_x.tcl
+# programs the bitstream of the open SAKURA-X project's impl_1 run, or else
+# <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit. To choose another
+# file, cable or JTAG clock, set these before sourcing:
+#   set sakura_bit /path/to/file.bit ; set sakura_xvc host:port ; set sakura_jtag_hz 3000000
+# In the GUI the Hardware Manager is left open afterwards.
 
 proc fail {msg} {
     puts "ERROR: $msg"
     error $msg
 }
 
-if {$argc < 1} {
-    fail "usage: vivado -mode batch -source program_sakura_x.tcl -tclargs <bitstream.bit> \[xvc-url\]"
+# Arguments: -tclargs in batch mode; in the GUI (plain `source`, argc = 0) the
+# optional variables sakura_bit / sakura_xvc / sakura_jtag_hz, then defaults.
+set script_dir [file dirname [file normalize [info script]]]
+set repo_root  [file normalize [file join $script_dir .. ..]]
+set nargs [expr {[info exists argc] ? $argc : 0}]
+set args_ [expr {[info exists argv] ? $argv : {}}]
+set gui   [expr {[info exists ::rdi::mode] && $::rdi::mode eq "gui"}]
+
+proc default_bitstream {repo_root} {
+    # 1. the open project's own impl_1 run (the GUI right after build_sakura_x.tcl)
+    if {![catch {current_project} prj] && $prj ne "" && ![catch {get_runs impl_1} run] && $run ne ""} {
+        set f [file join [get_property DIRECTORY $run] sakura_x_top.bit]
+        if {[file exists $f]} { return $f }
+    }
+    # 2. where build_sakura_x.tcl puts it
+    return [file join $repo_root build vivado sakura-x_mlkem pqc_mlkem_sakura_x.runs impl_1 sakura_x_top.bit]
 }
-set bitstream [file normalize [lindex $argv 0]]
-set xvc       [expr {$argc >= 2 ? [lindex $argv 1] : ""}]
-set jtag_hz   [expr {$argc >= 3 ? [lindex $argv 2] : ""}]
+
+if {$nargs >= 1} {
+    set bitstream [lindex $args_ 0]
+    set xvc       [expr {$nargs >= 2 ? [lindex $args_ 1] : ""}]
+    set jtag_hz   [expr {$nargs >= 3 ? [lindex $args_ 2] : ""}]
+} else {
+    set bitstream [expr {[info exists sakura_bit] ? $sakura_bit : [default_bitstream $repo_root]}]
+    set xvc       [expr {[info exists sakura_xvc] ? $sakura_xvc : ""}]
+    set jtag_hz   [expr {[info exists sakura_jtag_hz] ? $sakura_jtag_hz : ""}]
+}
+set bitstream [file normalize $bitstream]
 if {$xvc eq "-"} { set xvc "" }
 regsub {^tcp:} $xvc {} xvc
 
 if {![file exists $bitstream]} {
-    fail "Bitstream file not found: $bitstream"
+    fail "bitstream not found: $bitstream -- build first (build_sakura_x.tcl), or pass it: -tclargs <file.bit> (batch) / set sakura_bit <file.bit> before sourcing (GUI)"
 }
 
 puts "=== PQC Test Kit - SAKURA-X programming (Kintex-7, JTAG CN5) ==="
 puts "Bitstream: $bitstream"
 
-open_hw_manager
-if {[catch {connect_hw_server -allow_non_jtag} msg]} {
-    close_hw_manager
-    fail "cannot start/connect hw_server: $msg (another Vivado or hw_server running? kill it and retry)"
+# Reuse a Hardware Manager / hw_server the GUI already has open.
+catch {open_hw_manager}
+if {[llength [get_hw_servers -quiet]] == 0} {
+    if {[catch {connect_hw_server -allow_non_jtag} msg]} {
+        fail "cannot start/connect hw_server: $msg (another Vivado or hw_server running? close it and retry)"
+    }
+}
+catch {close_hw_target}      ;# a target left open in the GUI would block opening another
+
+proc finish {gui} {
+    # batch: leave nothing running; GUI: keep the Hardware Manager open on the device
+    if {!$gui} {
+        catch {close_hw_target}
+        catch {disconnect_hw_server}
+        catch {close_hw_manager}
+    }
 }
 
 proc set_freq {hz} {
@@ -84,8 +126,7 @@ if {$xvc ne ""} {
     puts "JTAG targets found: [llength $targets]"
     foreach target $targets { puts "  $target" }
     if {[llength $targets] == 0} {
-        disconnect_hw_server
-        close_hw_manager
+        finish 0
         fail "hw_server sees no JTAG cable. Linux: install the cable driver (see the header of this script), replug the cable, check `lsusb` for 03fd:0008; the cable LED must be green with the board powered."
     }
     foreach target $targets {
@@ -106,9 +147,8 @@ if {$xvc ne ""} {
 }
 
 if {$device eq ""} {
-    disconnect_hw_server
-    close_hw_manager
-    fail "no Kintex-7 found on any JTAG target: the ribbon must be on CN5 (Kintex-7, next to the SMA connectors), not CN10 (Spartan-6); board power SW1 on; for an empty chain or scan errors try a lower jtag-hz (3rd argument, e.g. 3000000)"
+    finish 0
+    fail "no Kintex-7 found on any JTAG target: the ribbon must be on CN5 (Kintex-7, next to the SMA connectors), not CN10 (Spartan-6); board power SW1 on; for an empty chain or scan errors try a lower jtag-hz (3rd -tclarg, or set sakura_jtag_hz, e.g. 3000000)"
 }
 
 current_hw_device $device
@@ -121,9 +161,7 @@ if {[catch {program_hw_devices $device} msg]} {
     puts "program_hw_devices failed: $msg"
     puts "  - 'part mismatch' / IDCODE: the bitstream was built for another part (build_sakura_x.tcl 2nd argument)"
     puts "  - 'End of startup status: LOW' / DONE low: corrupt / wrong bitstream file, or JTAG signal integrity -- re-run with a lower jtag-hz"
-    close_hw_target
-    disconnect_hw_server
-    close_hw_manager
+    finish 0
     fail "programming failed"
 }
 refresh_hw_device -update_hw_probes false $device
@@ -134,7 +172,4 @@ if {$done ne "1"} {
     puts "WARNING: DONE did not go high -- the bitstream may be for another part."
 }
 puts "Programming complete. LED10 should be lit (MMCM locked), LED4 blinking (heartbeat)."
-
-close_hw_target
-disconnect_hw_server
-close_hw_manager
+finish $gui
