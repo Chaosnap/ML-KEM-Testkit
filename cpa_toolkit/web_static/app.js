@@ -1623,22 +1623,34 @@ function showTab(kind, t, draw) {
   else window.dispatchEvent(new Event("resize"));
 }
 // The cycle offset most coefficients agreed on, with how strong that agreement was: a real
-// alignment piles up on one value, noise spreads over the whole search.
+// alignment piles up on one value, noise spreads roughly evenly over the whole search (chance
+// agreement is about 1 / number-of-offsets-searched). Returns {text, weak}.
 function bestOffset(f) {
   const h = Object.entries(f.offset_histogram || {}).sort((a, b) => b[1] - a[1]);
-  if (!h.length) return "—";
+  const nOff = (f.offsets_searched || []).length || 1;
+  if (!h.length) return { text: "—", weak: true };
   const total = h.reduce((a, [, n]) => a + n, 0);
-  return `${+h[0][0] >= 0 ? "+" : ""}${h[0][0]} (${Math.round((100 * h[0][1]) / total)}% of coefficients)`;
+  const share = h[0][1] / total;
+  const chance = 1 / nOff;
+  const text = `${+h[0][0] >= 0 ? "+" : ""}${h[0][0]} (${Math.round(100 * share)}% of coefficients)`;
+  // "weak" when the winning offset barely beats chance agreement (no real pile-up) or sits on
+  // the edge of the searched range (the true offset may be outside it) -- either way this run
+  // found no reliable alignment, so its correlations cannot be trusted at face value.
+  const railed = f.offsets_railed || String(h[0][0]) === String(Math.min(...(f.offsets_searched || [0])))
+    || String(h[0][0]) === String(Math.max(...(f.offsets_searched || [0])));
+  return { text, weak: share < 2.5 * chance || (railed && share < 0.5) };
 }
 function reportHead(r) {
   const mc = r.model_config || {};
+  const off = r.features ? bestOffset(r.features) : null;
   const chips = r.kind === "cpa"
     ? [chip("model", r.model || "?"),
        ...(r.features
          ? [chip("feature", `${r.features.mode} · ${r.features.rows} cycles/coefficient`),
-            chip("cycle offset", bestOffset(r.features))]
+            chip("cycle offset", off.weak ? off.text + " — no real alignment found" : off.text, off.weak ? "bad" : "good")]
          : [chip("register / R_prev", `${r.target} / ${r.rprev || "—"}`)]),
-       chip("scoring", r.oracle_assisted ? "true key (oracle-assisted)" : "blind", r.oracle_assisted ? "warn" : ""), chip("traces", r.n_traces_used)]
+       chip("scoring", r.oracle_assisted ? "true key (oracle-assisted)" : "blind", r.oracle_assisted ? "warn" : ""), chip("traces", r.n_traces_used),
+       ...(r.n_uninformative ? [chip("no key info", `${r.n_uninformative} of ${(r.results || []).length} coefficients`, "bad")] : [])]
     : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold)];
   chips.push(chip("analysed", fmtDate(r.analysis_timestamp_unix)));
   return `<div class="report-head">${modeBadge(r.kind)}<span class="title">${r.kind === "cpa" ? "CPA key recovery" : "TVLA leakage assessment"}</span><div class="chips">${chips.join("")}</div></div>`;
@@ -1653,10 +1665,13 @@ function detailsKv(r) {
        ...(r.features ? [["Trace feature", `${r.features.mode}, one per core clock cycle (${r.features.rows} cycles per coefficient)`],
                          ["Cycle offset", Object.entries(r.features.offset_histogram || {}).sort((a, b) => b[1] - a[1])
                            .slice(0, 3).map(([o, n]) => `${o >= 0 ? "+" : ""}${o} (${n})`).join(", ") +
-                           ` of ${(r.features.offsets_searched || []).length} searched`]]
+                           ` of ${(r.features.offsets_searched || []).length} searched` +
+                           (bestOffset(r.features).weak ? " — no pile-up: alignment not found, treat correlations as unreliable" : "")]]
                       : [["Register / R_prev", `${r.target} / ${r.rprev || "—"}`]]),
        ["Scoring", r.oracle_assisted ? "oracle-assisted (true key)" : "blind"], ["Traces used", r.n_traces_used], ["Candidates", r.n_candidates],
-       ["Coefficients", r.coefficients_attacked ?? (r.results || []).length], ["Chance rank (mean)", r.chance_rank_mean], ["Model version", r.model_version]]
+       ["Coefficients", r.coefficients_attacked ?? (r.results || []).length],
+       ...(r.n_uninformative ? [["Coefficients with no key info", `${r.n_uninformative} of ${(r.results || []).length} -- the ciphertexts used, not the model (see Gotchas)`]] : []),
+       ["Chance rank (mean)", r.chance_rank_mean], ["Model version", r.model_version]]
     : [["Fixed / random", `${r.n_fixed} / ${r.n_random}`], ["Threshold", "|t| > " + r.leakage_threshold], ["max |t|", r.max_abs_t?.toFixed(3)]];
   return common.concat(specific, [["Analysed", fmtDate(r.analysis_timestamp_unix)], ["Job", r.job_id], ["Report file", String(r.report_path || "").split("/").pop()],
     ["Results CSV", r.results_csv ? String(r.results_csv).split("/").pop() : "—"], ["Curve CSV", r.curve?.curve_csv ? String(r.curve.curve_csv).split("/").pop() : "—"]]);
@@ -1666,8 +1681,15 @@ function detailsKv(r) {
 function renderCPA(r) {
   cur = r; insp = null; ccCache.clear(); anDrawn = new Set();
   const oracle = r.oracle_assisted, rows = r.results || [];
-  const best = rows.map((x) => x.best_corr);
-  const mean = best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0;
+  // prefer the server's mean/max (computed over informative coefficients only, see cpa_attack.py
+  // _score_summary); fall back to a client-side calc over everything for older saved reports that
+  // predate those fields (which then still includes the forced best_corr=0 of uninformative rows)
+  const infoRows = rows.filter((x) => x.informative !== false);
+  const best = infoRows.map((x) => x.best_corr);
+  const mean = "mean_best_corr" in r ? r.mean_best_corr : (best.length ? best.reduce((a, b) => a + b, 0) / best.length : 0);
+  const maxCorr = "max_best_corr" in r ? r.max_best_corr : (best.length ? Math.max(...best) : 0);
+  const floor = r.noise_floor_corr;
+  const aboveFloor = floor != null && mean > 1.5 * floor;
   heatMetric = oracle ? "rank" : "corr";
   const t = tabsHtml("cpa", [["map", "Key map"], ["conv", r.curve ? "Convergence" : "Distribution"], ["table", "Coefficients"], ["models", "Compare models"], ["details", "Details"]]);
   const pan = (id, html) => `<div class="tab-panel ${id === t.active ? "active" : ""}" data-t="${id}">${html}</div>`;
@@ -1696,8 +1718,9 @@ function renderCPA(r) {
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
   kpis("cpa-kpis", [["traces used", r.n_traces_used, modelTxt(r)],
     oracle ? ["recovered (rank 1)", pct(r.rank1_fraction), `${rows.filter((x) => x.true_rank === 1).length} of ${rows.length} coefficients`, r.rank1_fraction > 0 ? "bad" : "good"] : ["mode", "blind", "no key used"],
-    oracle ? ["median true rank", Math.round(r.median_true_rank), `of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean || r.n_candidates / 2)})`] : ["mean peak |ρ|", mean.toFixed(3), "best guess per coefficient"],
-    oracle ? ["mean |ρ| (true key)", r.mean_true_corr.toFixed(3)] : ["max peak |ρ|", best.length ? Math.max(...best).toFixed(3) : "—"],
+    oracle ? ["median true rank", Math.round(r.median_true_rank), `of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean || r.n_candidates / 2)})`]
+           : ["mean peak |ρ|", mean.toFixed(3), floor != null ? `noise floor ≈ ${floor.toFixed(3)} — ${aboveFloor ? "above it" : "AT OR BELOW IT: no signal"}` : "best guess per coefficient", floor != null ? (aboveFloor ? "good" : "bad") : ""],
+    oracle ? ["mean |ρ| (true key)", r.mean_true_corr.toFixed(3)] : ["max peak |ρ|", best.length ? maxCorr.toFixed(3) : "—"],
     r.curve ? ["MTD", r.curve.mtd ?? "not reached", "traces to disclosure", r.curve.mtd ? "bad" : "good"] : null]);
   $("an-tabs").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => showTab("cpa", b.dataset.t, drawCPATab)));
   anDrawn.add(t.active); drawCPATab(t.active);

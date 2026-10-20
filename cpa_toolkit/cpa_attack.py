@@ -104,6 +104,16 @@ def informative(hyp: np.ndarray) -> bool:
     return bool(d.shape[1] > 1 and np.ptp(d, axis=1).max() > 1e-9)
 
 
+def noise_floor_corr(n_traces: int, n_candidates: int, trials: int) -> float:
+    """The |rho| a purely random hypothesis reaches at least once, over ``trials`` independent
+    (candidate, sample) comparisons, for ``n_traces`` traces -- the level ``best_corr`` must clear
+    before a peak means anything. ``n_candidates`` is kept as an explicit argument for callers that
+    want to derive ``trials`` from it, even though only ``trials`` enters the formula.
+    """
+    del n_candidates  # documents the usual trials = n_candidates * samples(_* offsets); not used directly
+    return float(np.sqrt(2 * np.log(max(trials, 2)) / max(n_traces, 1)))
+
+
 def attack_coefficient(model: LM.LeakageModel, guess: LM.Guess, rprev: str, traces: np.ndarray,
                         candidates: np.ndarray) -> dict:
     """CPA over one secret coefficient; returns peak correlation per candidate."""
@@ -229,6 +239,13 @@ def _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets
                 results.append({k: v for k, v in res.items() if k not in ("candidates", "peak_per_cand")})
                 if progress_cb:
                     progress_cb(len(results), R.K * n_coeffs)
+    # a representative row count for the report: the MODE over informative coefficients, not
+    # results[0] -- coefficient 0 of every polynomial is a degenerate case in blind mode (word 0's
+    # only causal-safe transition needs a "previous word" that does not exist yet), so it always
+    # has 0 rows; reading the stat from it would make every blind pipe_* report claim "0 cycles"
+    # regardless of what the other 765 coefficients actually used.
+    row_counts = [r_["rows"] for r_ in results if r_.get("informative", True)]
+    rows_typical = int(np.bincount(row_counts).argmax()) if row_counts else 0
     hist = {int(o): int(c) for o, c in zip(*np.unique(offs, return_counts=True))} if offs else {}
     # A best offset piling up on the first or last value searched means the real alignment is
     # outside the range: the search is railing, not converging, and every row is then read from
@@ -247,13 +264,13 @@ def _run_aligned(h5_path, model, max_traces, plot_dir, dk_ref, features, offsets
         "coefficients_per_poly": n_coeffs, "results": results,
         "features": {"mode": mode, "phase_samples": infos[0]["phase"], "samples_per_cycle": infos[0]["samples_per_cycle"],
                      "offsets_searched": list(offsets), "offset_histogram": hist, "unit": "row",
-                     "offsets_railed": railed, "rows": results[0]["rows"] if results else 0},
+                     "offsets_railed": railed, "rows": rows_typical},
     }
-    _score_summary(summary, results, s_hat is not None)
+    _score_summary(summary, results, s_hat is not None, n_ok)
     return summary
 
 
-def _score_summary(summary: dict, results: list, scored: bool) -> None:
+def _score_summary(summary: dict, results: list, scored: bool, n_traces: int = 0) -> None:
     """The rank statistics of an oracle-assisted run, added to ``summary`` in place.
 
     Coefficients the campaign cannot discriminate (:func:`informative`) are counted separately
@@ -268,6 +285,18 @@ def _score_summary(summary: dict, results: list, scored: bool) -> None:
         for r_ in dead:
             per_poly[r_["poly"]] = per_poly.get(r_["poly"], 0) + 1
         summary["uninformative_per_poly"] = per_poly
+    best = [r_["best_corr"] for r_ in results if r_.get("informative", True)]
+    if best and n_traces:
+        ft = summary.get("features")
+        rows = ft["rows"] if ft else 1
+        trials = R.Q * (len(ft["offsets_searched"]) if ft else 4400)
+        summary["mean_best_corr"] = float(np.mean(best))
+        summary["max_best_corr"] = float(np.max(best))
+        # attack_coefficient's best_corr for an aligned model is the MEAN over `rows` independent
+        # correlations (see its docstring), so the single-row noise floor shrinks by sqrt(rows)
+        # before it is comparable with mean_best_corr -- same as the expected peak of any mean of
+        # noisy samples.
+        summary["noise_floor_corr"] = noise_floor_corr(n_traces, R.Q, trials) / np.sqrt(rows if ft else 1)
     n_scored = sum(1 for r_ in results if r_["true_rank"] is not None)
     if scored and n_scored:
         ranks = [r_["true_rank"] for r_ in results if r_["true_rank"] is not None]
@@ -360,7 +389,7 @@ def run_attack(h5_path: str, model, rprev: str, max_traces: int, plot_dir: str |
         "coefficients_per_poly": 256 if coeffs <= 0 else min(256, coeffs),
         "results": results,
     }
-    _score_summary(summary, results, s_hat is not None)
+    _score_summary(summary, results, s_hat is not None, n_ok)
     return summary
 
 
@@ -669,14 +698,13 @@ def main():
               % (", ".join("%+d (%d)" % kv for kv in top), len(ft["offsets_searched"])))
         if ft.get("offsets_railed"):
             print("WARNING:         %s" % ft["offsets_railed"])
-    best = [r_["best_corr"] for r_ in summary["results"]]
-    if best:
-        # the largest |rho| of pure noise over G guesses x T samples (x offsets) for n traces
-        t = ft["rows"] if ft else 1
-        trials = R.Q * (len(ft["offsets_searched"]) if ft else 4400)
-        print("peak |rho|:      mean %.3f, max %.3f   (noise alone gives about %.3f at this trace count%s)"
-              % (np.mean(best), np.max(best), np.sqrt(2 * np.log(trials) / (summary["n_traces_used"] * t)),
-                 ", averaged over %d rows" % t if ft else ""))
+    if "mean_best_corr" in summary:
+        floor = summary["noise_floor_corr"]
+        over = summary["mean_best_corr"] > 1.5 * floor
+        print("peak |rho|:      mean %.3f, max %.3f   (noise alone gives about %.3f at this trace count%s)  %s"
+              % (summary["mean_best_corr"], summary["max_best_corr"], floor,
+                 ", averaged over %d rows" % ft["rows"] if ft else "",
+                 "-- above the noise floor" if over else "-- AT OR BELOW THE NOISE FLOOR: no reliable signal yet"))
     if summary["oracle_assisted"]:
         print("\n################################################################")
         print("# ORACLE-ASSISTED EVALUATION (--dk-ref given)")
