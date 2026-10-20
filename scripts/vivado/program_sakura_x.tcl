@@ -43,6 +43,8 @@
 
 proc fail {msg} {
     puts "ERROR: $msg"
+    puts "RESULT: FAILED"
+    flush stdout
     error $msg
 }
 
@@ -144,7 +146,8 @@ refresh_hw_device -update_hw_probes false $device
 set_property PROGRAM.FILE $bitstream $device
 set_property PROBES.FILE {} $device
 
-puts "Programming device: [get_property NAME $device] ([get_property PART $device])..."
+puts "Programming device: [get_property NAME $device] ([get_property PART $device]) -- takes about 5 s, started [clock format [clock seconds] -format %H:%M:%S] ..."
+flush stdout
 if {[catch {program_hw_devices $device} msg]} {
     puts "program_hw_devices failed: $msg"
     puts "  - 'part mismatch' / IDCODE: the bitstream was built for another part (build_sakura_x.tcl 2nd argument)"
@@ -156,8 +159,10 @@ refresh_hw_device -update_hw_probes false $device
 set done [get_property REGISTER.IR.BIT5_DONE $device]
 puts "DONE pin: $done"
 if {$done ne "1"} {
-    puts "WARNING: DONE did not go high -- the bitstream may be for another part."
+    fail "DONE did not go high after programming -- the bitstream may be for another part"
 }
 puts "Programming complete. LED10 should be lit (MMCM locked), LED4 blinking (heartbeat)."
+puts "RESULT: OK -- Kintex-7 configured with [file tail $bitstream] (DONE = 1)"
+flush stdout
 # Nothing is closed here: batch mode exits Vivado after the script anyway, and in the GUI
 # the Hardware Manager stays open on the device.
