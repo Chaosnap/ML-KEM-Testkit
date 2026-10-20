@@ -39,7 +39,7 @@
 # <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit. To choose another
 # file, cable or JTAG clock, set these before sourcing:
 #   set sakura_bit /path/to/file.bit ; set sakura_xvc host:port ; set sakura_jtag_hz 3000000
-# In the GUI the Hardware Manager is left open afterwards.
+# The Hardware Manager is left open afterwards. `source -notrace` hides the echo of every line.
 
 proc fail {msg} {
     puts "ERROR: $msg"
@@ -52,7 +52,6 @@ set script_dir [file dirname [file normalize [info script]]]
 set repo_root  [file normalize [file join $script_dir .. ..]]
 set nargs [expr {[info exists argc] ? $argc : 0}]
 set args_ [expr {[info exists argv] ? $argv : {}}]
-set gui   [expr {[info exists ::rdi::mode] && $::rdi::mode eq "gui"}]
 
 proc default_bitstream {repo_root} {
     # 1. the open project's own impl_1 run (the GUI right after build_sakura_x.tcl)
@@ -93,15 +92,6 @@ if {[llength [get_hw_servers -quiet]] == 0} {
 }
 catch {close_hw_target}      ;# a target left open in the GUI would block opening another
 
-proc finish {gui} {
-    # batch: leave nothing running; GUI: keep the Hardware Manager open on the device
-    if {!$gui} {
-        catch {close_hw_target}
-        catch {disconnect_hw_server}
-        catch {close_hw_manager}
-    }
-}
-
 proc set_freq {hz} {
     if {$hz eq ""} { return }
     if {[catch {set_property PARAM.FREQUENCY $hz [current_hw_target]} msg]} {
@@ -126,7 +116,6 @@ if {$xvc ne ""} {
     puts "JTAG targets found: [llength $targets]"
     foreach target $targets { puts "  $target" }
     if {[llength $targets] == 0} {
-        finish 0
         fail "hw_server sees no JTAG cable. Linux: install the cable driver (see the header of this script), replug the cable, check `lsusb` for 03fd:0008; the cable LED must be green with the board powered."
     }
     foreach target $targets {
@@ -147,7 +136,6 @@ if {$xvc ne ""} {
 }
 
 if {$device eq ""} {
-    finish 0
     fail "no Kintex-7 found on any JTAG target: the ribbon must be on CN5 (Kintex-7, next to the SMA connectors), not CN10 (Spartan-6); board power SW1 on; for an empty chain or scan errors try a lower jtag-hz (3rd -tclarg, or set sakura_jtag_hz, e.g. 3000000)"
 }
 
@@ -161,7 +149,6 @@ if {[catch {program_hw_devices $device} msg]} {
     puts "program_hw_devices failed: $msg"
     puts "  - 'part mismatch' / IDCODE: the bitstream was built for another part (build_sakura_x.tcl 2nd argument)"
     puts "  - 'End of startup status: LOW' / DONE low: corrupt / wrong bitstream file, or JTAG signal integrity -- re-run with a lower jtag-hz"
-    finish 0
     fail "programming failed"
 }
 refresh_hw_device -update_hw_probes false $device
@@ -172,4 +159,5 @@ if {$done ne "1"} {
     puts "WARNING: DONE did not go high -- the bitstream may be for another part."
 }
 puts "Programming complete. LED10 should be lit (MMCM locked), LED4 blinking (heartbeat)."
-finish $gui
+# Nothing is closed here: batch mode exits Vivado after the script anyway, and in the GUI
+# the Hardware Manager stays open on the device.
