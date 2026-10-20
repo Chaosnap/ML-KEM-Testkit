@@ -42,10 +42,11 @@ module tb_sakura_top_link;
     logic clk200 = 0;
     always #2.5 clk200 = ~clk200;
     wire [15:0] k_do;
+    wire [9:0] leds;
     sakura_x_top dut (
-        .clk200_p(clk200), .clk200_n(~clk200), .pushsw(!s_rst),
+        .clk200_p(clk200), .clk200_n(~clk200), .pushsw(s_rst),
         .lbus_di_a(k_di_a), .lbus_wrn(k_wrn), .lbus_rdn(k_rdn), .lbus_do(k_do),
-        .uart_rxd(1'b1), .uart_txd(), .osc_en_b(), .trig_out(), .led());
+        .uart_rxd(1'b1), .uart_txd(), .osc_en_b(), .trig_out(), .led(leds));
     assign #5 lbus_do = k_do;
 
     // ---------------- host model ----------------
@@ -75,8 +76,14 @@ module tb_sakura_top_link;
     int n = 0;
     initial begin
         repeat (10) @(negedge s_clk);
+        // SASEBO-GIII schematic p.54: SW4 pulls K_PUSHSW high when pressed;
+        // R212 pulls it low when released. Do not derive this from DUT polarity.
+        if (leds[4] !== 1'b1 || leds[9] !== 1'b0)
+            $fatal(1, "pressed SW4 must assert reset and unlock the MMCM");
         s_rst = 0;
         repeat (100) @(negedge s_clk);
+        if (leds[4] !== 1'b0 || leds[9] !== 1'b1)
+            $fatal(1, "released SW4 must release reset and allow MMCM lock");
         lb_rd(16'hFFFC, d);
         if (d !== 16'h4D4B) $fatal(1, "bridge ID: %04x", d);
         $display("bridge ID OK; testing full protocol path");

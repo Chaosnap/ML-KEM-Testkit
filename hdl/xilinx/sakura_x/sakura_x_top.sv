@@ -35,13 +35,13 @@
 // Pins (constraints.xdc):
 //   - local bus to the Spartan-6 (lbus_*, pins from AIST's pin_sasebo_giii_k7.ucf)
 //   - J8 osc_en_b = 1 (K_CLK_INH_B: keep both 200 MHz oscillators running,
-//     as AIST's reference design does)
+//     AES reference uses the local-bus clock and disables these oscillators)
 //   - CN8.1 (D19) uart_rxd  FPGA input  <- optional adapter TXD
 //   - CN8.2 (N17) uart_txd  FPGA output -> optional adapter RXD
 //   - CN8.3 (N16) trig_out  scope trigger = STATUS.busy (2.5 V logic: trigger
 //                           level about 1.25 V); GND on CN8.11 or CN8.13
 //   - LED1-LED10 (led[0..9]), see the mapping below
-//   - SW4 (L23) reset push switch, pressed = low (BTN_ACTIVE_LOW)
+//   - SW4 (L23) reset push switch, pressed = high (schematic p.54, R212 pull-down)
 //
 // LEDs (status_leds.sv with N_RGB = 2; SAKURA-X has no RGB LEDs, so each
 // colour channel of the two "RGB" indicators gets its own LED):
@@ -51,7 +51,7 @@
 //   LED7       host link: flash per reply frame (RGB 1 blue)
 //   LED8       host link: rejected frame, 0.5 s (RGB 1 red)
 //   LED9       0x05 completion notice flash (RGB 1 green)
-//   LED10      MMCM locked (static; dark = no 200 MHz clock -- check SW3.7)
+//   LED10      MMCM locked (static; dark = reset or unlocked clock -- check SW4/SW3.7)
 // Like on the Arty boards, nothing here switches while the core is busy.
 //
 // Build:
@@ -62,7 +62,7 @@
 module sakura_x_top #(
     parameter int CLK_FREQ       = 103_125_000,   // clk: MMCM CLKOUT1
     parameter int BAUD_RATE      = 115200,
-    parameter bit BTN_ACTIVE_LOW = 1'b1,          // SW4: pressed = 0
+    parameter bit BTN_ACTIVE_LOW = 1'b0,          // SW4: pressed = 1, released = 0
     parameter bit LED_ACTIVE_LOW = 1'b0           // LED1-LED10: 1 = lit
 ) (
     input  logic       clk200_p,      // 200 MHz oscillator U16, differential.

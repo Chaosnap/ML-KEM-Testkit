@@ -215,3 +215,12 @@ tclsh scripts/board/program_sakura_dual.tcl \
 单独认定它已经发生。原厂控制器还需要时钟锁定、外部复位释放、Kintex DONE
 为高才工作。LED11 应闪烁；仅 DONE 灯亮不能证明控制器或通信正常。
 不要根据 NO REPLY 推断 Flash 被覆盖，也不要先修改 EEPROM。
+
+
+### SW4 复位极性修正
+
+规格书第 54 页原理图显示：K_PUSHSW 通过 R212 下拉，SW4 按下时接 VCC2V5，
+因此是高有效按钮。顶层的 `BTN_ACTIVE_LOW` 默认值已从 1 改为 0。
+旧设计会在按钮松开时一直复位，表现为 LED5 亮、LED10 灭；仅下载成功并不能
+保证逻辑运行。旧设计上按住 SW4 可作为短时诊断，正式使用需重新生成 Kintex
+bitstream。新设计应松开 SW4 运行、按下复位。仿真按钮电平也已按原理图修正。

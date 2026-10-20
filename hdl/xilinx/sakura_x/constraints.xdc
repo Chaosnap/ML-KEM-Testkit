@@ -29,10 +29,9 @@ set_clock_groups -asynchronous \
     -group [get_clocks -of_objects [get_pins u_mmcm/CLKOUT0]]
 
 ## -----------------------------------------------------------------------------
-## Reset: user push switch SW4 (Table 17: K_PUSHSW = L23), pressed = low
-## (sakura_x_top BTN_ACTIVE_LOW = 1). If LED5 stays lit after programming,
-## the switch is active-high on your board: set BTN_ACTIVE_LOW to 0.
-## -----------------------------------------------------------------------------
+## Reset: SW4, K_PUSHSW = L23 (Table 17; schematic p.54).
+## R212 pulls the signal to GND; pressing SW4 connects it to VCC2V5.
+## Active HIGH: sakura_x_top BTN_ACTIVE_LOW must default to 0.
 set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
 
 ## -----------------------------------------------------------------------------
