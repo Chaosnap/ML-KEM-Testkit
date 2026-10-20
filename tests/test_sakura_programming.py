@@ -91,6 +91,23 @@ fi
         self.assertIn("DRY RUN OK", p.stdout)
         self.assertFalse(self.log.exists())
 
+    def test_spartan_only_does_not_program_kintex(self):
+        single = ROOT / "scripts/board/program_sakura_spartan6.tcl"
+        p = subprocess.run(["tclsh", str(single), str(self.ctrl)],
+                           input="CN10\n", text=True, capture_output=True, env=self.env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--index-chain 1 --write-sram", calls[1])
+        self.assertNotIn(str(self.main), self.log.read_text())
+
+    def test_spartan_only_rejects_kintex_image_before_cable_access(self):
+        single = ROOT / "scripts/board/program_sakura_spartan6.tcl"
+        p = subprocess.run(["tclsh", str(single), str(self.main)],
+                           input="CN10\n", text=True, capture_output=True, env=self.env)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertFalse(self.log.exists())
+
     def test_bundle_defaults_work_outside_repository(self):
         # Model a clone without build/ or the author's external Downloads tree.
         clone = self.root / "clone with spaces"

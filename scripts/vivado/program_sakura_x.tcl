@@ -36,7 +36,8 @@
 # From the Vivado GUI Tcl console (no -tclargs there):
 #   source <repo>/scripts/vivado/program_sakura_x.tcl
 # programs the bitstream of the open SAKURA-X project's impl_1 run, or else
-# <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit. To choose another
+# <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit, falling back to
+# <repo>/firmware/sakura_x/sakura_x_top.bit on a fresh clone. To choose another
 # file, cable or JTAG clock, set these before sourcing:
 #   set sakura_bit /path/to/file.bit ; set sakura_xvc host:port ; set sakura_jtag_hz 3000000
 # The Hardware Manager is left open afterwards. `source -notrace` hides the echo of every line.
@@ -62,7 +63,10 @@ proc default_bitstream {repo_root} {
         if {[file exists $f]} { return $f }
     }
     # 2. where build_sakura_x.tcl puts it
-    return [file join $repo_root build vivado sakura-x_mlkem pqc_mlkem_sakura_x.runs impl_1 sakura_x_top.bit]
+    set built [file join $repo_root build vivado sakura-x_mlkem pqc_mlkem_sakura_x.runs impl_1 sakura_x_top.bit]
+    if {[file isfile $built]} { return $built }
+    # 3. portable prebuilt image tracked in Git (no Vivado build required)
+    return [file join $repo_root firmware sakura_x sakura_x_top.bit]
 }
 
 if {$nargs >= 1} {

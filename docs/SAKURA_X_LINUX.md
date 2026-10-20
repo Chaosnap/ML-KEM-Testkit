@@ -15,7 +15,8 @@ git status --short
 git add .gitattributes README.md CLAUDE.md THIRD_PARTY_NOTICES.md \
   firmware/sakura_x third_party/aist_sasebo_giii \
   docs/SAKURA_X.md docs/SAKURA_X_LINUX.md \
-  scripts/board/program_sakura_dual.tcl scripts/board/sakura_link_check.py \
+  scripts/board/program_sakura_dual.tcl scripts/board/program_sakura_spartan6.tcl \
+  scripts/board/sakura_link_check.py scripts/vivado/program_sakura_x.tcl \
   scripts/ise/build_sakura_spartan6.tcl \
   testbench/sakura/Makefile tests/test_sakura_programming.py
 ```
@@ -84,7 +85,51 @@ sudo usermod -aG dialout "$USER"
 
 修改组后注销并重新登录。避免使用 `sudo` 启动整个 GUI。
 
-## 4. 一条命令依次烧录两片 FPGA
+## 4. 分开烧录：Spartan 用终端，Kintex 用 Vivado（无需 ISE）
+
+**不能把两片都交给 Vivado Hardware Manager**：Spartan-6 不在其支持范围，拆成两个 Tcl 也不会改变器件支持。Spartan 已有预编译固件，可以用 openFPGALoader 直接加载，无需安装 ISE；Kintex 可以用 Vivado。参见 [AMD Vivado 支持器件表](https://docs.amd.com/r/2024.1-English/ug973-vivado-release-notes-install-license/Supported-Devices)。
+
+两个独立入口：
+
+| FPGA | JTAG | Tcl | 运行环境 |
+| --- | --- | --- | --- |
+| Spartan-6 | CN10 | `scripts/board/program_sakura_spartan6.tcl` | Linux 终端：`tclsh` + openFPGALoader |
+| Kintex-7 | CN5 | `scripts/vivado/program_sakura_x.tcl` | Vivado Tcl Console 或 Vivado batch |
+
+先关闭占用下载线的 Vivado Hardware Manager / hw_server，排线接 CN10，在仓库根目录终端运行：
+
+```bash
+# 尚未安装时（Debian/Ubuntu）
+sudo apt install tcl openfpgaloader
+# 可选：只检查文件
+tclsh scripts/board/program_sakura_spartan6.tcl --dry-run
+# 只加载 Spartan，按提示输入 CN10
+tclsh scripts/board/program_sakura_spartan6.tcl
+```
+
+成功后保持板卡供电，将排线换到 CN5。启动 Vivado，在 Tcl Console 中执行（把目录换成 Linux 上实际 clone 的位置）：
+
+```tcl
+cd /path/to/ML-KEM-Testkit
+set sakura_bit [file normalize firmware/sakura_x/sakura_x_top.bit]
+set sakura_xvc ""
+set sakura_jtag_hz 3000000
+source scripts/vivado/program_sakura_x.tcl
+```
+
+也可以在仓库根目录终端启动 Vivado batch：
+
+```bash
+vivado -mode batch -source scripts/vivado/program_sakura_x.tcl \
+  -tclargs firmware/sakura_x/sakura_x_top.bit - 3000000
+```
+
+Spartan 独立脚本仅访问 CN10；它复用 `program_sakura_dual.tcl` 的校验/扫描函数，因此提交时保留两者。Kintex 脚本无显式路径时依次查找打开工程的构建结果、默认 `build/` 目录、仓库内预编译固件；上面的显式路径固定选取仓库固件。
+
+如果必须全程只使用 Vivado、也不安装其他烧录工具，则只能加载 Kintex；Spartan 需要已经从 Flash 正常启动。这种情况下不能通过 Vivado 重新配置 Spartan。
+
+### 可选：一条命令依次烧录两片 FPGA
+
 
 回到 clone 的仓库根目录：
 
