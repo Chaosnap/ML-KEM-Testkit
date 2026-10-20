@@ -105,8 +105,10 @@ class LbusPort:
             return b""
         buf = self._ser.read(nreply)
         if len(buf) != nreply:
-            raise LbusError("local bus: got %d of %d reply bytes (Spartan-6 not running its "
-                            "factory bitstream, or wrong port?)" % (len(buf), nreply))
+            raise LbusError("local bus: got %d of %d reply bytes -- the Spartan-6 factory design did not answer "
+                            "(it replies to every read, even with a blank Kintex-7). Check LED11 blinks (Spartan-6 "
+                            "heartbeat), that this is channel A, and the FT2232H EEPROM: "
+                            "scripts/board/sakura_link_check.py finds which" % (len(buf), nreply))
         return buf
 
     def reg_read(self, addr: int) -> int:

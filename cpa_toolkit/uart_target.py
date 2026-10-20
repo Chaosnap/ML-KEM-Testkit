@@ -442,8 +442,10 @@ def _port_hint(p) -> tuple[str, int]:
     desc = " ".join(str(x) for x in (p.description, p.manufacturer) if x)
     if "Bluetooth" in p.device or "debug-console" in p.device:
         return "not a board", 9
-    if _is_sakura_channel_a(p):
+    if _sakura_iface(p) == 0:
         return "SAKURA-X channel A raw -- use the sakura: entry", 7
+    if _sakura_iface(p) == 1:
+        return "SAKURA-X channel B -- not used (the link is the sakura: entry)", 8
     iface = None
     if p.serial_number and p.device.endswith(p.serial_number + "0"):
         iface = 0
@@ -461,15 +463,29 @@ def _port_hint(p) -> tuple[str, int]:
     return "", 5
 
 
-def _is_sakura_channel_a(p) -> bool:
-    """Channel A of an FT2232H programmed with AIST's sasebo_giii.xml (no
-    Digilent strings; product "USB <-> Serial Converter")."""
+def _sakura_iface(p) -> int | None:
+    """FT2232H interface (0 = channel A, 1 = channel B) of a port that belongs to a
+    SAKURA-X board: an FT2232H programmed with AIST's sasebo_giii.xml (no Digilent
+    strings; product "USB <-> Serial Converter"). None for anything else."""
     desc = " ".join(str(x) for x in (p.description, p.manufacturer, p.product) if x)
     if p.vid != 0x0403 or p.pid != 0x6010 or "Digilent" in desc:
-        return False
-    if p.serial_number and p.device.endswith(p.serial_number + "0"):
-        return True
-    return bool(p.location) and p.location.endswith(":1.0")
+        return None
+    for i in (0, 1):
+        if p.serial_number and p.device.endswith(p.serial_number + str(i)):
+            return i
+        if p.location and p.location.endswith(":1.%d" % i):
+            return i
+    return None
+
+
+def _is_sakura_channel_a(p) -> bool:
+    return _sakura_iface(p) == 0
+
+
+def _is_phantom(p) -> bool:
+    """A legacy on-board serial node with no hardware behind it (Linux creates
+    /dev/ttyS0..31 whether or not the UARTs exist; pyserial lists them all)."""
+    return "/ttyS" in p.device and p.vid is None and (not p.hwid or p.hwid == "n/a")
 
 
 def list_ports() -> list:
@@ -480,11 +496,13 @@ def list_ports() -> list:
         raise LinkError("pyserial is missing: uv sync (or pip install pyserial)")
     rows = []
     for p in lp.comports():
+        if _is_phantom(p):
+            continue
         hint, rank = _port_hint(p)
         rows.append((rank, p.device, p.description or "", hint))
         if _is_sakura_channel_a(p):
-            rows.append((1, sakura_lbus.PREFIX + p.device, p.description or "",
-                         "SAKURA-X board USB via the Spartan-6 local bus"))
+            rows.append((0, sakura_lbus.PREFIX + p.device, p.description or "",
+                         "SAKURA-X board USB via the Spartan-6 local bus (recommended)"))
     rows.sort()
     return [(dev, desc, hint, rank == 0) for rank, dev, desc, hint in rows]
 

@@ -1,6 +1,6 @@
 # SAKURA-X（SASEBO-GIII）移植与 LeCroy HDO6104 设置
 
-ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1FBG676C（U11）。控制 FPGA（Spartan-6，U17）**保持出厂 bitstream 不动**。`hdl/core/` 和主机协议（[UART_PROTOCOL.md](UART_PROTOCOL.md)）与 Arty 版完全相同。
+ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1FBG676C（U11）。控制 FPGA（Spartan-6 XC6SLX45，U17）必须运行 AIST 的 USB/local-bus 控制器。若无法确认其 Flash 内容，可先通过 CN10 加载参考包的 `sasebo_giii_ctrl.bit`，再通过 CN5 加载 Kintex-7 的 ML-KEM bitstream。`hdl/core/` 和主机协议（[UART_PROTOCOL.md](UART_PROTOCOL.md)）与 Arty 版完全相同。
 
 | 文件 | 内容 |
 | ---- | ---- |
@@ -8,11 +8,13 @@ ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1F
 | `hdl/xilinx/sakura_x/sakura_lbus_bridge.sv` | 板载 USB 链路：local bus 寄存器 ↔ 字节流 |
 | `hdl/xilinx/sakura_x/constraints.xdc` | 引脚约束，每个引脚都注明了出处 |
 | `cpa_toolkit/sakura_lbus.py` | 主机端：把 local bus 包装成一个“串口”（端口名 `sakura:<设备>`） |
-| `testbench/sakura/` | 桥接逻辑对 AIST 原版 Spartan-6 控制器源码的仿真（`make sim-sakura SASEBO_DIR=<参考包路径>`；没有参考包时跳过） |
+| `testbench/sakura/` | 桥接逻辑对 AIST 原版 Spartan-6 控制器源码的仿真（默认使用仓库内参考源码；可传 `SASEBO_DIR=<参考包路径>` 覆盖） |
 | `scripts/vivado/build_sakura_x.tcl` | 独立的构建脚本，工程在 `build/vivado/sakura-x_mlkem/` |
 | `scripts/vivado/program_sakura_x.tcl` | 经 JTAG（CN5）烧录，只认 Kintex-7 器件 |
+| `scripts/ise/build_sakura_spartan6.tcl` | ISE 14.7 构建原版 Spartan-6 控制器，输出到 `build/ise/sakura-x_ctrl/` |
+| `scripts/board/program_sakura_dual.tcl` | 普通 `tclsh` + openFPGALoader，单根 DLC10 依次加载 CN10、CN5 |
 
-引脚来源：*SASEBO-GIII Specification* v1.1 第 3.1 节表 13–20、表 7、表 29；local bus 引脚和协议取自 AIST 的 SASEBO-GIII 参考包（不在仓库里：`sasebo_giii_ctrl/` 是出厂 Spartan-6 设计的源码，`sasebo_giii_aes/pin_sasebo_giii_k7.ucf` 是对应的 Kintex-7 引脚），并与规格书表 29 核对过。约束文件里每个引脚单独一行：XDC 只支持受限的 Tcl，`for` / `foreach` 会被 Vivado 拒绝（`[Designutils 20-1307]`），引脚就会没有约束，DRC 报 NSTD-1 / UCIO-1，生成不了 bitstream。
+引脚来源：*SASEBO-GIII Specification* v1.1 第 3.1 节表 13–20、表 7、表 29；local bus 引脚和协议取自 AIST 的 SASEBO-GIII 参考包（最小子集位于 `third_party/aist_sasebo_giii/`：`sasebo_giii_ctrl/` 是出厂 Spartan-6 设计的源码，`sasebo_giii_aes/pin_sasebo_giii_k7.ucf` 是对应的 Kintex-7 引脚），并与规格书表 29 核对过。约束文件里每个引脚单独一行：XDC 只支持受限的 Tcl，`for` / `foreach` 会被 Vivado 拒绝（`[Designutils 20-1307]`），引脚就会没有约束，DRC 报 NSTD-1 / UCIO-1，生成不了 bitstream。
 
 ---
 
@@ -51,6 +53,27 @@ Linux 前提：`ftdi_sio` 驱动（内核自带）会把通道 A 识别成 `/dev
 
 SW3：Spartan-6 必须从它自己的 Flash 正常启动（出厂状态，上电后 LED11 心跳灯闪烁）。如果有人改写过 Spartan-6 的 Flash，用 AIST 参考包里的 `sasebo_giii_ctrl.mcs` 经 CN10 恢复。
 
+### 1.0 连不上时（“got 0 of 2 reply bytes”）
+
+GUI 连接时先读一次 ID 寄存器（发 `00 FF FC`，等 2 个字节）。Spartan-6 出厂设计对**每一次**读都会回 2 个字节，Kintex-7 是空的也一样，所以一个字节都没回，问题在 Kintex-7 之前：USB → FT2232H → Spartan-6。在 Linux 上运行：
+
+```bash
+uv run python scripts/board/sakura_link_check.py
+```
+
+它会列出板子的 FTDI 端口和 EEPROM 报告的名字，在通道 A 和 B 上各读一次 ID，然后告诉你：
+
+| 结果 | 含义 |
+| ---- | ---- |
+| `OK … 0x4D4B` | 链路全通；GUI 选 `sakura:/dev/ttyUSB0` |
+| Spartan-6 回了，但不是 `4D 4B` | FT2232H 和 Spartan-6 正常，Kintex-7 没有运行带 local bus 桥的 bitstream（重新烧；断电后会丢） |
+| 通道 B 回了、A 没有 | 这块板的通道顺序不同，用 `sakura:/dev/ttyUSB1` |
+| 都没回 | Spartan-6 出厂设计没有运行：看 LED11（Spartan-6 心跳，约每秒 3 次）；或 FT2232H 通道 A 不是 245 FIFO 模式：加 `--eeprom`（需要 pyftdi：`uv run --with pyftdi python …`，之后要重新插拔 USB） |
+
+产品名 “Dual RS232-HS” 只能作为默认配置的线索，不能单凭字符串判断通道模式。先读取 EEPROM，确认通道 A 是否为 245 FIFO；模式不对时可用 AIST 的 `sasebo_giii.xml` 通过 FT_Prog（Windows）恢复。重新插拔 CN15 会断电，因此之后要再次加载两个 SRAM bitstream。
+
+`/dev/ttyS0`…`ttyS31` 是 Linux 为主板的传统串口预留的设备节点，不管有没有硬件都会出现；GUI 现在把没有硬件的隐藏掉。`ttyUSB1` 是板上 FT2232H 的通道 B，出厂设计不用它。
+
 ### 1.1 备用：CN8 外接 2.5 V USB-UART
 
 CN8.1（D19，FPGA 输入，带上拉）/ CN8.2（N17，FPGA 输出）仍然接着同一个系统（两条接收线相与，应答两边都发）。只在没有板载 USB 时用，一次只用一条链路。适配器必须是 **2.5 V** 电平：CN8 所在的 HR bank VCCO = 2.5 V，3.3 V 的 TXD 超出绝对最大值（VCCO + 0.55 V）。VCCIO 可以接 CN8.12（2.5 V），**不要**把适配器的电源输出接到 CN8.12。
@@ -76,7 +99,7 @@ CN8.1（D19，FPGA 输入，带上拉）/ CN8.2（N17，FPGA 输出）仍然接�
 | 连接 | 接到 |
 | ---- | ---- |
 | USB 线 | CN15（供电 + 主机链路），SW1 = USB |
-| Platform Cable USB II | **CN5**（Kintex-7 JTAG，“Cryptographic FPGA Flash ROM Programming Connector”）。CN10 是 Spartan-6 的，不要动 |
+| Platform Cable USB II | **CN5**（Kintex-7 JTAG，“Cryptographic FPGA Flash ROM Programming Connector”）。CN10 是 Spartan-6 的 JTAG，恢复控制器时接 CN10 |
 
 ### 2.3 开关
 
@@ -102,6 +125,54 @@ CN8.1（D19，FPGA 输入，带上拉）/ CN8.2（N17，FPGA 输出）仍然接�
 ---
 
 ## 4. 构建与烧录
+
+**另一台 Linux clone 后直接烧录：见 [SAKURA_X_LINUX.md](SAKURA_X_LINUX.md)。** 两个预编译固件均在 `firmware/sakura_x/`，默认命令不依赖 `build/` 或项目外目录。
+
+### 两个独立构建、一个统一烧录入口
+
+CN10 与 CN5 是两条独立 JTAG 链，不能把同一个 `.bit` 在两个口各烧一次。
+Spartan-6 的源码构建需要 **ISE 14.7 / xtclsh**；Kintex-7 继续使用 Vivado。
+统一烧录用 **普通 `tclsh` + openFPGALoader**，支持照片中的 Xilinx Platform Cable USB II（DLC10）；不要求 Vivado 能识别 Spartan-6。
+
+先在安装 ISE 的电脑上构建控制器（默认使用仓库内参考源码，也可传入其他参考包目录）：
+
+```bash
+xtclsh scripts/ise/build_sakura_spartan6.tcl
+```
+
+脚本复制原版 `.xise`、RTL 和 UCF 到 `build/ise/sakura-x_ctrl/run-*/`，保留原版工程选项，成功后输出 `build/ise/sakura-x_ctrl/sasebo_giii_ctrl.bit`。
+**排查通信时可跳过这一步**：参考包已经提供可直接加载的 `sasebo_giii_ctrl.bit`。仓库内的副本位于 `firmware/sakura_x/sasebo_giii_ctrl.bit`。
+
+Kintex 的构建仍为：
+
+```bash
+vivado -mode batch -source scripts/vivado/build_sakura_x.tcl
+```
+
+关闭占用下载线的 Vivado Hardware Manager / iMPACT / XVC 进程，仅连接一根 DLC10，保持 CN15 供电。在仓库根目录的终端运行：
+
+```bash
+tclsh scripts/board/program_sakura_dual.tcl \
+  firmware/sakura_x/sasebo_giii_ctrl.bit \
+  build/vivado/sakura-x_mlkem/pqc_mlkem_sakura_x.runs/impl_1/sakura_x_top.bit
+```
+
+若使用重新构建的控制器，将第一个路径换为 `build/ise/sakura-x_ctrl/sasebo_giii_ctrl.bit`。clone 后直接使用预编译固件时，只需运行 `tclsh scripts/board/program_sakura_dual.tcl`。
+
+1. 排线接 **CN10**，输入 `CN10`：脚本检查扫描链并加载 Spartan-6 控制器。
+2. 第一步完成、脚本提示后，将排线换到 **CN5**，输入 `CN5`：加载 Kintex-7 的 ML-KEM。
+3. **两步之间保持板卡供电**。两个 `.bit` 都是 SRAM 配置，断电丢失。脚本不写 Flash，也不修改 USB EEPROM。
+4. 关闭 GUI 的板卡连接，运行 `uv run python scripts/board/sakura_link_check.py`；ID 应为 `0x4D4B`。然后 GUI 选 `sakura:<通道A端口>`。
+
+末尾加 `--dry-run` 可只检查两个文件的器件型号、打印计划，不连接硬件。脚本不能单凭 `.bit` 型号证明内容是 ML-KEM；第二个文件必须来自本项目的 `sakura_x_top`，**不能用参考包里的 AES bitstream 替代**。
+
+`openFPGALoader` 须预先安装并在 PATH 中。固定使用 `xilinxPlatformCableUsb` 和 3 MHz JTAG；CN10 含 XCF32P PROM，脚本显式注册其 IDCODE 和 16 位指令长度以便旁路，并根据扫描结果选择 FPGA 的索引。DLC10 固件/USB 权限仍须正常；绿灯不等于两个 FPGA 已配置成功。此入口为终端脚本，不是在 Vivado Tcl Console 中 `source` 的脚本。
+
+手册 QSG 第 4 页的 `.mcs` 流程是在写配置 Flash，和上述 `.bit` 临时加载不同；只有需要掉电保留时再按手册用 iMPACT 恢复 `sasebo_giii_ctrl.mcs`。板载 USB 还要求 FT2232H 通道 A 为 245 FIFO，两片 FPGA 的 DONE 高也不能证明 USB 模式正确。
+
+参考：两条链和配置介质见本地规格书第 9–12 页、QSG 第 4 页；[AMD 支持器件表](https://docs.amd.com/r/2025.1-English/ug973-vivado-release-notes-install-license/Supported-Devices)、[openFPGALoader 链扫描实现](https://github.com/trabucayre/openFPGALoader/blob/master/src/main.cpp)、[OpenOCD XCFxxP 链参数](https://github.com/openocd-org/openocd/blob/master/tcl/cpld/xilinx-xcf-p.cfg)。
+
+### 只更新 Kintex-7（Spartan 控制器已正常运行）
 
 ```bash
 vivado -mode batch -source scripts/vivado/build_sakura_x.tcl
@@ -191,5 +262,5 @@ IP 地址在同一页的 TCP/IP 栏（拍照时是 `192.168.0.174`，已写进 `
 1. **引脚**：来自规格书 v1.1、AIST 参考设计和 AMD 封装文件，没有在实物上逐个测过。local bus 桥在仿真里对 AIST 原版控制器源码验证过（`make sim-sakura`），但还没上板。
 2. **时钟输入标准**：U16 按 LVDS 输入、不加片内端接，和一个公开的 SASEBO-GIII 设计相同（规格书信号名写的是 “HSTL”）。LED10 不亮且 SW3.7 已是 OFF 时，先怀疑这一点。
 3. **SW4 和 LED 的极性**：假设按键按下为低、LED 高电平点亮，分别由 `BTN_ACTIVE_LOW`、`LED_ACTIVE_LOW` 参数控制（判断方法见 4.1 节）。
-4. **时序**：还没有在 Vivado 里构建过。Kintex-7 −1 比 Artix-7 −1 快，206.25 MHz 应该比 Arty 上宽松，但以第一次构建的 WNS 为准。
+4. **时序**：以当前构建的 `timing_impl.rpt` 为准；构建成功不等于板载 USB 已连通。
 5. **测量点**：规格书第 2.6 节（Measurement Points）写的是 TBD，只在表 1 写了 “High side of VCCINT (Core)”。探头和放大器按你的实际连接记录在 campaign 备注里。

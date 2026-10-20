@@ -1,0 +1,3 @@
+
+# Portable FPGA images are regular Git binaries, not generated build trees.
+firmware/sakura_x/*.bit binary

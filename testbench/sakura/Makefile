@@ -1,15 +1,15 @@
 # SAKURA-X local-bus bridge against AIST's own Spartan-6 controller source.
 #
-#   make -C testbench/sakura                        # AIST package in <repo>/sasebo_giii
+#   make -C testbench/sakura                        # AIST package in <repo>/third_party/aist_sasebo_giii
 #   make -C testbench/sakura SASEBO_DIR=/path/to/sasebo_giii
 #
 # The Spartan-6 side of the bench is AIST's own controller source (ctrl_lbus.v,
-# syncfifo_8x31.v from the SASEBO-GIII reference package). It is not in the repo;
-# without it the bench is skipped (not failed), so `make regress` still runs.
+# syncfifo_8x31.v from the bundled AIST subset). A custom missing reference
+# directory still skips the bench (not failed).
 
 ROOT       := $(abspath ../..)
 OUT        := $(ROOT)/build/sakura
-SASEBO_DIR ?= $(ROOT)/sasebo_giii
+SASEBO_DIR ?= $(ROOT)/third_party/aist_sasebo_giii
 CTRL       := $(SASEBO_DIR)/sasebo_giii_ctrl
 
 IVERILOG ?= iverilog

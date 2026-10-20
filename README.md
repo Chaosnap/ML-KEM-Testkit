@@ -17,11 +17,12 @@ hdl/core/               厂商无关的 SystemVerilog：ML-KEM-768 核心、AXI-
 hdl/xilinx/arty_a7/     Arty A7-35T/100T 顶层与约束（板载 USB 串口）
 hdl/xilinx/arty_z7/     Arty Z7-20 纯 PL 版（外接 3.3 V USB-UART 到 Pmod JA）
 hdl/xilinx/arty_z7_ps/  Arty Z7-20 PS 版（板载 USB 串口经 PS 转发到 PL）
-hdl/xilinx/sakura_x/    SAKURA-X（SASEBO-GIII）Kintex-7 顶层与约束（外接 2.5 V USB-UART 到 CN8）
+hdl/xilinx/sakura_x/    SAKURA-X（SASEBO-GIII）Kintex-7 顶层与约束（板载 USB 经 Spartan-6 local bus）
 sw/arty_z7_uart_fwd/    Z7 PS 上运行的裸机 UART 字节转发程序
 cpa_toolkit/            Python 主机端：UART 驱动、FIPS 203 参考实现、测试向量、采集、CPA/TVLA、Web GUI
 scripts/vivado/         Vivado 构建 / 烧写 Tcl
-scripts/board/          Arty Z7 PS 版上电启动（JTAG 下载 bit + ps7_init + 转发程序）
+scripts/ise/            SAKURA-X Spartan-6 控制器构建（ISE 14.7）
+scripts/board/          板卡启动、SAKURA-X 双 FPGA 烧录及链路检查
 scripts/test/           ACVP 测试（板上 / Verilator）
 scripts/gen/            微码与 zeta ROM 生成器
 testbench/              Icarus / Verilator / cocotb 测试平台
@@ -58,7 +59,7 @@ GUI 左侧导航对应一次实验的完整流程：
 | Arty A7-100T / 35T | `hdl/xilinx/arty_a7` | 协议桥 100 MHz，核心 206 MHz | 板载 USB 的 `…1` 接口 | Pmod JA1 |
 | Arty Z7-20（纯 PL） | `hdl/xilinx/arty_z7` | 125 MHz / 206.25 MHz | 外接 USB-UART 到 Pmod JA | Pmod JA3 |
 | Arty Z7-20（PS 版） | `hdl/xilinx/arty_z7_ps` | 125 MHz / 206.25 MHz | 板载 USB 的 `…1` 接口，每次上电后先运行 `uv run scripts/board/boot_arty_z7_ps.py` | Pmod JA3 |
-| SAKURA-X（SASEBO-GIII，Kintex-7 XC7K160T） | `hdl/xilinx/sakura_x` | 103.125 MHz / 206.25 MHz（200 MHz 晶振经 MMCM） | 外接 **2.5 V** USB-UART 到 CN8 第 1/2 脚（板载 USB 只连 Spartan-6） | CN8 第 3 脚（2.5 V） |
+| SAKURA-X（SASEBO-GIII，Kintex-7 XC7K160T） | `hdl/xilinx/sakura_x` | 103.125 MHz / 206.25 MHz（200 MHz 晶振经 MMCM） | 板载 USB → Spartan-6 控制器 → local bus，GUI 选 `sakura:<通道A端口>`；可选 CN8 外接 **2.5 V** UART | CN8 第 3 脚（2.5 V） |
 
 示波器触发引脚输出 `trig_out = STATUS.busy`：在运算开始的那个核心时钟沿上升，保持 CYCLE_COUNT 个周期后下降，只有真正开始运算时才出现。GUI 的 Acquisition → *Check trigger* 可以在板上验证触发是否正确（见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md) 第 5.1 节）。
 
@@ -128,3 +129,7 @@ vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bitstre
 ## License
 
 MIT
+
+## SAKURA-X：在另一台 Linux 上烧录
+
+仓库包含两个预编译 `.bit`、Spartan 控制器最小参考源码及 FTDI 模板。clone 后可直接执行 `tclsh scripts/board/program_sakura_dual.tcl`，依次在 CN10 / CN5 烧录。安装、校验、接线和 GUI 操作见 [Linux 烧录指南](docs/SAKURA_X_LINUX.md)。第三方文件条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

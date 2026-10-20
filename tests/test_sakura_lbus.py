@@ -176,5 +176,43 @@ class TestSakuraLbus(unittest.TestCase):
         self.assertEqual(port.read(1), b"")     # timeout, nothing left
 
 
+class FakePortInfo:
+    """Just the pyserial ListPortInfo fields the port list reads."""
+
+    def __init__(self, device, vid=None, pid=None, serial_number=None, location=None, description="n/a",
+                 manufacturer=None, product=None, hwid="n/a"):
+        self.device, self.vid, self.pid, self.serial_number, self.location = device, vid, pid, serial_number, location
+        self.description, self.manufacturer, self.product, self.hwid = description, manufacturer, product, hwid
+
+
+class TestPortList(unittest.TestCase):
+    def test_linux_sakura_board(self):
+        """What the Linux PC showed: the SAKURA-X FT2232H (ttyUSB0 / ttyUSB1), 32 phantom ttyS nodes."""
+        ports = [FakePortInfo("/dev/ttyS%d" % i) for i in range(32)] + [
+            FakePortInfo("/dev/ttyUSB0", 0x0403, 0x6010, "FT1A2B3C", "1-3:1.0", "USB <-> Serial Converter",
+                         "FTDI", "USB <-> Serial Converter", "USB VID:PID=0403:6010"),
+            FakePortInfo("/dev/ttyUSB1", 0x0403, 0x6010, "FT1A2B3C", "1-3:1.1", "USB <-> Serial Converter",
+                         "FTDI", "USB <-> Serial Converter", "USB VID:PID=0403:6010"),
+            FakePortInfo("/dev/ttyUSB2", 0x0403, 0x6010, "210319A", "1-4:1.1", "Digilent USB Device",
+                         "Digilent", "Digilent USB Device", "USB VID:PID=0403:6010"),
+        ]
+        with mock.patch("serial.tools.list_ports.comports", lambda: ports):
+            rows = T.list_ports()
+        devs = [r[0] for r in rows]
+        self.assertFalse(any("/ttyS" in d for d in devs), "phantom ttyS nodes must be hidden")
+        rec = [r[0] for r in rows if r[3]]
+        self.assertIn("sakura:/dev/ttyUSB0", rec)
+        hint = {r[0]: r[2] for r in rows}
+        self.assertIn("channel B", hint["/dev/ttyUSB1"])
+        self.assertNotIn("recommended", hint["/dev/ttyUSB1"])
+        self.assertIn("raw", hint["/dev/ttyUSB0"])
+        self.assertEqual(hint["/dev/ttyUSB2"], "board UART (recommended)")   # an Arty's UART is still recognised
+
+    def test_real_ttyS_with_hardware_is_kept(self):
+        ports = [FakePortInfo("/dev/ttyS0", description="ttyS0", hwid="PNP0501")]
+        with mock.patch("serial.tools.list_ports.comports", lambda: ports):
+            self.assertEqual([r[0] for r in T.list_ports()], ["/dev/ttyS0"])
+
+
 if __name__ == "__main__":
     unittest.main()
