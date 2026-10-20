@@ -1,5 +1,5 @@
 // tb_lbus_bridge.sv - sakura_lbus_bridge against AIST's own SASEBO-GIII
-// controller logic (CTRL_LBUS + SYNCFIFO_8x31 from sasebo_giii/sasebo_giii_ctrl,
+// controller logic (CTRL_LBUS + SYNCFIFO_8x31 from the reference package's sasebo_giii_ctrl/,
 // with the output registers of chip_sasebo_giii_ctrl.v) at 3 MHz, the bridge at
 // 103.125 MHz with its byte stream looped back (ser_tx -> ser_rx). The host
 // side pushes the USB command bytes the PC would send and pops the replies.

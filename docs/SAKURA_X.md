@@ -8,11 +8,11 @@ ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1F
 | `hdl/xilinx/sakura_x/sakura_lbus_bridge.sv` | 板载 USB 链路：local bus 寄存器 ↔ 字节流 |
 | `hdl/xilinx/sakura_x/constraints.xdc` | 引脚约束，每个引脚都注明了出处 |
 | `cpa_toolkit/sakura_lbus.py` | 主机端：把 local bus 包装成一个“串口”（端口名 `sakura:<设备>`） |
-| `testbench/sakura/` | 桥接逻辑对 AIST 原版 Spartan-6 控制器源码的仿真（`make sim-sakura`） |
+| `testbench/sakura/` | 桥接逻辑对 AIST 原版 Spartan-6 控制器源码的仿真（`make sim-sakura SASEBO_DIR=<参考包路径>`；没有参考包时跳过） |
 | `scripts/vivado/build_sakura_x.tcl` | 独立的构建脚本，工程在 `build/vivado/sakura-x_mlkem/` |
 | `scripts/vivado/program_sakura_x.tcl` | 经 JTAG（CN5）烧录，只认 Kintex-7 器件 |
 
-引脚来源：*SASEBO-GIII Specification* v1.1 第 3.1 节表 13–20、表 7、表 29；local bus 引脚和协议取自 AIST 参考设计 `sasebo_giii/`（`sasebo_giii_ctrl/` 是出厂 Spartan-6 设计的源码，`sasebo_giii_aes/pin_sasebo_giii_k7.ucf` 是对应的 Kintex-7 引脚）。
+引脚来源：*SASEBO-GIII Specification* v1.1 第 3.1 节表 13–20、表 7、表 29；local bus 引脚和协议取自 AIST 的 SASEBO-GIII 参考包（不在仓库里：`sasebo_giii_ctrl/` 是出厂 Spartan-6 设计的源码，`sasebo_giii_aes/pin_sasebo_giii_k7.ucf` 是对应的 Kintex-7 引脚），并与规格书表 29 核对过。约束文件里每个引脚单独一行：XDC 只支持受限的 Tcl，`for` / `foreach` 会被 Vivado 拒绝（`[Designutils 20-1307]`），引脚就会没有约束，DRC 报 NSTD-1 / UCIO-1，生成不了 bitstream。
 
 ---
 
@@ -49,7 +49,7 @@ GUI 的端口列表里会单独列出一项 “SAKURA-X board USB via the Sparta
 
 Linux 前提：`ftdi_sio` 驱动（内核自带）会把通道 A 识别成 `/dev/ttyUSB0`。用户需要在 `dialout` 组里（或者用 udev 规则放开权限）。`LbusPort` 会尝试把 FTDI 的 latency timer 设成 1 ms，失败也能用，只是慢一些。
 
-SW3：Spartan-6 必须从它自己的 Flash 正常启动（出厂状态，上电后 LED11 心跳灯闪烁）。如果有人改写过 Spartan-6 的 Flash，用 `sasebo_giii/sasebo_giii_ctrl.mcs` 经 CN10 恢复。
+SW3：Spartan-6 必须从它自己的 Flash 正常启动（出厂状态，上电后 LED11 心跳灯闪烁）。如果有人改写过 Spartan-6 的 Flash，用 AIST 参考包里的 `sasebo_giii_ctrl.mcs` 经 CN10 恢复。
 
 ### 1.1 备用：CN8 外接 2.5 V USB-UART
 

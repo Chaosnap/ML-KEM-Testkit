@@ -14,8 +14,10 @@
 ## same setting a public SASEBO-GIII design uses on these pins). Both
 ## oscillators are enabled by SW3.7 = OFF (factory default, Table 12).
 ## -----------------------------------------------------------------------------
-set_property -dict {PACKAGE_PIN AA3 IOSTANDARD LVDS} [get_ports clk200_p]
-set_property -dict {PACKAGE_PIN AA2 IOSTANDARD LVDS} [get_ports clk200_n]
+## Bank 34 also holds lbus_do (LVCMOS15), so its VCCO is 1.5 V: an LVDS INPUT is legal in an
+## HP bank at VCCO != 1.8 V only with the internal termination off (UG471) -- keep DIFF_TERM FALSE.
+set_property -dict {PACKAGE_PIN AA3 IOSTANDARD LVDS DIFF_TERM FALSE} [get_ports clk200_p]
+set_property -dict {PACKAGE_PIN AA2 IOSTANDARD LVDS DIFF_TERM FALSE} [get_ports clk200_n]
 create_clock -period 5.000 -name clk200 [get_ports clk200_p]
 
 ## MMCM outputs: CLKOUT0 = 206.25 MHz core clock, CLKOUT1 = 103.125 MHz bridge
@@ -36,7 +38,7 @@ set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
 ## -----------------------------------------------------------------------------
 ## Local bus to the Spartan-6 control FPGA = host link over the board USB
 ## (CN15). Pins copied from AIST's reference design for the factory Spartan-6
-## bitstream, sasebo_giii/sasebo_giii_aes/pin_sasebo_giii_k7.ucf (and the
+## bitstream (AIST package, not in the repo: sasebo_giii_aes/pin_sasebo_giii_k7.ucf and the
 ## matching sasebo_giii_ctrl/pin_sasebo_giii_sp6.ucf); they are the KS_HPIC /
 ## KS_HRIC interconnects of spec Table 29. lbus_do is the only direction the
 ## Kintex-7 drives. lbus_clkn (AB11, 3 MHz) and lbus_rstn (AA13) are not used:
@@ -45,14 +47,42 @@ set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
 ## -----------------------------------------------------------------------------
 set_property -dict {PACKAGE_PIN AD10 IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_wrn]
 set_property -dict {PACKAGE_PIN Y13  IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_rdn]
-set lbus_do_pins {V4 V2 W1 AB1 Y3 U7 V3 AF10 AC13 AE12 U6 AE13 AA10 AB12 AA4 AE8}
-set lbus_di_pins {T22 M24 K25 R26 M25 U17 N26 R16 T20 R22 M21 T24 P23 N21 R21 N18}
-for {set i 0} {$i < 16} {incr i} {
-    set_property -dict [list PACKAGE_PIN [lindex $lbus_do_pins $i] IOSTANDARD LVCMOS15 \
-        SLEW SLOW DRIVE 4] [get_ports "lbus_do[$i]"]
-    set_property -dict [list PACKAGE_PIN [lindex $lbus_di_pins $i] IOSTANDARD LVCMOS25] \
-        [get_ports "lbus_di_a[$i]"]
-}
+## One line per pin: XDC is a restricted Tcl subset without loops (for / foreach are
+## rejected with [Designutils 20-1307] and the pins would stay unconstrained).
+## lbus_do: Kintex-7 -> Spartan-6 read data (1.5 V HP banks, KS_HPIC_*_P).
+set_property -dict {PACKAGE_PIN V4   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[0]}]
+set_property -dict {PACKAGE_PIN V2   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[1]}]
+set_property -dict {PACKAGE_PIN W1   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[2]}]
+set_property -dict {PACKAGE_PIN AB1  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[3]}]
+set_property -dict {PACKAGE_PIN Y3   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[4]}]
+set_property -dict {PACKAGE_PIN U7   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[5]}]
+set_property -dict {PACKAGE_PIN V3   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[6]}]
+set_property -dict {PACKAGE_PIN AF10 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[7]}]
+set_property -dict {PACKAGE_PIN AC13 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[8]}]
+set_property -dict {PACKAGE_PIN AE12 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[9]}]
+set_property -dict {PACKAGE_PIN U6   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[10]}]
+set_property -dict {PACKAGE_PIN AE13 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[11]}]
+set_property -dict {PACKAGE_PIN AA10 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[12]}]
+set_property -dict {PACKAGE_PIN AB12 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[13]}]
+set_property -dict {PACKAGE_PIN AA4  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[14]}]
+set_property -dict {PACKAGE_PIN AE8  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[15]}]
+## lbus_di_a: Spartan-6 -> Kintex-7 address / write data (2.5 V HR banks, KS_HRIC_*_P).
+set_property -dict {PACKAGE_PIN T22  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[0]}]
+set_property -dict {PACKAGE_PIN M24  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[1]}]
+set_property -dict {PACKAGE_PIN K25  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[2]}]
+set_property -dict {PACKAGE_PIN R26  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[3]}]
+set_property -dict {PACKAGE_PIN M25  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[4]}]
+set_property -dict {PACKAGE_PIN U17  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[5]}]
+set_property -dict {PACKAGE_PIN N26  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[6]}]
+set_property -dict {PACKAGE_PIN R16  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[7]}]
+set_property -dict {PACKAGE_PIN T20  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[8]}]
+set_property -dict {PACKAGE_PIN R22  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[9]}]
+set_property -dict {PACKAGE_PIN M21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[10]}]
+set_property -dict {PACKAGE_PIN T24  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[11]}]
+set_property -dict {PACKAGE_PIN P23  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[12]}]
+set_property -dict {PACKAGE_PIN N21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[13]}]
+set_property -dict {PACKAGE_PIN R21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[14]}]
+set_property -dict {PACKAGE_PIN N18  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[15]}]
 
 ## K_CLK_INH_B (Table 13): driven high = both 200 MHz oscillators enabled,
 ## as in AIST's reference design (osc_en_b).

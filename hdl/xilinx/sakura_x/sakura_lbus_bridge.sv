@@ -2,7 +2,7 @@
 //
 // The board's USB port (CN15, FT2232H channel A in 245-FIFO mode) is wired to
 // the Spartan-6 control FPGA only. Its factory bitstream (sasebo_giii_ctrl,
-// AIST; source in sasebo_giii/sasebo_giii_ctrl/) turns USB bytes into 16-bit
+// AIST; source in the SASEBO-GIII reference package, sasebo_giii_ctrl/) turns USB bytes into 16-bit
 // register accesses on the inter-FPGA "local bus":
 //
 //   host -> USB : 0x01 AH AL DH DL   write DH:DL to address AH:AL (no reply)
