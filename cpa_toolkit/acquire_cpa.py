@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -88,12 +89,50 @@ def dk_from_recipe(recipe: dict) -> bytes:
     return KEM.keygen(s64[:32], s64[32:])[1]
 
 
+def arm_scope(target, sc, n_samples=0):
+    """Reserve the shell quiet tail from scope metadata, then arm acquisition.
+
+    Scope settings must remain fixed during a campaign. Other transports use
+    their existing arming path. Missing duration information is an error for
+    the shell rather than a guessed quiet window.
+    """
+    reserve = getattr(getattr(target, "link", None), "set_quiet_window", None)
+    if callable(reserve):
+        info = sc.info()
+        durations = []
+        rate = sc.sample_rate()
+        points = max(int(n_samples or 0), int(info.get("samples") or 0),
+                     int(info.get("wave_array_count") or 0))
+        if points > 0 and rate > 0:
+            durations.append(points / rate)
+        timebase = str(info.get("timebase_s_div", "")).strip().split()
+        if timebase:
+            try:
+                durations.append(10 * float(timebase[0]))
+            except ValueError:
+                pass
+        # SCPI waveform preamble stores the actual record point count.
+        fields = str(info.get("preamble", "")).split(",")
+        if len(fields) >= 5 and rate > 0:
+            try:
+                durations.append(int(fields[2]) / rate)
+            except ValueError:
+                pass
+        durations = [d for d in durations if d > 0 and math.isfinite(d)]
+        if not durations:
+            raise ValueError("SAKURA shell needs the scope record duration to reserve a quiet "
+                             "window; reconnect the scope with a valid timebase/sample count")
+        start = float(info.get("record_start_s") or 0)
+        reserve(max(durations) + max(0.0, start) + 0.005)
+    sc.arm()
+
+
 def measure_record_length(target, sc) -> int:
     """Samples per capture at the scope's current settings, from one Decaps of
     a fresh random vector (the capture is discarded). Used when neither the
     scope connection nor the campaign names a sample count."""
     vs = TV.generate("cpa", 1, os.urandom(64), "valid")
-    sc.arm()
+    arm_scope(target, sc)
     out = target.decaps(vs.dk, vs.ct[0].tobytes(), resend_dk=True)
     if not out.ok:
         raise RuntimeError("could not measure the scope's record length: %s" % out.describe())
@@ -166,7 +205,7 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
             expected = writer.expected_at(i)
             resend_dk = (i == start_index) or (i % resend_dk_every == 0)
 
-            sc.arm()
+            arm_scope(target, sc, n_samples)
             out = target.decaps(dk, ct, resend_dk=resend_dk)
             if out.link_fatal:
                 link_lost = stopped_early = True

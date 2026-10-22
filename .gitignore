@@ -37,3 +37,8 @@ __pycache__/
 *~
 .DS_Store
 Thumbs.db
+
+# Local editor history and the original research clone; deployable shell files
+# are a pinned, ordinary-directory snapshot in third_party/sakura_x_shell/.
+/.history/
+/sakura-x-shell/

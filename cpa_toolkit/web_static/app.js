@@ -435,13 +435,13 @@ function applyState(s) {
   const prev = S;
   S = s;
   const b = s.board, sc = s.scope;
-  renderConn("board", b, (x) => x.state === "connected" ? `Connected · ${x.params.port.split("/").pop()} @ ${x.params.baud}`
+  renderConn("board", b, (x) => x.state === "connected" ? `Connected · ${x.params.port.split("/").pop()} · ${x.info?.transport === "sakura-shell" ? "FIFO" : x.params.baud + " baud"}`
     : x.state === "connecting" ? `Connecting to ${x.params.port.split("/").pop()}…` : STATE_TXT[x.state]);
   renderConn("scope", sc, (x) => x.state === "connected" ? `Connected · ${x.params.ip}` : x.state === "connecting" ? `Connecting to ${x.params.ip}…` : STATE_TXT[x.state]);
-  ["board-port", "board-baud", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state)));
+  ["board-port", "board-baud", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state) || (id === "board-baud" && $("board-port").value.startsWith("sakura-shell:"))));
   ["scope-ip", "scope-channel", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
   kv("board-info", b.info ? [["Algorithm", b.info.alg_id === 1 ? "ML-KEM (ALG_ID 1)" : b.info.alg_id], ["Core version", b.info.version],
-    ["Core clock", b.info.core_mhz + " MHz"], ["0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Port", b.info.port], ["Baud", b.info.baud]] : [["Status", "connect the board to read the core"]]);
+    ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Port", b.info.port], ["Transport", b.info.transport === "sakura-shell" ? "FIFO (baud ignored)" : b.info.baud + " baud"]] : [["Status", "connect the board to read the core"]]);
   const si = sc.info;
   kv("scope-info", si ? [["Instrument", si.id || si.idn], ["Resource", si.resource], ["Channel", si.channel],
     ["Samples", si.samples || (si.wave_array_count ? `${si.wave_array_count} (last record)` : si.samples)], ["Sample rate", si.sample_rate],
@@ -514,6 +514,7 @@ async function refreshPorts(quiet) {
 function portHint() {
   const p = ports.find((x) => x.device === $("board-port").value);
   const h = $("board-port-hint");
+  $("board-baud").disabled = ["connected", "connecting"].includes(S?.board?.state) || $("board-port").value.startsWith("sakura-shell:");
   h.textContent = p ? [p.description, p.hint].filter(Boolean).join(" · ") : "";
   h.className = "hint" + (p && p.hint.startsWith("JTAG") ? " warn" : p && p.recommended ? " good" : "");
 }

@@ -992,7 +992,7 @@ def api_acquire_capture_one(body: dict) -> dict:
     vs = TV.generate("cpa", 1, os.urandom(64), "valid")
     with _BoardOp() as target:
         sc = scope_conn.require()
-        sc.arm()
+        A.arm_scope(target, sc)
         out = target.decaps(vs.dk, vs.ct[0].tobytes(), resend_dk=True)
         if out.link_fatal:
             board.mark_lost(out.link_error, target)
@@ -1048,7 +1048,7 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         query = getattr(sc, "triggered", None)
         name = "no trigger without an operation"
         if callable(query):
-            sc.arm()
+            A.arm_scope(target, sc)
             target.link.rd("STATUS")                               # link traffic, no START
             target.link.write_data(C.OUT_BASE, bytes(256))
             target.link.rd("ALG_ID")
@@ -1065,7 +1065,7 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         else:
             checks.append((name, None, "this scope driver cannot report its trigger state -- skipped"))
 
-        sc.arm()
+        A.arm_scope(target, sc)
         out = target.decaps(vs.dk, vs.ct[0].tobytes(), resend_dk=True)
         if out.link_fatal:
             board.mark_lost(out.link_error, target)
