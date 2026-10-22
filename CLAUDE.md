@@ -56,3 +56,28 @@ Vivado builds: `vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tcl
 - MIT license; docs in `docs/` are written in Chinese, code comments and docstrings in English.
 - Python: docstrings on public functions, tests in `tests/` (`unittest`).
 - HDL: vendor-agnostic in `hdl/core/`, board-specific in `hdl/xilinx/<board>/`; simulation in `testbench/`.
+
+
+## SAKURA-X shell port (2026-10-22, not locally tested)
+
+- New independent board top: `hdl/xilinx/sakura_shell/sakura_shell_top.sv`.
+  Source-synchronous parallel handshake from the pinned upstream Spartan controller;
+  50 MHz forwarded bus clock and existing 206.25 MHz core through axil_cdc.
+- Build: `scripts/vivado/build_sakura_shell.tcl`; prebuilt Spartan bit in
+  `third_party/sakura_x_shell/`. That directory is a vendored snapshot, not a submodule.
+  The local `sakura-x-shell/` clone is ignored and is not a build dependency.
+- New transport: `sakura-shell:<channel-A-device>` routes Target.open to ShellTarget.
+  Channel B is paired by serial + USB interface and used only for RTS_N reset.
+  Exact product string `SAKURA-X Shell` is required for recommended auto-selection.
+- The five application commands are RESET, LOAD_DK, LOAD_CT, START, READ_SS.
+  START is a pending native shell read; the bridge writes CTRL.start internally,
+  waits on synchronized busy (no status polling), then returns completion after a
+  quiet tail. Input loading only fills BRAM. Decode/NTT happen after START.
+  This transport supports Decaps only; Arty and legacy transport behavior is retained.
+- Native shell data words are big endian; core memory bytes retain their little-endian
+  word layout. No CRC in the upstream protocol. Application payload lengths are exact.
+- GUI/acquisition arm_scope reserves the quiet tail using known scope metadata.
+  RESET clears loaded-input flags, START consumes CT validity, READ_SS rejects stale K.
+- User explicitly requested no local tests/builds/simulations for this port.
+  Source was reviewed statically; Linux commands in docs/SAKURA_X_SHELL.md remain unrun.
+  Do not describe the new bitstream, timing or board communication as verified.

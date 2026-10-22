@@ -1,3 +1,5 @@
+> 旧 AIST local-bus 方案文档。新 shell 移植请使用 [SAKURA_X_SHELL.md](../../docs/SAKURA_X_SHELL.md)；不要混用这两套 Spartan/Kintex bitstream。
+
 # SAKURA-X portable SRAM images
 
 > 2026-10-20：RTL 已修正本地总线桥与 ML-KEM UART 的波特率不匹配，以及 SW4 复位按钮极性。本次未重新生成此目录中的 `sakura_x_top.bit`；使用修复需要在 Vivado 重新综合、实现并生成 Kintex bitstream。Spartan 原厂 `.bit` 无需修改。

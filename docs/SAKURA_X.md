@@ -1,3 +1,5 @@
+> 旧 AIST local-bus 方案文档。新 shell 移植请使用 [SAKURA_X_SHELL.md](SAKURA_X_SHELL.md)；不要混用这两套 Spartan/Kintex bitstream。
+
 # SAKURA-X（SASEBO-GIII）移植与 LeCroy HDO6104 设置
 
 ML-KEM-768 核心在 SAKURA-X 上运行于**密码 FPGA**：Kintex-7 XC7K160T-1FBG676C（U11）。控制 FPGA（Spartan-6 XC6SLX45，U17）必须运行 AIST 的 USB/local-bus 控制器。若无法确认其 Flash 内容，可先通过 CN10 加载参考包的 `sasebo_giii_ctrl.bit`，再通过 CN5 加载 Kintex-7 的 ML-KEM bitstream。`hdl/core/` 和主机协议（[UART_PROTOCOL.md](UART_PROTOCOL.md)）与 Arty 版完全相同。

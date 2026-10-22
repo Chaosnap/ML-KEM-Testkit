@@ -1,3 +1,5 @@
+> 旧 AIST local-bus 方案文档。新 shell 移植请使用 [SAKURA_X_SHELL.md](SAKURA_X_SHELL.md)；不要混用这两套 Spartan/Kintex bitstream。
+
 # SAKURA-X：GitHub clone 后在 Linux 烧录
 
 适用硬件：SAKURA-X / SASEBO-GIII，Spartan-6 XC6SLX45 + Kintex-7 XC7K160T，一根 Xilinx Platform Cable USB II（DLC10）。

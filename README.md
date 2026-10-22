@@ -10,6 +10,25 @@ ML-KEM-768（FIPS 203）的 FPGA 硬件核心，以及围绕它的测试与侧�
 
 ![FPGA – PC – 示波器](docs/diagrams/FPGA_PC_Oscilloscope.png)
 
+## SAKURA-X shell 移植（Linux 待验证）
+
+本次 SAKURA-X 使用 `sakura-x-shell` 的 Spartan FIFO 控制器，应用命令为
+**RESET / LOAD_DK / LOAD_CT / START / READ_SS**。新的 Kintex 顶层、PC 驱动、
+GUI 接口与上游预编译 Spartan bit 已放入仓库；无需 ISE、ChipWhisperer 或递归 clone。
+
+**先阅读 [Linux 构建、两块 FPGA 编程与 GUI 操作](docs/SAKURA_X_SHELL.md)。**
+新方案必须搭配 `sakura_shell_top.bit` 和 `sakura-shell:` 端口；
+下面仍保留的 `sakura_x_top.bit` / `sakura:` 是旧 AIST local-bus 方案。
+此移植尚未运行测试、仿真、Vivado 或实板验证，新 Kintex bit 要在 Linux 构建。
+
+```bash
+uv sync --extra scope
+vivado -mode batch -source scripts/vivado/build_sakura_shell.tcl
+# 两块 FPGA 下载完毕后（详见上方手册）：
+uv run python scripts/board/sakura_shell.py --list
+make gui
+```
+
 ## 目录结构
 
 ```
@@ -17,7 +36,9 @@ hdl/core/               厂商无关的 SystemVerilog：ML-KEM-768 核心、AXI-
 hdl/xilinx/arty_a7/     Arty A7-35T/100T 顶层与约束（板载 USB 串口）
 hdl/xilinx/arty_z7/     Arty Z7-20 纯 PL 版（外接 3.3 V USB-UART 到 Pmod JA）
 hdl/xilinx/arty_z7_ps/  Arty Z7-20 PS 版（板载 USB 串口经 PS 转发到 PL）
-hdl/xilinx/sakura_x/    SAKURA-X（SASEBO-GIII）Kintex-7 顶层与约束（板载 USB 经 Spartan-6 local bus）
+hdl/xilinx/sakura_shell/ SAKURA-X shell：原生 FIFO 握手、静默 START、AXI-Lite 核心连接
+third_party/sakura_x_shell/ 固定版本的上游控制器、bit、EEPROM 模板与许可
+hdl/xilinx/sakura_x/    旧 SAKURA-X（SASEBO-GIII）Kintex-7 顶层与约束（板载 USB 经 Spartan-6 local bus）
 sw/arty_z7_uart_fwd/    Z7 PS 上运行的裸机 UART 字节转发程序
 cpa_toolkit/            Python 主机端：UART 驱动、FIPS 203 参考实现、测试向量、采集、CPA/TVLA、Web GUI
 scripts/vivado/         Vivado 构建 / 烧写 Tcl
@@ -63,9 +84,9 @@ GUI 左侧导航对应一次实验的完整流程：
 
 示波器触发引脚输出 `trig_out = STATUS.busy`：在运算开始的那个核心时钟沿上升，保持 CYCLE_COUNT 个周期后下降，只有真正开始运算时才出现。GUI 的 Acquisition → *Check trigger* 可以在板上验证触发是否正确（见 [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md) 第 5.1 节）。
 
-所有板子共用 `hdl/core/mlkem_uart_system.sv`（UART、协议桥、跨时钟域、核心、触发、LED），各板顶层只负责时钟、复位和引脚。SAKURA-X 的接线、LED、构建烧录和 LeCroy HDO6104 设置见 [docs/SAKURA_X.md](docs/SAKURA_X.md)。
+Arty 与旧 AIST local-bus 方案共用 `hdl/core/mlkem_uart_system.sv`（UART、协议桥、跨时钟域、核心、触发、LED），各板顶层只负责时钟、复位和引脚。SAKURA-X 的接线、LED、构建烧录和 LeCroy HDO6104 设置见 [docs/SAKURA_X.md](docs/SAKURA_X.md)。
 
-**板上 LED**（`hdl/core/status_leds.sv`）：
+**Arty / 旧 AIST 方案的板上 LED**（新 shell 见专用手册；`hdl/core/status_leds.sv`）：
 
 | 灯 | Arty A7 | Arty Z7 | SAKURA-X | 含义 |
 | -- | ------- | ------- | -------- | ---- |
@@ -99,7 +120,7 @@ vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bitstre
 
 ## 主机 ↔ FPGA 协议
 
-协议基于 UART（8N1，115200），使用带 CRC-32 的二进制帧，只有 5 条命令：读/写寄存器、读/写数据缓冲，以及 **`0x05` Run**。
+Arty 与旧 AIST 方案的协议基于 UART（8N1，115200），使用带 CRC-32 的二进制帧，只有 5 条命令：读/写寄存器、读/写数据缓冲，以及 **`0x05` Run**。
 
 运算只能用 `0x05` 启动：FPGA 在核心算完之前不发送任何字节，算完后一次回复 STATUS、CYCLE_COUNT、ERROR_CODE 和结果 K。主机不轮询 STATUS，运算期间链路完全静默。没有 `0x05` 的旧 bitstream 不能运行运算，需要重新生成。
 

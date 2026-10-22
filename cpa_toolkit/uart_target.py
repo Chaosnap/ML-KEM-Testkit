@@ -259,6 +259,9 @@ class Target:
 
     @classmethod
     def open(cls, port: str, baud: int = C.BAUD) -> "Target":
+        if port.startswith("sakura-shell:"):
+            from sakura_shell import ShellLink, ShellTarget
+            return ShellTarget(ShellLink(port, baud))
         return cls(Link(port, baud))
 
     def close(self) -> None:
@@ -443,9 +446,9 @@ def _port_hint(p) -> tuple[str, int]:
     if "Bluetooth" in p.device or "debug-console" in p.device:
         return "not a board", 9
     if _sakura_iface(p) == 0:
-        return "SAKURA-X channel A raw -- use the sakura: entry", 7
+        return "FT2232H channel A raw -- use sakura-shell: for shell firmware", 7
     if _sakura_iface(p) == 1:
-        return "SAKURA-X channel B -- not used (the link is the sakura: entry)", 8
+        return "FT2232H channel B -- reserved for shell RTS reset, not data", 8
     iface = None
     if p.serial_number and p.device.endswith(p.serial_number + "0"):
         iface = 0
@@ -494,6 +497,7 @@ def list_ports() -> list:
         from serial.tools import list_ports as lp
     except ImportError:
         raise LinkError("pyserial is missing: uv sync (or pip install pyserial)")
+    from sakura_shell import PREFIX as SHELL_PREFIX, is_shell
     rows = []
     for p in lp.comports():
         if _is_phantom(p):
@@ -501,15 +505,22 @@ def list_ports() -> list:
         hint, rank = _port_hint(p)
         rows.append((rank, p.device, p.description or "", hint))
         if _is_sakura_channel_a(p):
-            rows.append((0, sakura_lbus.PREFIX + p.device, p.description or "",
-                         "SAKURA-X board USB via the Spartan-6 local bus (recommended)"))
+            rows.append((0 if is_shell(p) else 3, SHELL_PREFIX + p.device, p.description or "",
+                         "SAKURA-X shell FIFO, channel A; baud ignored" +
+                         (" (recommended)" if is_shell(p) else " (select explicitly for shell firmware)")))
+            if not is_shell(p):
+                rows.append((3, sakura_lbus.PREFIX + p.device, p.description or "",
+                             "Legacy AIST local bus ONLY; incompatible with shell firmware"))
     rows.sort()
     return [(dev, desc, hint, rank == 0) for rank, dev, desc, hint in rows]
 
 
 def port_exists(device: str) -> bool:
     try:
-        device = sakura_lbus.device_of(device)
-        return any(sakura_lbus.device_of(dev) == device for dev, *_ in list_ports())
+        from sakura_shell import device_of
+        import os
+        device = os.path.realpath(device_of(sakura_lbus.device_of(device)))
+        return any(os.path.realpath(device_of(sakura_lbus.device_of(dev))) == device
+                   for dev, *_ in list_ports())
     except LinkError:
         return True
