@@ -206,12 +206,16 @@ set_property PACKAGE_PIN U20 [get_ports {o_read_data_valid}]
 set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data_valid}]
 
 # S6 ODDR2 forwards an inverted clock: S6 data launch/capture = bus falling edge;
-# K7 bridge launch/capture = bus rising edge. Board budgets must be checked on Linux.
+# K7 I/O FF launch/capture = deskewed bus rising edge. Keep I/O delays referenced
+# to the incoming clock at the pin, not the generated clock after the MMCM.
+# The 10 ns half-cycle checks remain timed; no multicycle/false-path workaround.
+# Board budgets must still be checked against the actual S6 bitstream/board.
 set_input_delay -clock shell_bus -clock_fall -max 6.0 [get_ports {i_common[*] i_addr_valid i_write_enable i_write_data_valid i_read_data_ready}]
 set_input_delay -clock shell_bus -clock_fall -min 0.0 [get_ports {i_common[*] i_addr_valid i_write_enable i_write_data_valid i_read_data_ready}]
 set_output_delay -clock shell_bus -clock_fall -max 4.0 [get_ports {o_read_data[*] o_addr_ready o_write_data_ready o_read_data_valid}]
 set_output_delay -clock shell_bus -clock_fall -min -0.5 [get_ports {o_read_data[*] o_addr_ready o_write_data_ready o_read_data_valid}]
-set_clock_groups -asynchronous -group [get_clocks shell_bus] -group [get_clocks -include_generated_clocks clk200]
+# Include the deskew MMCM outputs when separating bus and core clock domains.
+set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks shell_bus] -group [get_clocks -include_generated_clocks clk200]
 set_false_path -from [get_ports {pushsw i_bus_reset_n}]
 set_false_path -to [get_ports {led[*] trig_out osc_en_b}]
 set_property CFGBVS VCCO [current_design]

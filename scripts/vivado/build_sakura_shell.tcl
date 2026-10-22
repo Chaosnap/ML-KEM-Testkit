@@ -23,6 +23,8 @@ if {[file exists $xpr]} {
     set_property top $top [get_filesets sources_1]
     update_compile_order -fileset sources_1
 }
+# Also install the timing gate for --project-only and previously opened projects.
+source [file join $root scripts vivado configure_sakura_shell.tcl]
 if {$project_only} {
     puts "Project ready: $xpr (no synthesis was requested)"
     return
@@ -35,26 +37,20 @@ if {[get_property STATUS [get_runs synth_1]] ne "synth_design Complete!"} {
     error "Synthesis failed: inspect $project_dir/${project_name}.runs/synth_1/runme.log"
 }
 set impl [get_runs impl_1]
-set_property STEPS.OPT_DESIGN.ARGS.DIRECTIVE Explore $impl
-set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE ExtraTimingOpt $impl
-set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true $impl
-set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore $impl
-set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE AggressiveExplore $impl
+# Route and inspect timing before creating a programmable file. The pre-bitstream
+# hook repeats this gate if Generate Bitstream is later clicked in the GUI.
+launch_runs impl_1 -to_step route_design -jobs 4
+wait_on_run impl_1
+if {[get_property STATUS $impl] ne "route_design Complete!"} {
+    error "Routing failed; inspect the implementation runme.log"
+}
+open_run impl_1
+source [file join $root scripts vivado check_sakura_shell_timing.tcl]
+close_design
 launch_runs impl_1 -to_step write_bitstream -jobs 4
 wait_on_run impl_1
-if {[get_property PROGRESS $impl] ne "100%"} {error "Implementation failed; inspect runme.log"}
-open_run impl_1
-report_timing_summary -file [file join $project_dir timing.rpt]
-report_utilization -hierarchical -file [file join $project_dir utilization.rpt]
-report_clock_interaction -file [file join $project_dir clocks.rpt]
-report_cdc -file [file join $project_dir cdc.rpt]
-report_io -file [file join $project_dir pins.rpt]
-report_drc -file [file join $project_dir drc.rpt]
-set setup [get_timing_paths -setup -max_paths 1]
-set hold [get_timing_paths -hold -max_paths 1]
-if {![llength $setup] || ![llength $hold]} {error "Missing timing paths; review clock constraints"}
-if {[get_property SLACK $setup] < 0 || [get_property SLACK $hold] < 0} {
-    error "Timing NOT met. Do not use this build for acquisition; inspect timing.rpt"
+if {[get_property STATUS $impl] ne "write_bitstream Complete!"} {
+    error "Bitstream generation failed; inspect the implementation runme.log"
 }
 set bit [file join [get_property DIRECTORY $impl] ${top}.bit]
 if {![file exists $bit]} {error "Bitstream missing: $bit"}

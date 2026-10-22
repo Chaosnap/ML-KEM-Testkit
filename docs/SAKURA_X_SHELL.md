@@ -35,6 +35,9 @@
 独立 Spartan 探测发送一个帧格式正确但类型为 `0xf` 的命令，要求上游控制器返回
 `0x02`（未知命令）。根据随库 `command_control.v`，该分支不发起 Kintex 总线事务，
 也不复位 FPGA。收到正确应答才继续检查 Kintex。超时后不盲目重复发送，也不自动复位。
+但普通 Connect **不会清除前一次挂起的总线事务**。若控制器已卡在等待 Kintex 的状态，
+它也无法处理这个独立探测；因此先用 **Reset & connect**，再根据失败阶段定位。
+报告中的 `hard_reset: false` 表示这次连接没有主动执行该复位。
 Linux 配对优先读取 sysfs 的 `bInterfaceNumber` 及物理 USB 父设备；不可用时回退到
 串口元数据和唯一序列号。USB 产品名和 VID/PID **不能证明 EEPROM 的 FIFO 模式或当前 bitstream**。
 
@@ -68,7 +71,9 @@ PC / GUI
 FT2232H ── Spartan-6 shell controller
               │ 32-bit common(address/write data) + 32-bit read data + handshake
               │ forwarded bus clock, reset
-         Kintex-7 sakura_shell_bridge (50 MHz)
+         Kintex-7 deskew MMCM + I/O registers (50 MHz)
+              │ synchronous parallel handshake
+         sakura_shell_bridge (50 MHz)
               │ AXI-Lite → axil_cdc
          pqc_mlkem_top (206.25 MHz)
               │ STATUS.busy
@@ -145,9 +150,59 @@ vivado -mode batch -source scripts/vivado/build_sakura_shell.tcl -tclargs --proj
 依次 Run Synthesis → Run Implementation → Generate Bitstream。
 Hardware Manager → Open Target → 选择 CN5 上的 `xc7k160t` → Program Device → 选择新 bit。
 
+**已有 GUI 工程更新本次时序修复时：**
+
+1. 更新仓库文件后重新打开此 shell 工程；Sources 中的源码路径应指向当前 clone。
+2. **Tools → Run Tcl Script**，选择仓库的 `scripts/vivado/configure_sakura_shell.tcl`。
+   只更新当前工程的实现设置并安装生成前检查，不启动构建，也不连接硬件。
+   新建工程或使用更新后的 build 脚本时，这一步会自动完成。
+3. 在 Design Runs 对 `synth_1` 执行 **Reset Run**，重新 Run Synthesis → Run Implementation。
+   不要直接沿用旧的 implemented design/checkpoint。
+4. 打开 **Open Implemented Design → Report Timing Summary**，检查 setup/hold 均通过，
+   再 Generate Bitstream。生成前检查会阻止 setup/hold slack 为负的构建。
+   检查失败不会删除磁盘上原有的旧 bit；旧 bit 不能当作本次成功输出。
+5. 下载新 Kintex bit 后，在采集 GUI 点 **Reset & connect**，观察
+   Spartan command reply → Kintex shell identity → ML-KEM core 三步结果。
+   新增的 I/O 寄存器保持原握手协议，无需因此重建 Spartan bit。
+
 工程独立，不覆盖旧 SAKURA/Arty 工程。构建脚本生成 timing、CDC、pin、utilization、DRC 报告，
-setup/hold slack 为负时会报错。仍需检查 `timing.rpt` 的未约束路径、`cdc.rpt` 以及板外接口预算。
+**先布线、检查 setup/hold，再生成 bit**；GUI Generate Bitstream 使用相同检查。
+还会生成 `shell_outputs_max.rpt` / `shell_outputs_min.rpt` 和
+`shell_inputs_max.rpt` / `shell_inputs_min.rpt`，覆盖返回总线及输入总线的 setup/hold 路径。
+`cdc.rpt` 现在输出详细端点。仍需检查 `timing.rpt` 的未约束路径、CDC 及板外接口预算；
+setup/hold 通过不等于已完成硬件验证，也不代表 CDC 警告可以忽略。
 当前 XDC 的源同步 I/O 延迟是明确的实现预算，不是已在实板测得的时序结论。
+
+### 2026-10-22：已收到的布线报告与本次修复范围
+
+用户提供的旧构建报告（Vivado 2024.1，Routed）显示：
+
+| 路径 | 结果 |
+| --- | --- |
+| ML-KEM `core_raw → core_raw` | setup WNS **+0.411 ns**，没有 setup 失败端点 |
+| 返回总线 `shell_bus → shell_bus` | setup WNS **−3.641 ns**，35 个失败端点；截图包括三个握手输出及 `o_read_data` |
+| 最差路径 | `u_bridge/state_reg[2]_replica` → `o_write_data_ready` |
+| 路径预算 | 半周期 10 ns，输出预算 4 ns；源时钟插入延迟 4.863 ns、数据路径 4.743 ns、不确定度 0.035 ns |
+
+计算为 `10 − 4 − 0.035 − 4.863 − 4.743 = −3.641 ns`。
+这说明旧构建的返回接口没有满足所设约束，不能保证 Spartan 正确接收；
+并不能仅凭 WNS 证明这就是所有 `Spartan ACK timeout` 的唯一原因。
+
+修改顶层为 `bus_clk → MMCM → BUFG`，反馈也经过 BUFG，以补偿总线时钟插入延迟；
+50 MHz 输入、50 MHz 输出，MMCM VCO 1000 MHz。引脚 AB11 为 MRCC，可使用专用时钟路径。
+复位包含两组 MMCM 的锁定状态，并在各自时钟域同步释放。
+所有总线输入同时寄存，所有返回数据/握手同时经 IOB 输出寄存器，避免 FSM 译码直接驱动引脚。
+这会增加总线握手延迟；ML-KEM 核、206.25 MHz 核频率及其运算周期没有修改。
+XDC 继续检查原 10 ns 半周期，并将新生成的总线时钟加入与核心隔离的异步时钟组。
+
+这组改动**只经过源码及已有报告核对，没有本地运行仿真、综合、实现或上板测试**。
+必须用重新布线的结果确认 I/O 寄存器放置、全部 setup/hold 裕量和实际通信。
+旧 `cdc.rpt` 另外列出 core→bus 的两个 unsafe 端点，但摘要没有具体路径；
+新报告的 `-details` 用于继续定位，不能将它们宣称为已解决。
+
+实现参考：[AMD UG949：主时钟作为 I/O 延迟基准](https://docs.amd.com/r/2023.2-English/ug949-vivado-design-methodology/Using-a-Primary-Clock)、
+[UG912：IOB 寄存器属性](https://docs.amd.com/r/en-US/ug912-vivado-properties/IOB)、
+[UG894：生成 bit 前的 Tcl hook](https://docs.amd.com/r/2021.1-English/ug894-vivado-tcl-scripting/Defining-Tcl-Hook-Scripts)。
 
 ## 3. 五条应用命令
 
