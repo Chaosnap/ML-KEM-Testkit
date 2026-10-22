@@ -1,8 +1,49 @@
 # SAKURA-X：基于 sakura-x-shell 的 ML-KEM-768 移植
 
 本版本按 `RESET / LOAD_DK / LOAD_CT / START / READ_SS` 实现 Decaps 采集链路。
-**此移植未在本机运行测试、仿真、综合、实现或上板验证。下面命令由你在 Linux 执行。**
+**此移植及本次 GUI 修改未在本机运行测试、仿真、综合、实现或上板验证。**
 随仓库提供上游 Spartan-6 预编译 bit；新的 Kintex bit 必须在 Linux 用 Vivado 构建。
+
+## GUI 连接与排障（无需通信命令行）
+
+更新项目并重启 GUI 服务后，在浏览器刷新页面：
+
+1. **Connection → Board interface → SAKURA-X shell — USB FIFO**。
+2. 点 **Refresh devices**，选择板卡序列号对应的设备，例如 `FT9A4QV0`。
+   GUI 只列出已识别为 interface 00 的数据通道，并显示同一个 USB 设备的 B 通道。
+   不需要手写 `sakura-shell:`，也不要按 `/dev/ttyUSB0/1` 的尾号判断 A/B。
+   旧名称 `USB <-> Serial Converter` 可以手动选择；不要求先改产品字符串。
+3. 点 **Connect & diagnose**。GUI 依次检查 A/B 配对、打开 B 并释放复位、打开 A、
+   Spartan 命令应答、Kintex shell 标识、ML-KEM 核。每一步单独显示 PASS/FAIL。
+4. 曾出现超时、半包或重新下载 FPGA 时，点 **Reset & connect**。
+   此按钮通过 Channel B RTS_N 复位 S6/K7 逻辑，然后重新检查连接。
+   它会丢弃当前运行及输入有效状态；恢复后重载 DK/CT。不会写 EEPROM 或烧录 bitstream。
+5. 失败时点 **Copy connection report**，直接粘贴报告，或截取 **Connection checks**。
+   报告包含 USB 标识、A/B 配对及失败阶段，不包含 DK、CT 或 trace。
+   展开 **Detected USB channels** 可看 GUI 服务实际枚举到的设备。
+
+连接诊断的含义：
+
+| 失败阶段 | 能确定的范围 / 下一步 |
+| --- | --- |
+| USB channel pairing | 软件尚未找到同一个 USB 设备的 A/B；刷新设备、检查板卡数据 USB 是否接入 |
+| Open reset channel B / Open FIFO channel A | 设备访问失败；关闭其他占用 A/B 的程序，检查 Linux 账户访问权限 |
+| Spartan command reply，`0/1 bytes` | 尚未获得 Spartan 命令应答；检查 S6 是否加载 **shell** bit、A 是否为 245 FIFO、复位是否释放；不能直接归因于 Kintex |
+| Kintex shell identity | 先前的 Spartan 探测已通过；检查匹配的 `sakura_shell_top.bit`、两片 FPGA 间总线、时钟及复位 |
+| ML-KEM core | shell 标识已收到；继续定位 Kintex 桥接器到核心的 AXI/核心复位 |
+
+独立 Spartan 探测发送一个帧格式正确但类型为 `0xf` 的命令，要求上游控制器返回
+`0x02`（未知命令）。根据随库 `command_control.v`，该分支不发起 Kintex 总线事务，
+也不复位 FPGA。收到正确应答才继续检查 Kintex。超时后不盲目重复发送，也不自动复位。
+Linux 配对优先读取 sysfs 的 `bInterfaceNumber` 及物理 USB 父设备；不可用时回退到
+串口元数据和唯一序列号。USB 产品名和 VID/PID **不能证明 EEPROM 的 FIFO 模式或当前 bitstream**。
+
+点 **Open command panel** 可打开五条命令：
+**RESET → LOAD_DK → LOAD_CT → START → READ_SS**。
+可直接选择 `.bin` / `.hex` / `.txt` 输入文件，也可加载选中的测试向量；文件选择只填表，
+点击 LOAD 才传到板上。START 等待完成、不读取 K；READ_SS 单独读取 32 字节结果。
+**Run full Decaps & check K** 会自动完成加载、START、读取及预期结果比较。
+采集仍使用 Acquisition 页面；shell 模式隐藏波特率与 KeyGen/Encaps，Arty 保留 UART 界面。
 
 ## 1. 使用这一套匹配的文件
 
@@ -10,7 +51,7 @@
 | --- | --- |
 | Spartan-6，CN10 | `third_party/sakura_x_shell/sakura-x-shell-ctrl/sakura-x-shell-ctrl.bit` |
 | Kintex-7，CN5 | 本项目新构建的 `sakura_shell_top.bit` |
-| GUI 数据端口 | `sakura-shell:<Channel A 的端口>` |
+| GUI 数据端口 | 选择 **SAKURA-X shell — USB FIFO**，再选择板卡；内部端口名为 `sakura-shell:<Channel A>` |
 | FT2232H A，USB interface 00 | 245 FIFO 模式；传数据和命令 |
 | FT2232H B，USB interface 01 | UART 模式；只使用 RTS_N 复位，不发送 UART 字节 |
 
@@ -62,9 +103,9 @@ EEPROM 需设置 A=245 FIFO、B=UART。模板在：
 `third_party/sakura_x_shell/ft2232h_config/sakura-x-shell.xml`。
 用 FT_PROG 配置前导出本块板的 EEPROM 备份，保留唯一序列号。模板的产品字符串是
 `SAKURA-X Shell`，GUI 只有精确匹配该字符串与 interface 00 才标为推荐；旧产品名也可手动选择
-`sakura-shell:` 项。**改产品名本身不会把 UART 自动变成 FIFO**，必须同时检查 A/B 模式。
+FIFO 设备。**改产品名本身不会把 UART 自动变成 FIFO**，必须同时检查 A/B 模式。
 Linux 使用 `ftdi_sio` 提供的端口，不需要卸载/解绑该驱动，不要让其他程序打开 A 或 B。
-不要按 ttyUSB0/1 的尾号猜通道；驱动按 USB interface 和相同 serial 配对 A/B。
+不要按 ttyUSB0/1 的尾号猜通道；驱动按 USB interface、物理 USB 父设备或唯一 serial 配对 A/B。
 
 ### Spartan：使用现成 shell bit
 
@@ -189,7 +230,7 @@ make gui
 合法 CT 与修改过的 CT 的 Decaps，并与项目软件参考 K 比较（包含 implicit rejection）。
 这只是最初 bring-up，不替代后续全面验证。
 
-GUI Connection 选择 `sakura-shell:` 项，FIFO 模式忽略波特率；不要选 raw 通道或旧 `sakura:`。
+GUI Connection 选择 **SAKURA-X shell — USB FIFO**，再选择板卡；此模式不显示波特率。
 连接时 A/B 一起独占，后台 monitor 不会在 `run()` 持有锁时发查询。
 然后连接示波器，按原流程生成向量、Check trigger、开始小批量 CPA/TVLA 采集。
 `trig_out` 保持原核心 busy 定义，因此现有 BaseMul 窗口和 206.25 MHz 时间换算不变。
@@ -206,10 +247,10 @@ Spartan LED 按随附 shell 的定义；不要继续套用旧 AIST bit 的心跳
 | 功能 | CHECK 两条 Decaps 成功；GUI 多条向量的 K 全匹配 |
 | quiet window | 抓取触发及跨 FPGA 数据/握手：计算期间无新的访问，结果晚于记录末尾 |
 | 触发/时序 | 脉宽对应 CYCLE_COUNT；Vivado setup/hold/CDC/I/O 报告可接受 |
-| 异常恢复 | 断开 GUI 后 `--hard RESET` 可恢复半包、超时；重连后重载 DK/CT |
+| 异常恢复 | GUI 的 **Reset & connect** 可用于恢复半包、超时；重连后重载 DK/CT |
 
-超时不会自动重发 `START`，避免重复运算。收到 fatal link error 时停止采集，关闭 GUI 连接，
-运行 `--hard RESET`，重新连接。普通 RESET 不覆盖 bitstream，不清 EEPROM，不编程 PROM。
+超时不会自动重发 `START`，避免重复运算。收到 fatal link error 时停止采集，在 GUI 点
+**Reset & connect**，重连后重载 DK/CT。普通 RESET 不覆盖 bitstream，不清 EEPROM，不编程 PROM。
 
 ## 6. 二进制接口（维护用）
 

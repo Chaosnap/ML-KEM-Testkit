@@ -50,23 +50,53 @@
       <section class="page active" id="page-connect" data-title="Connection" data-desc="Connect the FPGA board and the oscilloscope">
         <div class="grid grid-2">
           <div class="card">
-            <div class="card-head"><h2>FPGA board</h2><span class="sub">UART / SAKURA-X FIFO to the ML-KEM-768 core</span></div>
-            <label class="f">Serial port</label>
+            <div class="card-head"><h2>FPGA board</h2><span class="sub" id="board-link-sub">Choose the board interface</span></div>
+            <label class="f">Board interface</label>
+            <select id="board-transport">
+              <option value="shell">SAKURA-X shell — USB FIFO</option>
+              <option value="uart">Arty / external adapter — UART</option>
+              <option value="legacy">SAKURA-X — legacy AIST local bus</option>
+            </select>
+            <label class="f" id="board-device-label">Board device</label>
             <div class="row">
               <select id="board-port" class="grow"></select>
-              <button class="btn secondary icon" id="board-refresh-ports" title="Rescan serial ports">↻</button>
+              <button class="btn secondary sm" id="board-refresh-ports" title="Rescan USB devices">Refresh devices</button>
             </div>
             <div class="hint" id="board-port-hint"></div>
+            <div id="board-shell-help" class="hidden">
+              <div class="kv" id="board-channels"></div>
+              <div class="hint">Data: PC → USB FIFO A → Spartan-6 → Kintex-7. Channel B uses RTS only for reset; no UART data or baud setting is used.</div>
+              <div class="hint" id="board-shell-identity"></div>
+              <details class="hint"><summary>Detected USB channels</summary>
+                <div class="table-wrap"><table class="t"><thead><tr><th>device</th><th>USB ID / interface</th><th>serial / product</th></tr></thead><tbody id="board-usb-devices"></tbody></table></div>
+              </details>
+              <details class="hint"><summary>Required FPGA files and USB mode</summary>
+                <p>Spartan: <code>third_party/sakura_x_shell/sakura-x-shell-ctrl/sakura-x-shell-ctrl.bit</code><br>
+                Kintex: the newly built <code>sakura_shell_top.bit</code>.<br>
+                FT2232H Channel A must be in <b>245 FIFO</b> mode; Channel B in UART mode. The USB product name alone does not confirm the mode.</p>
+                <p>Changing the GUI interface or clicking Reset does not program either FPGA or change the USB EEPROM.</p>
+              </details>
+            </div>
             <div class="cols-2">
-              <div><label class="f">Baud rate</label>
+              <div id="board-baud-field"><label class="f">Baud rate</label>
                 <input id="board-baud" type="text" value="115200" list="baud-options">
                 <datalist id="baud-options"><option value="115200"><option value="230400"><option value="460800"><option value="921600"><option value="1000000"></datalist>
               </div>
-              <div><label class="f">&nbsp;</label><label class="check" style="margin-top:8px"><input type="checkbox" id="board-auto"> Reconnect automatically</label></div>
+              <div id="board-auto-field"><label class="f">&nbsp;</label><label class="check" style="margin-top:8px"><input type="checkbox" id="board-auto"> Reconnect automatically</label></div>
             </div>
             <div class="conn-state"><span class="dot" id="board-dot"></span><span class="txt" id="board-state-txt">Not connected</span>
               <button class="btn primary" id="board-conn-btn">Connect</button></div>
             <div class="conn-error hidden" id="board-error"></div>
+            <div class="btn-row hidden" id="board-shell-actions">
+              <button class="btn secondary" id="board-hard-reset">Reset &amp; connect</button>
+              <button class="btn ghost sm" id="board-copy-report">Copy connection report</button>
+              <button class="btn ghost sm" data-goto="advanced">Open command panel →</button>
+            </div>
+            <div class="hint hidden" id="board-reset-hint">Reset &amp; connect pulses Channel B RTS_N, clears the current run and loaded-input state, then checks the link. Reload DK/CT afterward.</div>
+            <div id="board-checks-wrap" class="hidden">
+              <div class="section-title">Connection checks</div>
+              <div class="table-wrap"><table class="t"><thead><tr><th>stage</th><th>result</th><th>detail / next action</th></tr></thead><tbody id="board-checks"></tbody></table></div>
+            </div>
 
             <div class="section-title">Core</div>
             <div class="kv" id="board-info"></div>
@@ -351,14 +381,14 @@
         <div class="grid grid-2">
           <div class="card">
             <div class="card-head"><h2>Link settings</h2><span class="sub">host side, applied to the connected board and every reconnect</span></div>
-            <div class="hint" style="margin-top:0">Every operation is one 0x05 Run frame: the FPGA writes CTRL.start, stays silent until the core
+            <div class="hint" id="ls-protocol-help" style="margin-top:0">Every operation is one 0x05 Run frame: the FPGA writes CTRL.start, stays silent until the core
               is done, then replies with STATUS, CYCLE_COUNT, ERROR_CODE and the result. There is no STATUS polling.</div>
             <div class="cols-2">
               <div><label class="f">Operation timeout (s)</label><input id="ls-timeout" type="text" value="5"></div>
               <div><label class="f">&nbsp;</label><button class="btn secondary" id="ls-save">Apply</button></div>
             </div>
             <div class="kv" id="ls-info" style="margin-top:14px"></div>
-            <div class="btn-row"><button class="btn ghost sm" id="ls-reprobe">Probe 0x05 again</button><span class="hint" style="margin:0">Protocol reference: docs/UART_PROTOCOL.md</span></div>
+            <div class="btn-row"><button class="btn ghost sm" id="ls-reprobe">Check operation support</button><span class="hint" id="ls-protocol-ref" style="margin:0">Protocol reference: docs/UART_PROTOCOL.md</span></div>
           </div>
           <div class="card">
             <div class="card-head"><h2>Buffer layout</h2><span class="sub">byte offsets in the 8 KB data buffer (cpa_toolkit/config.py)</span></div>
@@ -368,11 +398,11 @@
         </div>
 
         <div class="card">
-          <div class="card-head"><h2>Protocol steps</h2><span class="sub">one operation step by step — the SimpleSerial commands x / m / s / c / e / a</span>
+          <div class="card-head"><h2>Protocol steps</h2><span class="sub" id="op-protocol-sub">Load inputs, start the core, then read the result</span>
             <div class="actions"><button class="btn ghost sm" id="op-fill">Load selected test vector</button></div></div>
           <div class="steps">
             <div class="step"><span class="key">x</span><div class="grow"><b>Reset</b><div class="sub">CTRL ← RESET</div></div><button class="btn secondary sm" data-step="reset">Reset</button></div>
-            <div class="step"><span class="key">m</span><div class="grow"><b>Set mode</b><div class="sub">SEC_LEVEL, OP_MODE, DATA_IN/OUT</div></div>
+            <div class="step" id="op-configure-step"><span class="key">m</span><div class="grow"><b>Set mode</b><div class="sub">SEC_LEVEL, OP_MODE, DATA_IN/OUT</div></div>
               <select id="op-mode" style="width:130px"><option value="2">Decaps</option><option value="1">Encaps</option><option value="0">KeyGen</option></select>
               <button class="btn secondary sm" data-step="configure">Configure</button></div>
             <div class="step"><span class="key">s</span><div class="grow"><b>Send secret key</b><div class="sub">dk → 0x0000 (2400 B)</div></div><button class="btn secondary sm" data-step="load_sk">Send dk</button></div>
@@ -382,8 +412,8 @@
             <div class="step"><span class="key">a</span><div class="grow"><b>Get result</b><div class="sub">read the output at 0x0E00</div></div><button class="btn secondary sm" data-step="read_output">Read</button></div>
           </div>
           <div class="grid grid-2" style="margin-top:12px">
-            <div><label class="f">dk (2400 bytes, hex)</label><textarea id="op-dk" rows="3"></textarea></div>
-            <div><label class="f">c (1088 bytes, hex)</label><textarea id="op-ct" rows="3"></textarea></div>
+            <div><label class="f">DK (2,400 bytes)</label><input id="op-dk-file" type="file" accept=".bin,.hex,.txt"><div class="hint">Choose a binary / hex file, paste hex below, or load a test vector. Then click LOAD_DK.</div><textarea id="op-dk" rows="3" placeholder="Decapsulation key in hex"></textarea></div>
+            <div><label class="f">CT (1,088 bytes)</label><input id="op-ct-file" type="file" accept=".bin,.hex,.txt"><div class="hint">Choose a binary / hex file, paste hex below, or load a test vector. Then click LOAD_CT.</div><textarea id="op-ct" rows="3" placeholder="Ciphertext in hex"></textarea></div>
           </div>
           <div class="btn-row"><span class="hint" id="op-expected" style="margin:0"></span><span class="grow"></span>
             <label class="check"><input type="checkbox" id="op-resend-dk" checked> resend dk</label>

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 import struct
 import threading
 import time
@@ -29,8 +30,41 @@ def device_of(port: str) -> str:
     return port[len(PREFIX):] if port.startswith(PREFIX) else port
 
 
-def interface_number(port) -> int | None:
-    """Identify an FTDI channel by USB interface, never ttyUSB numbering."""
+def usb_identity(port) -> dict:
+    """Read USB identity from Linux sysfs, with pyserial metadata as fallback.
+
+    ttyUSB numbering can change after unplugging. The parent USB device and
+    bInterfaceNumber identify the physical pair even when a udev alias or
+    incomplete ListPortInfo does not contain the serial/location fields.
+    """
+    result = dict(device=port.device, vid=port.vid, pid=port.pid,
+                  serial=port.serial_number or "", product=port.product or "",
+                  manufacturer=port.manufacturer or "",
+                  interface=None, usb_path="")
+    path = Path("/sys/class/tty") / Path(os.path.realpath(port.device)).name / "device"
+    if path.exists():
+        resolved = path.resolve()
+        for parent in (resolved, *resolved.parents):
+            try:
+                if (parent / "bInterfaceNumber").is_file():
+                    result["interface"] = int((parent / "bInterfaceNumber").read_text().strip(), 16)
+                if (parent / "idVendor").is_file():
+                    result.update(vid=int((parent / "idVendor").read_text().strip(), 16),
+                                  pid=int((parent / "idProduct").read_text().strip(), 16),
+                                  usb_path=str(parent))
+                    for field, filename in (("serial", "serial"), ("product", "product"),
+                                            ("manufacturer", "manufacturer")):
+                        if (parent / filename).is_file():
+                            result[field] = (parent / filename).read_text().strip()
+                    break
+            except (OSError, ValueError):
+                continue
+    if result["interface"] is None:
+        result["interface"] = _metadata_interface(port)
+    return result
+
+
+def _metadata_interface(port) -> int | None:
     if port.location and ":1." in port.location:
         value = port.location.rsplit(".", 1)[-1]
         if value in ("0", "1"):
@@ -41,54 +75,115 @@ def interface_number(port) -> int | None:
     return None
 
 
+def interface_number(port) -> int | None:
+    """Identify the USB interface, never infer it from a ttyUSB suffix."""
+    return usb_identity(port)["interface"]
+
+
 def is_shell(port) -> bool:
     """Only the exact EEPROM product string permits automatic selection."""
-    return (port.vid, port.pid, port.product) == (0x0403, 0x6010, PRODUCT)
+    p = usb_identity(port)
+    return (p["vid"], p["pid"], p["product"]) == (0x0403, 0x6010, PRODUCT)
+
+
+def _same_usb(a, b):
+    if (a["vid"], a["pid"]) != (b["vid"], b["pid"]):
+        return False
+    if a["usb_path"] and b["usb_path"]:
+        return a["usb_path"] == b["usb_path"]
+    return bool(a["serial"]) and a["serial"] == b["serial"]
+
+
+def usb_ports() -> list[dict]:
+    """List physical tty devices once; USB metadata does not open a port."""
+    from serial.tools import list_ports
+    unique = {}
+    for p in list_ports.comports():
+        unique.setdefault(os.path.realpath(p.device), usb_identity(p))
+    return list(unique.values())
+
+
+def _reset_peer(a, ports):
+    matches = [p for p in ports if p["interface"] == 1 and _same_usb(a, p)]
+    if len(matches) != 1:
+        raise T.LinkError("Channel B could not be paired with Channel A on the same USB device. "
+                          "Reconnect the board USB and click Refresh devices.")
+    return matches[0]
+
+
+def connection_devices() -> list[dict]:
+    """Expose FIFO candidates with an explicit, non-guessing A/B mapping."""
+    ports = usb_ports()
+    result = []
+    for a in ports:
+        if (a["vid"], a["pid"], a["interface"]) != (0x0403, 0x6010, 0):
+            continue
+        if "digilent" in (a["manufacturer"] + " " + a["product"]).lower():
+            continue  # An Arty JTAG channel is not a SAKURA FIFO candidate.
+        try:
+            b, error = _reset_peer(a, ports), ""
+        except T.LinkError as e:
+            b, error = {}, str(e)
+        result.append(dict(a, device=PREFIX + a["device"], data_port=a["device"],
+                           reset_port=b.get("device", ""), pair_error=error,
+                           recommended=a["product"] == PRODUCT,
+                           hint="Channel A: FIFO data; Channel B: RTS reset only"))
+    return result
 
 
 def paired_reset_port(data_port: str) -> str:
-    """Find Channel B by the serial number of an explicitly selected Channel A."""
-    from serial.tools import list_ports
-    ports = list(list_ports.comports())
-    selected = [p for p in ports if os.path.realpath(p.device) == os.path.realpath(data_port)]
+    """Pair by physical USB parent, or unique serial when sysfs is unavailable."""
+    ports = usb_ports()
+    selected = [p for p in ports if os.path.realpath(p["device"]) == os.path.realpath(data_port)]
     if len(selected) != 1:
         raise T.LinkError("cannot identify Channel A: %s" % data_port)
     a = selected[0]
-    if (a.vid, a.pid) != (0x0403, 0x6010) or interface_number(a) != 0 or not a.serial_number:
-        raise T.LinkError("select FT2232H Channel A (USB interface 00) with a unique serial number")
-    matches = [p.device for p in ports if (p.vid, p.pid, p.serial_number) ==
-               (a.vid, a.pid, a.serial_number) and interface_number(p) == 1]
-    if len(matches) != 1:
-        raise T.LinkError("cannot uniquely pair Channel B with serial %s" % a.serial_number)
-    return matches[0]
+    if (a["vid"], a["pid"], a["interface"]) != (0x0403, 0x6010, 0):
+        raise T.LinkError("selected device is not FT2232H Channel A (USB interface 00). "
+                          "Select a SAKURA-X USB FIFO device in Connection; do not select Channel B.")
+    return _reset_peer(a, ports)["device"]
 
 
 class ShellLink:
     """Serialized native shell accesses; owns data A and reset B together."""
 
-    def __init__(self, port: str, baud: int = C.BAUD):
+    def __init__(self, port: str, baud: int = C.BAUD, report=None):
         import serial
-        self.port, self.baud = port, baud  # baud is ignored by the FIFO channel
+        self.port, self.baud = port, None  # no UART baud on the FIFO data path
         self.lock = threading.RLock()
         self.closed = False
         self.ser = self.reset_ser = None
         self._serial_exc = (serial.SerialException, OSError, TypeError, AttributeError)
         self.quiet_ms = 20.0
+        stage = "USB channel pairing"
         try:
-            reset_port = paired_reset_port(device_of(port))
+            self.data_port = device_of(port)
+            self.reset_port = paired_reset_port(self.data_port)
+            if report:
+                report(stage, True, "A: %s; B: %s (same USB device)" % (self.data_port, self.reset_port))
             # Set RTS before open: active-low RTS_N must stay HIGH in normal use.
             # Opening B with pyserial's default RTS=True would hold S6 in reset.
+            stage = "Open reset channel B"
             self.reset_ser = serial.Serial(port=None, baudrate=115200, timeout=0.3,
                                            write_timeout=2, exclusive=True)
             self.reset_ser.rts = False
             self.reset_ser.dtr = False
-            self.reset_ser.port = reset_port
+            self.reset_ser.port = self.reset_port
             self.reset_ser.open()
-            self.ser = serial.Serial(device_of(port), baud, timeout=0.5,
+            if report:
+                report(stage, True, "RTS_N released; no UART data is sent")
+            stage = "Open FIFO channel A"
+            # The tty API requires a nominal baud; EEPROM FIFO mode ignores it.
+            self.ser = serial.Serial(self.data_port, C.BAUD, timeout=0.5,
                                      write_timeout=2, exclusive=True)
             self.ser.reset_input_buffer()
+            if report:
+                report(stage, True, "USB FIFO handle opened; protocol response not yet checked")
         except Exception as e:
             self.close()
+            if report:
+                report(stage, False, str(e) + " Close other applications using either A or B; "
+                       "check device access permissions in Linux if access is denied.")
             raise T.LinkError("cannot open shell data/reset ports: %s" % e) from e
 
     def close(self):
@@ -112,14 +207,18 @@ class ShellLink:
                 self.close()
                 raise T.ProtocolError("shell USB lost: %s" % e, fatal=True) from e
 
-    def _read(self, n: int, wait: float = 0.0) -> bytes:
+    def _read(self, n: int, wait: float = 0.0, phase="reply") -> bytes:
         self.ser.timeout = 0.5 + wait
         data = self.ser.read(n)
         if len(data) != n:
             # There is no in-band resync after a partial native shell frame.
             # Stop the campaign; explicit Channel-B reset is the recovery path.
-            raise T.ProtocolError("shell timeout (%d/%d bytes); use Channel-B hard reset, "
-                                  "then reconnect and reload DK/CT" % (len(data), n), fatal=True)
+            hint = ("No complete Spartan command ACK. Check Channel A FIFO mode, the shell "
+                    "Spartan bitstream and reset state." if phase == "Spartan ACK" else
+                    "Spartan ACK was received, but Kintex did not return a complete word. "
+                    "Check the matching sakura_shell_top.bit, inter-FPGA bus and clocks.")
+            raise T.ProtocolError("%s timeout (%d/%d bytes). %s Use Reset & connect in the GUI, "
+                                  "then reload DK/CT." % (phase, len(data), n, hint), fatal=True)
         return data
 
     @staticmethod
@@ -134,10 +233,27 @@ class ShellLink:
             frame = self._header(cmd, address, words) + payload
             if self.ser.write(frame) != len(frame):
                 raise T.ProtocolError("short shell write; hard reset required", fatal=True)
-            ack = self._read(1)
+            ack = self._read(1, phase="Spartan ACK")
             if ack != b"\0":
                 raise T.ProtocolError("shell rejected frame: 0x%02x; hard reset required" % ack[0], fatal=True)
-            return self._read(words * 4, wait) if cmd == 1 else b""
+            return self._read(words * 4, wait, phase="Kintex data") if cmd == 1 else b""
+
+    def probe_controller(self):
+        """Check S6 independently of K7 using a well-framed unknown command.
+
+        Upstream command_control.v returns 0x02 for command type 0xf and
+        goes straight back to WAIT without issuing any inter-FPGA transaction.
+        A timeout leaves framing unknown; only explicit hard reset recovers it.
+        """
+        with self._io():
+            frame = self._header(0xf, 0, 1)
+            if self.ser.write(frame) != len(frame):
+                raise T.ProtocolError("short controller probe write; use Reset & connect", fatal=True)
+            ack = self._read(1, phase="Spartan ACK")
+            if ack != b"\x02":
+                raise T.ProtocolError("unexpected Spartan probe response 0x%02x; expected shell "
+                                      "response 0x02. Use Reset & connect; verify the S6 shell bit." % ack[0],
+                                      fatal=True)
 
     def read_words(self, address, count=1, wait=0.0):
         """Read 1..16 native big-endian bus words."""
@@ -262,6 +378,7 @@ class ShellTarget(T.Target):
         """Return GUI metadata including FIFO mode and the quiet tail."""
         info = super().info()
         info.update(transport="sakura-shell", run_command="START", baud=None,
+                    data_port=self.link.data_port, reset_port=self.link.reset_port,
                     quiet_tail_ms=self.link.quiet_ms)
         return info
 

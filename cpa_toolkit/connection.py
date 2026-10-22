@@ -1,4 +1,4 @@
-"""Non-blocking connection management for the GUI: the board (UART) and the scope (VISA).
+"""Non-blocking GUI connections: board UART / USB FIFO and scope VISA.
 
 Every state change is instant from the caller's point of view:
 
@@ -57,13 +57,15 @@ class Managed:
         self.info: dict | None = None
         self.error = ""
         self.params: dict = {}
+        self.checks: list[dict] = []
         self.since = time.time()
         self._closer: threading.Thread | None = None
 
     def snapshot(self) -> dict:
         with self._lock:
             return {"state": self.state, "info": self.info, "error": self.error,
-                    "params": dict(self.params), "since": self.since}
+                    "params": dict(self.params), "since": self.since,
+                    "checks": [dict(c) for c in self.checks]}
 
     def connect(self, params: dict, opener) -> dict:
         """``opener(params, publish) -> (handle, info)``; it must call
@@ -75,6 +77,7 @@ class Managed:
             old = self.handle or self._pending
             self.handle = self._pending = None
             self.state, self.params, self.info, self.error = "connecting", dict(params), None, ""
+            self.checks = []
             self.since = time.time()
         if old is not None:
             self._closer = _close_in_background(old)
@@ -83,13 +86,17 @@ class Managed:
         return self.snapshot()
 
     def _worker(self, gen: int, params: dict, opener) -> None:
-        def publish(handle):
+        def publish(handle=None, check=None):
             with self._lock:
                 current = gen == self._gen
                 if current:
-                    self._pending = handle
+                    if handle is not None:
+                        self._pending = handle
+                    if check is not None:
+                        self.checks.append(check)
             if not current:
-                _close(handle)
+                if handle is not None:
+                    _close(handle)
                 raise _Cancelled()
 
         closer = self._closer
@@ -165,6 +172,37 @@ NO_ANSWER_HINT = (
 
 
 def open_board(params: dict, publish):
+    """Connect with staged shell diagnostics; never retry an incomplete FIFO frame."""
+    if params["port"].startswith("sakura-shell:"):
+        from sakura_shell import ShellLink, ShellTarget
+
+        def report(name, ok, detail):
+            publish(check={"name": name, "ok": ok, "detail": detail})
+
+        target = ShellTarget(ShellLink(params["port"], report=report))
+        target.op_timeout = float(params.get("op_timeout", target.op_timeout))
+        publish(target)
+        stage = "Spartan command reply"
+        try:
+            if params.get("hard_reset"):
+                stage = "Channel B reset"
+                target.link.hard_reset()
+                report(stage, True, "RTS_N pulsed and released; reload DK/CT before START")
+            stage = "Spartan command reply"
+            target.link.probe_controller()
+            report(stage, True, "Spartan shell decoder replied; PC-to-Spartan FIFO path works")
+            stage = "Kintex shell identity"
+            target.probe_run()
+            report(stage, True, "SK ABI 1 received from Kintex; inter-FPGA read path works")
+            stage = "ML-KEM core"
+            info = target.info()
+            if info["alg_id"] != 1:
+                raise ValueError("unexpected ALG_ID %d; expected ML-KEM (1)" % info["alg_id"])
+            report(stage, True, "ML-KEM core %s; connection ready for Decaps" % info["version"])
+            return target, info
+        except Exception as e:
+            report(stage, False, str(e))
+            raise
     target = T.Target.open(params["port"], int(params["baud"]))
     target.op_timeout = float(params.get("op_timeout", target.op_timeout))
     publish(target)
@@ -232,7 +270,7 @@ class LinkMonitor:
         if target is None:
             return
         if not T.port_exists(snap["params"]["port"]):
-            self.board.mark_lost("serial port disappeared (USB unplugged or board powered off)", target)
+            self.board.mark_lost("board USB device disappeared (USB unplugged or board powered off)", target)
             return
         if not target.link.lock.acquire(blocking=False):
             return  # an operation is talking to the board right now: it is alive
@@ -249,5 +287,7 @@ class LinkMonitor:
         self._misses = 0 if ok else self._misses + 1
         if self._misses >= 2:
             self._misses = 0
-            self.board.mark_lost("the core stopped answering (board reset or reprogrammed? Arty Z7 "
-                                 "PS build: rerun scripts/board/boot_arty_z7_ps.py)", target)
+            hint = ("Use Reset & connect, then reload DK/CT." if
+                    snap["params"]["port"].startswith("sakura-shell:") else
+                    "Board reset or reprogrammed? Arty Z7 PS build: rerun scripts/board/boot_arty_z7_ps.py.")
+            self.board.mark_lost("the core stopped answering. " + hint, target)

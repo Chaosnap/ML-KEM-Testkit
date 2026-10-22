@@ -414,7 +414,8 @@ function coverageKpi(axis) {
 // global state (polled) -- connection cards, pills, checklist
 // =====================================================================================
 let S = null;        // last /api/state
-let ports = [];
+let ports = [], allPorts = [], shellDevices = [], usbDevices = [];
+let boardStepBusy = false;
 let lastAuto = 0;
 const STATE_TXT = { disconnected: "Not connected", connecting: "Connecting…", connected: "Connected", lost: "Link lost", error: "Connection failed" };
 const STATE_DOT = { disconnected: "", connecting: "warn pulse", connected: "ok", lost: "bad", error: "bad" };
@@ -435,13 +436,15 @@ function applyState(s) {
   const prev = S;
   S = s;
   const b = s.board, sc = s.scope;
-  renderConn("board", b, (x) => x.state === "connected" ? `Connected · ${x.params.port.split("/").pop()} · ${x.info?.transport === "sakura-shell" ? "FIFO" : x.params.baud + " baud"}`
+  renderConn("board", b, (x) => x.state === "connected" ? `Connected · ${x.params.port.split("/").pop()} · ${transportText(x.info || x.params)}`
     : x.state === "connecting" ? `Connecting to ${x.params.port.split("/").pop()}…` : STATE_TXT[x.state]);
   renderConn("scope", sc, (x) => x.state === "connected" ? `Connected · ${x.params.ip}` : x.state === "connecting" ? `Connecting to ${x.params.ip}…` : STATE_TXT[x.state]);
-  ["board-port", "board-baud", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state) || (id === "board-baud" && $("board-port").value.startsWith("sakura-shell:"))));
+  ["board-port", "board-baud", "board-transport", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state)));
+  updateBoardInterface();
+  renderConnectionChecks(b);
   ["scope-ip", "scope-channel", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
   kv("board-info", b.info ? [["Algorithm", b.info.alg_id === 1 ? "ML-KEM (ALG_ID 1)" : b.info.alg_id], ["Core version", b.info.version],
-    ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Port", b.info.port], ["Transport", b.info.transport === "sakura-shell" ? "FIFO (baud ignored)" : b.info.baud + " baud"]] : [["Status", "connect the board to read the core"]]);
+    ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Device", b.info.port], ["Transport", transportText(b.info)]] : [["Status", "connect the board to read the core"]]);
   const si = sc.info;
   kv("scope-info", si ? [["Instrument", si.id || si.idn], ["Resource", si.resource], ["Channel", si.channel],
     ["Samples", si.samples || (si.wave_array_count ? `${si.wave_array_count} (last record)` : si.samples)], ["Sample rate", si.sample_rate],
@@ -475,7 +478,7 @@ function applyState(s) {
   if (prev && prev.board.state !== b.state) {
     if (b.state === "connected") toast("Board connected", "ok");
     if (b.state === "connected" && b.info && !b.info.has_run)
-      toast("This bitstream has no 0x05 Run: operations are disabled until it is rebuilt (register / buffer access works).", "bad", 12000);
+      toast(`This bitstream has no ${b.info.run_command || "0x05 Run"}: operations are disabled until it is rebuilt.`, "bad", 12000);
     if (b.state === "lost") toast("Board link lost: " + b.error, "bad", 8000);
     if (b.state === "error" && prev.board.state === "connecting") toast("Board: " + b.error, "bad", 8000);
   }
@@ -483,7 +486,7 @@ function applyState(s) {
     if (sc.state === "connected") toast("Oscilloscope connected", "ok");
     if (sc.state === "error" && prev.scope.state === "connecting") toast("Scope: " + sc.error, "bad", 8000);
   }
-  if ($("board-auto").checked && ["lost", "error"].includes(b.state) && Date.now() - lastAuto > 3000) {
+  if (!isShellInfo(b.params) && $("board-auto").checked && ["lost", "error"].includes(b.state) && Date.now() - lastAuto > 3000) {
     const port = b.params.port;
     if (port && ports.some((p) => p.device === port)) {
       lastAuto = Date.now();
@@ -499,40 +502,148 @@ async function pollState() {
 // =====================================================================================
 // Connection page
 // =====================================================================================
+function isShellInfo(info) {
+  return info?.transport === "sakura-shell" || String(info?.port || "").startsWith("sakura-shell:");
+}
+function shellSelected() {
+  return ["connected", "connecting"].includes(S?.board?.state)
+    ? isShellInfo(S.board.info || S.board.params) : $("board-transport").value === "shell";
+}
+function transportText(info) {
+  if (isShellInfo(info)) return "USB FIFO · FT2232H A";
+  if (String(info?.port || "").startsWith("sakura:")) return "USB FIFO · legacy AIST local bus";
+  return info?.baud != null ? `UART · ${info.baud} baud` : "—";
+}
+function updateBoardInterface() {
+  const shell = shellSelected(), active = ["connected", "connecting"].includes(S?.board?.state);
+  const fifo = shell || (active ? String(S.board.params?.port || "").startsWith("sakura:") : $("board-transport").value === "legacy");
+  $("board-link-sub").textContent = shell ? "SAKURA-X: Spartan-6 controller → Kintex-7 ML-KEM" : "ML-KEM-768 board link";
+  $("board-device-label").textContent = shell ? "SAKURA-X USB device (data channel A)" : "Device / port";
+  ["board-shell-help", "board-shell-actions", "board-reset-hint"].forEach(id => $(id).classList.toggle("hidden", !shell));
+  $("board-baud-field").classList.toggle("hidden", fifo);
+  $("board-auto-field").classList.toggle("hidden", shell);
+  $("board-baud").disabled = fifo || active;
+  if (shell && !active) $("board-conn-btn").textContent = "Connect & diagnose";
+  const unavailable = !!S?.busy || boardStepBusy || S?.board?.state === "connecting";
+  $("board-hard-reset").disabled = unavailable || !$("board-port").value;
+  $("board-preflight").disabled = unavailable || S?.board?.state !== "connected";
+  $("ls-reprobe").disabled = unavailable || S?.board?.state !== "connected";
+  $("op-run").disabled = unavailable || S?.board?.state !== "connected";
+  document.querySelectorAll("[data-step]").forEach(b => b.disabled = unavailable || S?.board?.state !== "connected");
+  $("ls-protocol-help").textContent = shell
+    ? "Preload DK and CT through Spartan-6. START runs Decaps independently on Kintex-7 and waits for completion without READ_STATUS polling. READ_SS retrieves K afterward. No board transfers occur during the reserved capture window."
+    : "Every operation uses one 0x05 Run frame. The FPGA starts the core and replies after completion with status, cycle count, error and output. There is no STATUS polling.";
+  $("ls-protocol-ref").textContent = "Protocol reference: docs/" + (shell ? "SAKURA_X_SHELL.md" : "UART_PROTOCOL.md");
+  $("ls-reprobe").textContent = shell ? "Check Kintex shell identity" : "Probe 0x05 again";
+  $("op-protocol-sub").textContent = shell ? "RESET → LOAD_DK → LOAD_CT → START → READ_SS · Decaps only" : "Configure, load inputs, run and read output";
+  $("op-configure-step").classList.toggle("hidden", shell);
+  $("op-out-len").classList.toggle("hidden", shell);
+  $("op-mode").querySelectorAll("option").forEach(o => o.disabled = shell && o.value !== "2");
+  $("ls-layout").querySelectorAll("tr[data-extra]").forEach(row => row.classList.toggle("hidden", shell));
+  if (shell) { $("op-mode").value = "2"; $("op-out-len").value = "32"; }
+  const rows = [
+    ["reset", "RESET", "Reset", "Clear run state; reload DK and CT", "CTRL ← RESET"],
+    ["load_sk", "LOAD_DK", "Send dk", "Buffer 2,400-byte DK; no processing yet", "dk → 0x0000 (2400 B)"],
+    ["load_ct", "LOAD_CT", "Send c", "Buffer 1,088-byte ciphertext; no processing yet", "c → 0x0960 (1088 B)"],
+    ["run", "START", "Run", "Wait for completion; read K with READ_SS", null],
+    ["read_output", "READ_SS", "Read", "Read the completed 32-byte shared secret K", "read the output at 0x0E00"]
+  ];
+  rows.forEach(([id, cmd, label, detail, oldDetail], i) => {
+    const button = document.querySelector(`[data-step="${id}"]`), row = button.closest(".step");
+    button.textContent = shell ? cmd : label;
+    row.querySelector("b").textContent = shell ? cmd : ({reset:"Reset", load_sk:"Send secret key", load_ct:"Send ciphertext", run:"Run and wait", read_output:"Get result"})[id];
+    row.querySelector(".key").textContent = shell ? i + 1 : ["x", "s", "c", "e", "a"][i];
+    if (id !== "run") row.querySelector(".sub").textContent = shell ? detail : oldDetail;
+  });
+  $("op-run-sub").textContent = shell ? "Wait for completion; read K with READ_SS"
+    : `START, reply when done with ${$("op-out-len").value} output bytes`;
+}
+function renderConnectionChecks(board) {
+  const checks = board.checks || [];
+  $("board-checks-wrap").classList.toggle("hidden", !checks.length);
+  $("board-checks").innerHTML = checks.map(c => `<tr><td>${esc(c.name)}</td><td class="${c.ok ? "pass" : "fail"}">${c.ok ? "PASS" : "FAIL"}</td><td>${esc(c.detail)}</td></tr>`).join("");
+}
+function populateBoardPorts() {
+  const sel = $("board-port"), mode = $("board-transport").value;
+  const current = sel.value, keep = current || localStorage.getItem("board-port");
+  ports = mode === "shell" ? shellDevices : allPorts.filter(p => mode === "legacy"
+    ? p.device.startsWith("sakura:") : !p.device.startsWith("sakura:") && !p.device.startsWith("sakura-shell:"));
+  const placeholder = mode === "shell" ? "Select your SAKURA-X board (Channel A)" : "Select a device";
+  sel.innerHTML = `<option value="">${ports.length ? placeholder : "No matching USB devices found — check the board USB cable"}</option>` + ports.map(p => {
+    const label = mode === "shell" ? `${p.product || "FT2232H"} · ${p.serial || "USB " + p.usb_path.split("/").pop()} · A ${p.data_port}`
+      : `${p.device.split("/").pop()} — ${p.hint || p.description || ""}`;
+    return `<option value="${esc(p.device)}">${esc(label)}</option>`;
+  }).join("");
+  let pick = ports.find(p => p.device === keep);
+  if (!current && mode === "shell") {
+    try {
+      const saved = JSON.parse(localStorage.getItem("board-shell-device") || "null");
+      const same = saved?.serial ? ports.filter(p => p.serial === saved.serial) : [];
+      if (saved?.serial) pick = same.length === 1 ? same[0] : null;
+    } catch (e) { /* no saved identity */ }
+  }
+  // Generic FTDI product names require the user's explicit board selection.
+  if (!pick) pick = ports.find(p => p.recommended) || (mode !== "shell" ? ports[0] : null);
+  if (pick) sel.value = pick.device;
+  portHint();
+}
 async function refreshPorts(quiet) {
   try {
-    ({ ports } = await api("GET", "/api/fpga/ports"));
-    const sel = $("board-port"), keep = sel.value || localStorage.getItem("board-port");
-    sel.innerHTML = ports.map((p) => `<option value="${esc(p.device)}">${esc(p.device.split("/").pop())}${p.hint ? "  —  " + esc(p.hint) : ""}</option>`).join("")
-      || `<option value="">no serial ports found</option>`;
-    const pick = ports.find((p) => p.device === keep) || ports.find((p) => p.recommended) || ports[0];
-    if (pick) sel.value = pick.device;
-    portHint();
-    if (!quiet) toast(ports.length ? `${ports.length} serial port(s) found` : "No serial ports found", ports.length ? "info" : "warn");
+    const result = await api("GET", "/api/fpga/ports");
+    allPorts = result.ports; shellDevices = result.shell_devices || []; usbDevices = result.usb_devices || [];
+    $("board-usb-devices").innerHTML = usbDevices.map(p => {
+      const id = n => n == null ? "?" : Number(n).toString(16).padStart(4, "0");
+      const iface = p.interface == null ? "unknown" : Number(p.interface).toString(16).padStart(2, "0");
+      return `<tr><td>${esc(p.device)}</td><td>${id(p.vid)}:${id(p.pid)} / ${iface}</td><td>${esc(p.serial || "no serial")}<br>${esc(p.product)}</td></tr>`;
+    }).join("") || '<tr><td colspan="3">No USB serial devices visible to the GUI server.</td></tr>';
+    populateBoardPorts();
+    if (!quiet) toast(ports.length ? `${ports.length} device(s) found` : "No matching board USB device found", ports.length ? "info" : "warn");
   } catch (e) { err(e); }
 }
 function portHint() {
-  const p = ports.find((x) => x.device === $("board-port").value);
+  const p = ports.find(x => x.device === $("board-port").value), shell = $("board-transport").value === "shell";
   const h = $("board-port-hint");
-  $("board-baud").disabled = ["connected", "connecting"].includes(S?.board?.state) || $("board-port").value.startsWith("sakura-shell:");
-  h.textContent = p ? [p.description, p.hint].filter(Boolean).join(" · ") : "";
-  h.className = "hint" + (p && p.hint.startsWith("JTAG") ? " warn" : p && p.recommended ? " good" : "");
+  h.textContent = p ? (shell ? p.pair_error || p.hint : [p.description, p.hint].filter(Boolean).join(" · ")) : "Select the board USB connection, not the Xilinx JTAG programming cable.";
+  h.className = "hint" + (p?.pair_error || p?.hint?.startsWith("JTAG") ? " warn" : p?.recommended ? " good" : "");
+  kv("board-channels", p && shell ? [["USB serial", p.serial || "unavailable; paired by physical USB parent"],
+    ["Channel A · FIFO data", p.data_port], ["Channel B · RTS reset", p.reset_port || "NOT FOUND"],
+    ["USB product", p.product || "unknown"]] : []);
+  $("board-shell-identity").textContent = p && shell && !p.recommended
+    ? "Generic FTDI name: selecting this device explicitly uses the shell protocol. Renaming the USB device is not required; its FIFO mode and both FPGA files still need to match." : "";
+  updateBoardInterface();
 }
 setInterval(() => { if (S && !["connected", "connecting"].includes(S.board.state) && currentPage === "connect") refreshPorts(true); }, 3000);
 
+async function connectSelectedBoard(hardReset = false) {
+  const port = $("board-port").value;
+  if (!port) return toast("Select your board USB device first", "warn");
+  const p = ports.find(x => x.device === port), shell = port.startsWith("sakura-shell:");
+  if (shell && p?.pair_error) return toast(p.pair_error, "bad", 10000);
+  localStorage.setItem("board-port", port);
+  localStorage.setItem("board-transport", $("board-transport").value);
+  if (shell && p) localStorage.setItem("board-shell-device", JSON.stringify({serial:p.serial}));
+  const body = shell ? {port, hard_reset:hardReset} : {port, baud:$("board-baud").value};
+  applyState({ ...S, board: await api("POST", "/api/fpga/connect", body) });
+}
 async function boardConnBtn() {
   const st = $("board-conn-btn").dataset.state || "disconnected";
   try {
     if (st === "connected" || st === "connecting") {
       if (S && S.busy && !(await dialog({ title: "Disconnect the board?", body: "A job is using the board; it will stop after the current trace (the file stays resumable).", ok: "Disconnect", danger: true }))) return;
       await api("POST", "/api/fpga/disconnect", {});
-    } else {
-      const port = $("board-port").value;
-      if (!port) return toast("Choose a serial port", "warn");
-      localStorage.setItem("board-port", port);
-      await api("POST", "/api/fpga/connect", { port, baud: $("board-baud").value });
-    }
+    } else await connectSelectedBoard();
     applyState(await api("GET", "/api/state"));
+  } catch (e) { err(e); }
+}
+async function boardHardReset() {
+  try { await connectSelectedBoard(true); } catch (e) { err(e); }
+}
+async function copyConnectionReport() {
+  const report = { interface:$("board-transport").value, selected:$("board-port").value,
+    devices:usbDevices, shell_candidates:shellDevices, board:S?.board };
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+    toast("Connection report copied (device details and checks only)", "ok");
   } catch (e) { err(e); }
 }
 async function boardPreflight() {
@@ -1126,7 +1237,7 @@ async function libShow(path) {
       coverageKpi(d.axis), ["size", fmtBytes(d.size_bytes), `${d.n_samples} samples/trace`]]);
     kv("ld-prov", [["Captured", fmtDate(d.created_unix)], ["Vector set", d.vector_set ? String(d.vector_set).split("/").pop() : "—"],
       ["Vectors", rc.mode ? `${rc.mode.toUpperCase()} · ${kindLabel(rc)}` : d.strategy], ["Seed", short(rc.seed, 32)],
-      ["Board", bd.version ? `core ${bd.version} · ${bd.port} @ ${bd.baud}` : "—"], ["Scope", sc.id ? `${sc.id}${sc.channel ? " · " + sc.channel : ""}` : "—"],
+      ["Board", bd.version ? `core ${bd.version} · ${bd.port} · ${transportText(bd)}` : "—"], ["Scope", sc.id ? `${sc.id}${sc.channel ? " · " + sc.channel : ""}` : "—"],
       ["Sample rate", rateTxt(d.sample_rate_hz)], ["Core clock", d.core_mhz ? d.core_mhz + " MHz" : "—"], ["dk hash", d.dk_hash]]);
     $("ld-analyse").addEventListener("click", () => { showPage("analysis"); anSelectDataset(path); });
     $("ld-view").addEventListener("click", () => tvOpen());
@@ -1943,10 +2054,10 @@ async function lsLoad() {
     $("ls-timeout").value = s.op_timeout;
     lsLayout = s.layout;
     const L = s.layout, dec = L.ops.find((o) => o.name === "Decaps");
-    const rows = [["dk — Decaps secret key (s)", L.in_base, L.dk_len], ["c — ciphertext (c)", L.in_base + L.dk_len, L.ct_len],
-      ["K — shared secret (a)", L.out_base, dec.out_len]].concat(L.ops.filter((o) => o.name !== "Decaps").flatMap((o) => [
+    const rows = [["DK — decapsulation key", L.in_base, L.dk_len], ["CT — ciphertext", L.in_base + L.dk_len, L.ct_len],
+      ["K — shared secret", L.out_base, dec.out_len]].concat(L.ops.filter((o) => o.name !== "Decaps").flatMap((o) => [
       [`${o.name} input`, L.in_base, o.in_len], [`${o.name} output`, L.out_base, o.out_len]]));
-    $("ls-layout").innerHTML = rows.map(([n, off, len]) => `<tr data-off="${off}" data-len="${len}"><td>${esc(n)}</td><td class="num mono">${hx(off)}</td><td class="num">${len}</td><td class="dim">read →</td></tr>`).join("");
+    $("ls-layout").innerHTML = rows.map(([n, off, len], idx) => `<tr data-off="${off}" data-len="${len}"${idx > 2 ? ` data-extra="1" class="${shellSelected() ? "hidden" : ""}"` : ""}><td>${esc(n)}</td><td class="num mono">${hx(off)}</td><td class="num">${len}</td><td class="dim">read →</td></tr>`).join("");
     $("ls-layout").querySelectorAll("tr").forEach((tr) => tr.addEventListener("click", () => {
       $("buf-read-offset").value = hx(+tr.dataset.off); $("buf-read-len").value = Math.min(+tr.dataset.len, 8192); bufRead();
     }));
@@ -1955,8 +2066,8 @@ async function lsLoad() {
 }
 function lsInfo() {
   const b = S && S.board, i = b && b.info;
-  kv("ls-info", i ? [["Board", `core ${i.version} · ${String(i.port).split("/").pop()} @ ${i.baud}`],
-    ["0x05 Run", i.has_run ? "supported — operations enabled" : "MISSING — rebuild the bitstream; operations are disabled"],
+  kv("ls-info", i ? [["Board", `core ${i.version} · ${String(i.port).split("/").pop()} · ${transportText(i)}`],
+    [i.run_command || "0x05 Run", i.has_run ? "supported — operations enabled" : "MISSING — rebuild the bitstream; operations are disabled"],
     ["Timeout", (i.op_timeout ?? "—") + " s"]] : [["Board", b ? STATE_TXT[b.state] : "—"]]);
 }
 async function lsSave() {
@@ -1970,7 +2081,7 @@ async function lsReprobe() {
   await busy($("ls-reprobe"), async () => {
     try {
       const r = await api("POST", "/api/fpga/reprobe", {});
-      toast(r.has_run ? "0x05 Run is supported by this bitstream" : "This bitstream has no 0x05 Run — rebuild it; operations are disabled", r.has_run ? "ok" : "bad", 8000);
+      toast(r.has_run ? `${r.command} is supported by this bitstream` : `${r.command} is unavailable — rebuild the matching bitstream`, r.has_run ? "ok" : "bad", 8000);
       applyState(await api("GET", "/api/state"));
     } catch (e) { err(e); }
   });
@@ -1980,7 +2091,7 @@ const OP_OUT = { 0: 3584, 1: 1120, 2: 32 };
 function opModeChanged() {
   const op = +$("op-mode").value;
   $("op-out-len").value = OP_OUT[op];
-  $("op-run-sub").textContent = `START, reply when done with ${OP_OUT[op]} output bytes`;
+  $("op-run-sub").textContent = shellSelected() ? "Wait for completion; read K with READ_SS" : `START, reply when done with ${OP_OUT[op]} output bytes`;
 }
 function opResult(r, expected) {
   const flags = (r.flags || []).map((f) => `<span class="badge ${f === "done" ? "ok" : f === "error" ? "bad" : "warn"}">${f}</span>`).join(" ") || '<span class="badge">idle</span>';
@@ -1990,7 +2101,7 @@ function opResult(r, expected) {
       <div class="kpi"><div class="l">STATUS</div><div class="v">0x${(r.status ?? 0).toString(16)}</div><div class="s">${flags}</div></div>
       <div class="kpi"><div class="l">CYCLE_COUNT</div><div class="v">${r.cycles ?? "—"}</div><div class="s">${r.us ? r.us.toFixed(1) + " µs" : ""}</div></div>
       <div class="kpi"><div class="l">ERROR_CODE</div><div class="v">${r.error_code ?? "—"}</div><div class="s">${esc(r.error || "")}</div></div>
-      <div class="kpi"><div class="l">round trip</div><div class="v">${r.wall_time ? (1000 * r.wall_time).toFixed(1) + " ms" : "—"}</div><div class="s">one 0x05 Run frame</div></div>
+      <div class="kpi"><div class="l">round trip</div><div class="v">${r.wall_time ? (1000 * r.wall_time).toFixed(1) + " ms" : "—"}</div><div class="s">${esc(r.command || (shellSelected() ? "START + READ_SS" : "one 0x05 Run frame"))}</div></div>
     </div>`;
   $("op-result").innerHTML = block + (k ? `<div class="field-title">output (${k.length / 2} B${r.status === undefined ? ", read from the buffer" : ""}) ${match}<button class="btn ghost sm" data-copy="${k}">Copy</button></div><div class="hexbox">${k}</div>` : "");
   $("op-result").querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Copied"))));
@@ -2004,15 +2115,41 @@ async function opStep(step, btn) {
   if (step === "read_output") body.length = $("op-out-len").value;
   if ((step === "load_sk" && !body.hex.trim()) || (step === "load_ct" && !body.hex.trim()))
     return toast("Paste the hex first, or load the selected test vector", "warn");
+  boardStepBusy = true; updateBoardInterface();
   await busy(btn, async () => {
     try {
       const r = await api("POST", "/api/fpga/step", body);
       opLog(`${step.padEnd(11)} ${r.message}`);
-      const expected = vpRow && +$("op-mode").value === 2 ? vpRow.k : null;
+      const expected = +$("op-mode").value === 2 ? opExpected() : null;
       if (step === "run") opResult(r, expected);
       if (step === "read_output") opResult({ output_hex: r.output_hex }, expected);
     } catch (e) { opLog(`${step.padEnd(11)} ERROR ${e.message}`); err(e); }
+    finally { boardStepBusy = false; updateBoardInterface(); }
   });
+}
+async function opLoadFile(field, length) {
+  const input = $(field + "-file"), file = input.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 100000) throw new Error(`Expected ${length} bytes, not a large file`);
+    let hex;
+    if (/\.(hex|txt)$/i.test(file.name)) {
+      hex = (await file.text()).replace(/\s/g, "").toLowerCase();
+      if (!/^[0-9a-f]+$/.test(hex) || hex.length % 2) throw new Error("Hex file must contain byte pairs separated by whitespace");
+    } else {
+      hex = Array.from(new Uint8Array(await file.arrayBuffer()), b => b.toString(16).padStart(2, "0")).join("");
+    }
+    if (hex.length !== length * 2) throw new Error(`Expected ${length} bytes; file contains ${hex.length / 2}`);
+    $(field).value = hex;
+    // Manually supplied inputs must not be compared against a stale selected vector.
+    $("op-expected").textContent = `${file.name} loaded into form; use the corresponding load button to send it to the board`;
+    toast(`${file.name}: ${length} bytes ready`, "ok");
+  } catch (e) { err(e); }
+  finally { input.value = ""; }
+}
+function opExpected() {
+  const clean = value => value.replace(/\s/g, "").toLowerCase();
+  return vpRow && clean($("op-dk").value) === clean(vpRow.dk) && clean($("op-ct").value) === clean(vpRow.ct) ? vpRow.k : null;
 }
 function opFill() {
   if (!vpRow) return toast("Select a row in Test Vectors → Contents first", "warn");
@@ -2022,6 +2159,7 @@ function opFill() {
   toast(`Loaded vector #${vpRow.index}`);
 }
 async function opRun() {
+  boardStepBusy = true; updateBoardInterface();
   await busy($("op-run"), async () => {
     try {
       const r = await api("POST", "/api/fpga/decaps", { dk_hex: $("op-dk").value, ct_hex: $("op-ct").value, resend_dk: $("op-resend-dk").checked });
@@ -2030,6 +2168,7 @@ async function opRun() {
       opResult({ status: st, flags: ["busy", "done", "error"].filter((n, i) => st & (1 << i)), cycles: r.cycles, us: r.cycles / (S?.board?.info?.core_mhz || 206.25),
         error_code: r.error_code, error: r.describe, output_hex: r.output_hex, wall_time: r.wall_time }, r.expected_hex);
     } catch (e) { err(e); }
+    finally { boardStepBusy = false; updateBoardInterface(); }
   });
 }
 async function regReadAll() {
@@ -2070,11 +2209,22 @@ async function init() {
     if (s.defaults.scope_transport) $("scope-transport").value = s.defaults.scope_transport;
     $("reg-name").innerHTML = s.registers.map((r) => `<option ${r === "STATUS" ? "selected" : ""}>${r}</option>`).join("");
     S = s;
+    const port = s.board.params?.port || localStorage.getItem("board-port") || "";
+    $("board-transport").value = ["connected", "connecting"].includes(s.board.state)
+      ? (port.startsWith("sakura-shell:") ? "shell" : port.startsWith("sakura:") ? "legacy" : "uart")
+      : localStorage.getItem("board-transport") || (port.startsWith("sakura:") ? "legacy" : port && !port.startsWith("sakura-shell:") ? "uart" : "shell");
+    if (["connected", "connecting"].includes(s.board.state)) localStorage.setItem("board-port", port);
   } catch (e) { err(e); }
   scopeDialectChanged(false);
   await refreshPorts(true);
 
   $("board-port").addEventListener("change", portHint);
+  $("board-transport").addEventListener("change", () => {
+    localStorage.setItem("board-transport", $("board-transport").value);
+    $("board-port").value = ""; populateBoardPorts();
+  });
+  $("board-hard-reset").addEventListener("click", boardHardReset);
+  $("board-copy-report").addEventListener("click", copyConnectionReport);
   $("board-refresh-ports").addEventListener("click", () => refreshPorts(false));
   $("board-conn-btn").addEventListener("click", boardConnBtn);
   $("board-preflight").addEventListener("click", boardPreflight);
@@ -2208,6 +2358,8 @@ async function init() {
   $("ls-reprobe").addEventListener("click", lsReprobe);
   document.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", () => opStep(b.dataset.step, b)));
   $("op-mode").addEventListener("change", opModeChanged);
+  $("op-dk-file").addEventListener("change", () => opLoadFile("op-dk", 2400));
+  $("op-ct-file").addEventListener("change", () => opLoadFile("op-ct", 1088));
   opModeChanged();
   $("reg-read-all").addEventListener("click", regReadAll);
   $("reg-read").addEventListener("click", regRead); $("reg-write").addEventListener("click", regWrite);

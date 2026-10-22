@@ -395,6 +395,9 @@ table.t tbody tr.checked.sel td { background: #0ea5e924; }
 .step .key { width: 26px; height: 26px; border-radius: 7px; background: var(--raise); border: 1px solid var(--border); font-family: var(--mono);
   font-weight: 700; display: inline-flex; align-items: center; justify-content: center; color: var(--accent); flex-shrink: 0; }
 .step .grow { flex: 1; min-width: 0; }
+#board-checks td, #board-usb-devices td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+#board-shell-help code { overflow-wrap: anywhere; }
+#board-channels .v { overflow-wrap: anywhere; }
 .step .sub { color: var(--sub); font-size: 11.5px; }
 .op-result:empty { display: none; }
 .op-result { margin-top: 12px; }

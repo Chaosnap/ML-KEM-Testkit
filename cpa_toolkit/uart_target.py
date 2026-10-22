@@ -470,15 +470,12 @@ def _sakura_iface(p) -> int | None:
     """FT2232H interface (0 = channel A, 1 = channel B) of a port that belongs to a
     SAKURA-X board: an FT2232H programmed with AIST's sasebo_giii.xml (no Digilent
     strings; product "USB <-> Serial Converter"). None for anything else."""
-    desc = " ".join(str(x) for x in (p.description, p.manufacturer, p.product) if x)
-    if p.vid != 0x0403 or p.pid != 0x6010 or "Digilent" in desc:
+    from sakura_shell import usb_identity
+    identity = usb_identity(p)
+    desc = " ".join(str(x) for x in (p.description, p.manufacturer, identity["product"]) if x)
+    if identity["vid"] != 0x0403 or identity["pid"] != 0x6010 or "Digilent" in desc:
         return None
-    for i in (0, 1):
-        if p.serial_number and p.device.endswith(p.serial_number + str(i)):
-            return i
-        if p.location and p.location.endswith(":1.%d" % i):
-            return i
-    return None
+    return identity["interface"]
 
 
 def _is_sakura_channel_a(p) -> bool:

@@ -44,6 +44,7 @@ import scope as S
 import testvectors as TV
 import tvla_analysis as TVA
 import uart_target as T
+import sakura_shell as SH
 from gui_config_io import save_config_values
 
 STATIC_DIR = Path(__file__).with_name("web_static")
@@ -268,24 +269,37 @@ def api_log(body: dict) -> dict:
 # Board connection
 # =============================================================================
 def api_fpga_ports(_body: dict) -> dict:
+    """List legacy/UART entries and explicit, paired shell FIFO candidates."""
     return {"ports": [{"device": d, "description": desc, "hint": hint, "recommended": rec}
-                      for d, desc, hint, rec in T.list_ports()]}
+                      for d, desc, hint, rec in T.list_ports()],
+            "shell_devices": SH.connection_devices(),
+            "usb_devices": [p for p in SH.usb_ports() if p["vid"] is not None]}
 
 
 #: Host-side link settings (Advanced page), applied to every board connection:
-#: how long the host waits for the 0x05 Run reply of one operation.
+#: how long the host waits for operation completion (UART Run or FIFO START).
 LINK_SETTINGS = {"op_timeout": 5.0}
 
 
 def api_fpga_connect(body: dict) -> dict:
+    """Connect, or explicitly pulse shell RTS reset before connection diagnostics."""
     port = str(body.get("port", "")).strip()
     if not port:
-        raise ValueError("choose a serial port")
-    baud = int(body.get("baud") or C.BAUD)
+        raise ValueError("choose a board device")
     if _busy():
         raise ValueError("a job is using the board -- stop it first")
-    log("connecting to the board on %s @ %d baud..." % (port, baud))
-    return board.connect({"port": port, "baud": baud, **LINK_SETTINGS}, CN.open_board)
+    if port.startswith(SH.PREFIX):
+        hard_reset = body.get("hard_reset") is True
+        log("%s SAKURA-X USB FIFO on %s (Channel B: RTS reset only)" %
+            ("resetting and connecting" if hard_reset else "connecting", port))
+        params = {"port": port, "hard_reset": hard_reset, **LINK_SETTINGS}
+    else:
+        if body.get("hard_reset"):
+            raise ValueError("RTS reset is only available for the SAKURA-X shell transport")
+        baud = int(body.get("baud") or C.BAUD)
+        log("connecting to the board on %s @ %d baud..." % (port, baud))
+        params = {"port": port, "baud": baud, **LINK_SETTINGS}
+    return board.connect(params, CN.open_board)
 
 
 def _stop_hardware_job(reason: str) -> None:
@@ -428,11 +442,13 @@ def api_fpga_settings(body: dict) -> dict:
 
 
 def api_fpga_reprobe(_body: dict) -> dict:
+    """Check the connected transport's operation capability without starting it."""
     with _BoardOp() as target:
         target.probe_run()
     _refresh_board_info(target)
-    log("0x05 Run probe: %s" % ("supported" if target.has_run else "not in this bitstream"))
-    return {"has_run": bool(target.has_run)}
+    command = "START" if isinstance(target, SH.ShellTarget) else "0x05 Run"
+    log("%s capability: %s" % (command, "supported" if target.has_run else "not in this bitstream"))
+    return {"has_run": bool(target.has_run), "command": command}
 
 
 _REG_NOTES = {"CTRL": "WO: bit0 START, bit1 RESET", "STATUS": "busy | done | error", "ALG_ID": "1 = ML-KEM",
@@ -478,14 +494,15 @@ def _hex_bytes(body: dict, key: str, length: int | None = None) -> bytes:
 
 
 def api_fpga_step(body: dict) -> dict:
-    """One step of an operation, as in the SimpleSerial-style command set:
-    reset (x), configure (m), load_sk (s), load_ct (c), load_input, run (e), read_output (a)."""
+    """Execute one UI step; FIFO START and READ_SS remain separate operations."""
     step = body.get("step")
     with _BoardOp() as target:
+        shell = isinstance(target, SH.ShellTarget)
         if step == "reset":
             target.reset()
             st = target.link.rd("STATUS")
-            msg = "CTRL.reset -- STATUS 0x%X (%s)" % (st, " | ".join(T.status_flags(st)) or "idle")
+            msg = "%s -- STATUS 0x%X (%s)" % ("RESET" if shell else "CTRL.reset", st,
+                                               " | ".join(T.status_flags(st)) or "idle")
             res = {"status": st}
         elif step == "configure":
             op = int(body.get("op", T.OP_DECAPS))
@@ -505,6 +522,8 @@ def api_fpga_step(body: dict) -> dict:
             msg = "c (%d B) written at 0x%04X" % (T.CT_LEN, C.IN_BASE + T.DK_LEN)
             res = {}
         elif step == "load_input":
+            if shell:
+                raise ValueError("use LOAD_DK and LOAD_CT for the SAKURA-X shell")
             data = _hex_bytes(body, "hex")
             if not data:
                 raise ValueError("no input bytes")
@@ -516,17 +535,26 @@ def api_fpga_step(body: dict) -> dict:
             if not 0 <= out_len <= 8192:
                 raise ValueError("output length must be 0..8192")
             t0 = time.time()
-            st, cycles, err, out = target.run(out_len)
+            if shell:
+                with target.link.lock:
+                    st = target.start()
+                    cycles, err = target.link.rd("CYCLE_COUNT"), target.link.rd("ERROR_CODE")
+                out = b""  # READ_SS is a separate user action after completion.
+            else:
+                st, cycles, err, out = target.run(out_len)
             wall = time.time() - t0
-            msg = "0x05 Run -- STATUS 0x%X (%s), %d cycles, ERROR_CODE %d, %d output bytes, %.1f ms" % (
-                st, " | ".join(T.status_flags(st)) or "idle", cycles, err, len(out), 1000 * wall)
+            command = "START" if shell else "0x05 Run"
+            msg = "%s -- STATUS 0x%X (%s), %d cycles, ERROR_CODE %d, %d output bytes, %.1f ms" % (
+                command, st, " | ".join(T.status_flags(st)) or "idle", cycles, err, len(out), 1000 * wall)
+            if shell:
+                msg += "; use READ_SS to retrieve K after successful completion"
             res = {"status": st, "flags": T.status_flags(st), "cycles": cycles, "error_code": err,
                    "error": T.ERRORS.get(err, "?"), "output_hex": out.hex(), "wall_time": wall,
-                   "us": cycles / C.CORE_MHZ}
+                   "us": cycles / C.CORE_MHZ, "command": command}
         elif step == "read_output":
             n = int(body.get("length", T.K_LEN))
-            out = target.link.read_data(C.OUT_BASE, n)
-            msg = "%d bytes read at 0x%04X" % (n, C.OUT_BASE)
+            out = target.read_shared_secret() if shell else target.link.read_data(C.OUT_BASE, n)
+            msg = "READ_SS: 32-byte K received" if shell else "%d bytes read at 0x%04X" % (n, C.OUT_BASE)
             res = {"output_hex": out.hex()}
         else:
             raise ValueError("unknown step %r" % step)
