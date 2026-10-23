@@ -67,7 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="Channel A device or sakura-shell:<device>")
     parser.add_argument("--list", action="store_true", help="list ports without opening hardware")
-    parser.add_argument("--hard", action="store_true", help="RESET/SESSION only: first pulse Channel-B RTS_N")
+    parser.add_argument("--hard", action="store_true", help="kept for old scripts: every session now starts with an RTS reset")
     parser.add_argument("--quiet-ms", type=float, default=20, help="START quiet tail after completion")
     parser.add_argument("command", nargs="?", choices=COMMANDS)
     parser.add_argument("file", nargs="?", type=Path, help="binary DK/CT input, or READ_SS output")
@@ -78,16 +78,14 @@ def main():
         return 0
     if not args.port or not args.command:
         parser.error("--port and a command are required (or use --list)")
-    if args.hard and args.command not in ("RESET", "SESSION"):
-        parser.error("--hard is only valid with RESET or SESSION")
     port = args.port if args.port.startswith(PREFIX) else PREFIX + args.port
     link = ShellLink(port)
     target = ShellTarget(link)
     try:
         link.set_quiet_window(args.quiet_ms / 1000)
-        # Recovery precedes identity if S6 is stuck inside a partial transaction.
-        if args.hard:
-            link.hard_reset()
+        # RTS reset + which Spartan controller answers, before any Kintex access.
+        print("Spartan controller: %s" % link.check_controller(
+            lambda name, ok, detail: print("  %s %s: %s" % ("PASS" if ok else "FAIL", name, detail))))
         target.probe_run()
         if args.command != "SESSION":
             return execute(target, args.command, args.file)

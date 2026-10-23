@@ -200,9 +200,12 @@ class TestPortList(unittest.TestCase):
             rows = T.list_ports()
         devs = [r[0] for r in rows]
         self.assertFalse(any("/ttyS" in d for d in devs), "phantom ttyS nodes must be hidden")
-        rec = [r[0] for r in rows if r[3]]
-        self.assertIn("sakura:/dev/ttyUSB0", rec)
         hint = {r[0]: r[2] for r in rows}
+        # the shell FIFO entry is offered for channel A; an unrenamed EEPROM ("USB <-> Serial Converter")
+        # is selected explicitly, and the old AIST local-bus entry is marked legacy
+        self.assertIn("shell", hint["sakura-shell:/dev/ttyUSB0"])
+        self.assertIn("Legacy", hint["sakura:/dev/ttyUSB0"])
+        self.assertNotIn("sakura-shell:/dev/ttyUSB1", hint)
         self.assertIn("channel B", hint["/dev/ttyUSB1"])
         self.assertNotIn("recommended", hint["/dev/ttyUSB1"])
         self.assertIn("raw", hint["/dev/ttyUSB0"])

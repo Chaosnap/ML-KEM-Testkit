@@ -1,7 +1,7 @@
 # SAKURA-X：基于 sakura-x-shell 的 ML-KEM-768 移植
 
 本版本按 `RESET / LOAD_DK / LOAD_CT / START / READ_SS` 实现 Decaps 采集链路。
-**此移植及本次 GUI 修改未在本机运行测试、仿真、综合、实现或上板验证。**
+**Kintex 桥接器已在 Icarus 中对接上游未修改的 Spartan 解码器仿真通过（`make sim-sakura-shell`）；综合、实现和上板仍需在 Linux 上验证。**
 随仓库提供上游 Spartan-6 预编译 bit；新的 Kintex bit 必须在 Linux 用 Vivado 构建。
 
 ## GUI 连接与排障（无需通信命令行）
@@ -13,11 +13,10 @@
    GUI 只列出已识别为 interface 00 的数据通道，并显示同一个 USB 设备的 B 通道。
    不需要手写 `sakura-shell:`，也不要按 `/dev/ttyUSB0/1` 的尾号判断 A/B。
    旧名称 `USB <-> Serial Converter` 可以手动选择；不要求先改产品字符串。
-3. 点 **Connect & diagnose**。GUI 依次检查 A/B 配对、打开 B 并释放复位、打开 A、
-   Spartan 命令应答、Kintex shell 标识、ML-KEM 核。每一步单独显示 PASS/FAIL。
-4. 曾出现超时、半包或重新下载 FPGA 时，点 **Reset & connect**。
-   此按钮通过 Channel B RTS_N 复位 S6/K7 逻辑，然后重新检查连接。
-   它会丢弃当前运行及输入有效状态；恢复后重载 DK/CT。不会写 EEPROM 或烧录 bitstream。
+3. 点 **Connect & diagnose**。每次连接都先通过 Channel B 的 RTS_N 复位 Spartan 控制器
+   （清除前一次卡在半个事务里的状态；新会话本来就要重载 DK/CT），然后**在访问 Kintex 之前**判断
+   Spartan-6 上运行的是哪个控制器，再依次检查 Kintex shell 标识、ML-KEM 核。每一步单独显示 PASS/FAIL。
+4. **Reset & connect** 现在与 Connect 相同（都会先复位），保留按钮以兼容旧习惯。
 5. 失败时点 **Copy connection report**，直接粘贴报告，或截取 **Connection checks**。
    报告包含 USB 标识、A/B 配对及失败阶段，不包含 DK、CT 或 trace。
    展开 **Detected USB channels** 可看 GUI 服务实际枚举到的设备。
@@ -28,18 +27,54 @@
 | --- | --- |
 | USB channel pairing | 软件尚未找到同一个 USB 设备的 A/B；刷新设备、检查板卡数据 USB 是否接入 |
 | Open reset channel B / Open FIFO channel A | 设备访问失败；关闭其他占用 A/B 的程序，检查 Linux 账户访问权限 |
-| Spartan command reply，`0/1 bytes` | 尚未获得 Spartan 命令应答；检查 S6 是否加载 **shell** bit、A 是否为 245 FIFO、复位是否释放；不能直接归因于 Kintex |
-| Kintex shell identity | 先前的 Spartan 探测已通过；检查匹配的 `sakura_shell_top.bit`、两片 FPGA 间总线、时钟及复位 |
+| Spartan controller | 见下方“Spartan controller 判定”：shell / AIST 出厂 / 都不回答；与 Kintex 无关 |
+| Kintex shell identity | Spartan shell 控制器已应答；检查匹配的 `sakura_shell_top.bit`（断电后 Kintex 也要重烧）、两片 FPGA 间总线、时钟及复位 |
 | ML-KEM core | shell 标识已收到；继续定位 Kintex 桥接器到核心的 AXI/核心复位 |
 
-独立 Spartan 探测发送一个帧格式正确但类型为 `0xf` 的命令，要求上游控制器返回
-`0x02`（未知命令）。根据随库 `command_control.v`，该分支不发起 Kintex 总线事务，
-也不复位 FPGA。收到正确应答才继续检查 Kintex。超时后不盲目重复发送，也不自动复位。
-但普通 Connect **不会清除前一次挂起的总线事务**。若控制器已卡在等待 Kintex 的状态，
-它也无法处理这个独立探测；因此先用 **Reset & connect**，再根据失败阶段定位。
-报告中的 `hard_reset: false` 表示这次连接没有主动执行该复位。
 Linux 配对优先读取 sysfs 的 `bInterfaceNumber` 及物理 USB 父设备；不可用时回退到
 串口元数据和唯一序列号。USB 产品名和 VID/PID **不能证明 EEPROM 的 FIFO 模式或当前 bitstream**。
+
+### Spartan controller 判定（2026-10-23 新增）
+
+`Spartan command reply 0/1 bytes` 表示 **Spartan-6 没有应答**：上游 `command_control.v` 收满
+6 字节 header 就由 Spartan 自己回 1 字节 ACK（格式错误也回 `0x01`），这一步还没有任何
+跨 FPGA 事务，**Kintex 的 RTL 不可能导致这个错误**。现在连接时会自动区分：
+
+| 结果 | 含义 / 处理 |
+| --- | --- |
+| `sakura-x-shell controller answered (0x02 …)` | shell 控制器正常，继续检查 Kintex |
+| `AIST's FACTORY controller` | Spartan 跑的是**出厂** AIST 控制器（它回答了 `00 FF FC` 读）。shell bit 只装进 SRAM，**断电或重插 USB（SW1=USB 时 USB 供电）后 Spartan 会从 Flash 重新加载出厂设计**。用 xc3sprog 重新加载 shell bit（见第 2 节），保持上电，再烧 Kintex。出厂控制器和 `sakura_shell_top` 会驱动同一组跨 FPGA 引脚，不要让这对组合长时间运行 |
+| `Neither … answers` | 两种控制器都不回答：Spartan 未配置（它的 DONE LED 灭）或加载失败；Channel A 不是 245 FIFO；或者出厂控制器已被前一次 shell 帧锁死（只有断电或 SW6 能恢复） |
+| `RTS reset does not reach it` | shell 控制器在，但 Channel B 的 RTS 复位不起作用：能用，但卡住后只能断电恢复 |
+
+判定顺序：RTS 复位 → 发出厂读 `00 FF FC`（必须在任何 shell 帧之前，因为第一个 shell 字节
+`0x8.` 会让出厂控制器进入 TRAP）→ 再 RTS 复位（清掉 shell 输入 FIFO 里那 3 个字节）→
+未知命令探测（shell 回 `0x02`，不发起 Kintex 事务）。
+
+**看板上的 Spartan-6 LED（LED11–LED20）就能直接区分：**
+
+| 设计 | LED |
+| --- | --- |
+| sakura-x-shell 控制器 | **LED17 约每 1.3 s 翻转**（心跳）；LED12/LED14 空闲时亮（FIFO 空）；**LED16 常亮 = 控制器卡在事务里**（RTS 复位可清除） |
+| AIST 出厂控制器 | **LED11 约每秒闪 3 次**；LED13 = Kintex DONE；LED20 亮 |
+| 都不亮 / 不闪 | Spartan 未配置 |
+
+命令行同样会先做这一步：
+
+```bash
+uv run python scripts/board/sakura_shell.py --port /dev/ttyUSB0 INFO
+```
+
+### Kintex RTL 的检查结果（本次）
+
+| 项目 | 结果 |
+| --- | --- |
+| 73 根跨 FPGA 信号 | Spartan UCF 与 Kintex XDC 的每一对引脚都经规格书表 29 的同一根走线相连，0 处不符 |
+| 总线时钟 | 预编译 Spartan bit（2026-09-27 17:05，含 USB 硬复位）的 DCM 为 24 MHz × 25 / 12 = 50 MHz，与 Kintex MMCM 的 50 MHz 设置一致（上游 README 的 20 MHz 是旧说明） |
+| SW4 | 原理图 R212 下拉、按下接 2.5 V，高有效，与 `sakura_shell_top` 一致 |
+| 握手协议 | `make sim-sakura-shell`：`sakura_shell_bridge` + 与顶层相同的 I/O 寄存器，对接**上游未修改的** `command_control.v` / `fifo.v`，Kintex 时钟取 Spartan 时钟反相（ODDR2）。探测、IDENT、16 字写/回读、完整 DK+CT 上传、START（busy 下降并经过静默尾部后才应答）、输出 FIFO 反压下的 16 字读全部通过；板间传输延迟 0.5–15 ns 均通过；5 个故意改坏的版本全部被检出 |
+
+RTL 仿真不包含建立/保持时间：板级时序仍以 Vivado 布线后的 setup/hold 报告为准（构建脚本在生成 bit 前检查）。
 
 点 **Open command panel** 可打开五条命令：
 **RESET → LOAD_DK → LOAD_CT → START → READ_SS**。

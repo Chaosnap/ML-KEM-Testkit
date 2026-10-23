@@ -182,15 +182,11 @@ def open_board(params: dict, publish):
         target = ShellTarget(ShellLink(params["port"], report=report))
         target.op_timeout = float(params.get("op_timeout", target.op_timeout))
         publish(target)
-        stage = "Spartan command reply"
+        stage = "Spartan controller"
         try:
-            if params.get("hard_reset"):
-                stage = "Channel B reset"
-                target.link.hard_reset()
-                report(stage, True, "RTS_N pulsed and released; reload DK/CT before START")
-            stage = "Spartan command reply"
-            target.link.probe_controller()
-            report(stage, True, "Spartan shell decoder replied; PC-to-Spartan FIFO path works")
+            # Every connect: RTS reset, then find out WHICH Spartan-6 controller answers (shell /
+            # AIST factory / none) before any Kintex access. It reports its own checks.
+            target.link.check_controller(report)
             stage = "Kintex shell identity"
             target.probe_run()
             report(stage, True, "SK ABI 1 received from Kintex; inter-FPGA read path works")
@@ -201,7 +197,8 @@ def open_board(params: dict, publish):
             report(stage, True, "ML-KEM core %s; connection ready for Decaps" % info["version"])
             return target, info
         except Exception as e:
-            report(stage, False, str(e))
+            if stage != "Spartan controller":      # check_controller reported its own failure
+                report(stage, False, str(e))
             raise
     target = T.Target.open(params["port"], int(params["baud"]))
     target.op_timeout = float(params.get("op_timeout", target.op_timeout))

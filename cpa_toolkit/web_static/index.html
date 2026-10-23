@@ -92,7 +92,7 @@
               <button class="btn ghost sm" id="board-copy-report">Copy connection report</button>
               <button class="btn ghost sm" data-goto="advanced">Open command panel →</button>
             </div>
-            <div class="hint hidden" id="board-reset-hint">Reset &amp; connect pulses Channel B RTS_N, clears the current run and loaded-input state, then checks the link. Reload DK/CT afterward.</div>
+            <div class="hint hidden" id="board-reset-hint">Every connect pulses Channel B RTS_N (clears a stuck Spartan transaction and the loaded-input state), then identifies the Spartan-6 controller before touching the Kintex: shell, AIST factory, or none. Reload DK/CT afterward.</div>
             <div id="board-checks-wrap" class="hidden">
               <div class="section-title">Connection checks</div>
               <div class="table-wrap"><table class="t"><thead><tr><th>stage</th><th>result</th><th>detail / next action</th></tr></thead><tbody id="board-checks"></tbody></table></div>

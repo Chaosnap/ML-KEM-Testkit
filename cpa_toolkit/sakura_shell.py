@@ -23,6 +23,25 @@ PRODUCT = "SAKURA-X Shell"
 START, IDENT, TAIL, CLOCK_HZ, FAULT, INPUT_READY, RESULT_READY = range(0x100, 0x11c, 4)
 MAGIC = 0x534B0001
 BUFFER = 0x4000
+#: AIST's factory Spartan-6 controller (sasebo_giii_ctrl) reads a register on 00 AH AL and always
+#: answers two bytes; the shell controller only buffers these three bytes (no 6-byte frame yet).
+AIST_ID_READ = bytes([0x00, 0xFF, 0xFC])
+
+#: Spartan-6 LEDs (LED11..LED20 = S_LED_0..9) that tell the two controllers apart.
+LED_HINT = ("Spartan-6 LEDs: shell controller = LED17 toggles about every 1.3 s (LED16 lit = stuck "
+            "transaction); AIST factory controller = LED11 blinks about 3 times a second.")
+AIST_FOUND = ("The Spartan-6 runs AIST's FACTORY controller (it answered the factory read with %s), not the "
+              "sakura-x-shell controller. The shell bit is loaded into SRAM only, so a power cycle or USB "
+              "replug (SW1 = USB powers the board from it) brings the factory design back from the flash. "
+              "Load third_party/sakura_x_shell/sakura-x-shell-ctrl/sakura-x-shell-ctrl.bit on CN10 "
+              "(xc3sprog -c xpc -p 1 ...), keep the board powered, then program the Kintex-7 and connect. "
+              "Do not leave this pairing running: the factory controller and sakura_shell_top drive the "
+              "same inter-FPGA lines.")
+NOTHING = ("Neither the shell controller nor AIST's factory controller answers on Channel A, even after a "
+           "Channel-B RTS reset. Before the Kintex-7 is involved: (1) the Spartan-6 is not configured "
+           "(its DONE LED off) or its load failed -- reload the shell bit on CN10 and check xc3sprog "
+           "reports XC6SLX45; (2) Channel A is not in 245 FIFO mode (EEPROM); (3) a factory controller "
+           "locked by an earlier shell frame -- it only recovers at power-off or SW6. " + LED_HINT)
 
 
 def device_of(port: str) -> str:
@@ -214,7 +233,7 @@ class ShellLink:
             # There is no in-band resync after a partial native shell frame.
             # Stop the campaign; explicit Channel-B reset is the recovery path.
             hint = ("No complete Spartan command ACK. Check Channel A FIFO mode, the shell "
-                    "Spartan bitstream and reset state." if phase == "Spartan ACK" else
+                    "Spartan bitstream and reset state. " + LED_HINT if phase == "Spartan ACK" else
                     "Spartan ACK was received, but Kintex did not return a complete word. "
                     "Check the matching sakura_shell_top.bit, inter-FPGA bus and clocks.")
             raise T.ProtocolError("%s timeout (%d/%d bytes). %s Use Reset & connect in the GUI, "
@@ -238,6 +257,68 @@ class ShellLink:
                 raise T.ProtocolError("shell rejected frame: 0x%02x; hard reset required" % ack[0], fatal=True)
             return self._read(words * 4, wait, phase="Kintex data") if cmd == 1 else b""
 
+    def _pulse_rts(self):
+        """Channel-B RTS_N low for 20 ms: resets the shell controller (FIFOs, command decoder)
+        and, through o_bus_reset_n, the Kintex bridge. No effect on AIST's factory controller."""
+        self.reset_ser.rts = True
+        try:
+            time.sleep(0.02)
+        finally:
+            self.reset_ser.rts = False
+        time.sleep(0.05)
+        self.ser.reset_input_buffer()
+
+    def _probe_frame(self) -> bytes:
+        """The unknown-command probe; returns the 1-byte reply (or b"" on timeout)."""
+        self.ser.write(self._header(0xf, 0, 1))
+        self.ser.timeout = 0.5
+        return self.ser.read(1)
+
+    def check_controller(self, report=None) -> str:
+        """Which Spartan-6 controller answers on Channel A? Runs before ANY Kintex access.
+
+        1. RTS reset -- clears a shell controller left inside an unfinished transaction;
+        2. AIST's factory read ``00 FF FC``: two bytes back = the factory controller is running
+           (the shell bit was lost or never loaded). Sent BEFORE any shell frame, because the
+           first shell byte (0x8.) puts the factory decoder into its TRAP state for good;
+        3. RTS reset again (drops those three bytes from the shell's input FIFO), then the
+           unknown-command probe: the shell controller answers 0x02 without a bus transaction.
+           0x01 means the shell parsed the three stray bytes, i.e. the RTS reset did not reach
+           it; the frame boundary is then restored in-band.
+
+        Returns ``"shell"`` or ``"shell-no-rts"``; raises a fatal ProtocolError otherwise.
+        """
+        def note(name, ok, detail):
+            if report:
+                report(name, ok, detail)
+        with self._io():
+            self._pulse_rts()
+            note("Channel B reset", True, "RTS_N pulsed 20 ms and released; any unfinished shell transaction is cleared")
+            self.ser.write(AIST_ID_READ)
+            self.ser.timeout = 0.3
+            got = self.ser.read(2)
+            if len(got) == 2:
+                msg = AIST_FOUND % got.hex(" ")
+                note("Spartan controller", False, msg)
+                raise T.ProtocolError(msg, fatal=True)
+            self._pulse_rts()
+            ack = self._probe_frame()
+            if ack == b"\x02":
+                note("Spartan controller", True, "sakura-x-shell controller answered (0x02 to the unknown-command probe); "
+                     "PC -> FT2232H FIFO -> Spartan-6 path works")
+                return "shell"
+            if ack == b"\x01":
+                self.ser.write(bytes(3))          # complete the misaligned frame: it is ACKed 0x01
+                self.ser.timeout = 0.5
+                self.ser.read(1)
+                if self._probe_frame() == b"\x02":
+                    note("Spartan controller", True, "shell controller answers, but the Channel-B RTS reset does "
+                         "not reach it (stray bytes were parsed); hard reset will not work -- power-cycle to recover")
+                    return "shell-no-rts"
+            msg = NOTHING if not ack else ("unexpected Spartan reply 0x%02x to the probe. " % ack[0]) + LED_HINT
+            note("Spartan controller", False, msg)
+            raise T.ProtocolError(msg, fatal=True)
+
     def probe_controller(self):
         """Check S6 independently of K7 using a well-framed unknown command.
 
@@ -246,10 +327,9 @@ class ShellLink:
         A timeout leaves framing unknown; only explicit hard reset recovers it.
         """
         with self._io():
-            frame = self._header(0xf, 0, 1)
-            if self.ser.write(frame) != len(frame):
-                raise T.ProtocolError("short controller probe write; use Reset & connect", fatal=True)
-            ack = self._read(1, phase="Spartan ACK")
+            ack = self._probe_frame()
+            if len(ack) != 1:
+                raise T.ProtocolError("Spartan ACK timeout (0/1 bytes). " + NOTHING, fatal=True)
             if ack != b"\x02":
                 raise T.ProtocolError("unexpected Spartan probe response 0x%02x; expected shell "
                                       "response 0x02. Use Reset & connect; verify the S6 shell bit." % ack[0],
@@ -352,13 +432,7 @@ class ShellLink:
     def hard_reset(self):
         """Explicit recovery: pulse Channel-B RTS_N; resets S6 and K7 logic."""
         with self._io():
-            self.reset_ser.rts = True
-            try:
-                time.sleep(0.02)
-            finally:
-                self.reset_ser.rts = False
-            time.sleep(0.05)
-            self.ser.reset_input_buffer()
+            self._pulse_rts()
     
     def resync(self):
         """Do not inject frames/reset into an unknown partial transaction."""

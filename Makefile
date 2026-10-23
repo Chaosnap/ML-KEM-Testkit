@@ -1,5 +1,5 @@
 .PHONY: help setup gui test vectors ucode sim-iverilog sim-link sim-bridge sim-system sim-cdc sim-units \
-	sim-bmul-timing sim-pipeline-check sim-sakura acvp-sim acvp-uart check lint regress clean
+	sim-bmul-timing sim-pipeline-check sim-sakura sim-sakura-shell acvp-sim acvp-uart check lint regress clean
 
 # Python of the project environment (pyproject.toml / uv.lock).
 PY ?= uv run python
@@ -17,6 +17,7 @@ help:
 	@echo "make sim-link      UART link + 0x05 Run (Icarus);  make sim-bridge: host protocol on the real core"
 	@echo "make sim-system    whole board system over a serial line, incl. trigger and LEDs"
 	@echo "make sim-sakura    SAKURA-X board-USB bridge against AIST's Spartan-6 controller source"
+	@echo "make sim-sakura-shell  SAKURA-X shell bridge against the template's Spartan-6 command_control.v"
 	@echo "make sim-bmul-timing     re-measure the Decaps windows for cpa_toolkit/config.py"
 	@echo "make sim-pipeline-check  the pipe_* multiplier twin against the RTL, cycle by cycle"
 	@echo "make regress       all simulation and unit tests"
@@ -67,6 +68,10 @@ sim-cdc:
 sim-sakura:
 	$(MAKE) -C testbench/sakura
 
+# SAKURA-X shell: Kintex bridge against the template's Spartan-6 command_control.v (Icarus).
+sim-sakura-shell:
+	$(MAKE) -C testbench/sakura_shell
+
 # Unit benches (modmul, pack/unpack, FIFO, Keccak) and the sponge.
 sim-units:
 	$(MAKE) -C testbench/units all
@@ -99,7 +104,7 @@ lint:
 	verilator --lint-only -Wall -Wno-fatal -Wno-DECLFILENAME hdl/core/status_leds.sv
 	verilator --lint-only -Wall -Wno-fatal -Wno-DECLFILENAME hdl/core/mlkem_word_fifo.sv
 
-regress: test sim-iverilog sim-link sim-units sim-sakura sim-cdc sim-bridge sim-system acvp-sim
+regress: test sim-iverilog sim-link sim-units sim-sakura sim-sakura-shell sim-cdc sim-bridge sim-system acvp-sim
 
 # Simulation outputs only. build/vivado/ (Vivado projects) and data/ are never touched.
 clean:
