@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Simple coefficient-level CPA against the ML-KEM-768 BaseMul of K-PKE.Decrypt.
 
-This replaces the earlier model catalogue (``models/``, row-aligned pipeline analyses) with the
+This replaced the earlier model catalogue (row-aligned pipeline analyses) with the
 plain recipe the public ML-KEM CPA code bases share:
 
 * for a public NTT-domain coefficient ``u`` (from the known ciphertext) and every secret
@@ -15,7 +15,8 @@ plain recipe the public ML-KEM CPA code bases share:
   9 samples around the POI and count in how many of the four windows a candidate is in the top 10
   (anshupriyan ``Source_code.py`` phases 2-4, ``CPA.py`` ``window_radii``).
 
-Two hypotheses, each a real register of the multiplier (``hdl/core/mlkem_poly_alu.sv``,
+The hypotheses live in ``models/`` (one module per family, e.g. ``models/HW.py``; see
+``models/__init__.py`` to add one). The two HW models, each a real register of the multiplier (``hdl/core/mlkem_poly_alu.sv``,
 ``mlkem_modmul.sv``; ``T`` = the cycle the RAM read address of the word holding the coefficient is
 issued, ``T = BMUL_READ_CYCLES[poly] + 2 * (coeff // 2)``, the operands reach the multiplier at
 ``T + 3``):
@@ -56,6 +57,7 @@ import config as C
 import mlkem_ref as R
 import trace_parse as P
 from hdf5_trace_store import TraceReader
+from models import DEFAULT_MODEL, MODELS, Model, get_model, list_models  # noqa: F401  (one module per family)
 
 Q, K = R.Q, R.K
 
@@ -63,59 +65,6 @@ Q, K = R.Q, R.K
 WINDOW_RADII = (1, 2, 3, 4)
 TOP_N = 10
 GUESS_CHUNK = 512
-
-_HW12 = np.array([bin(i).count("1") for i in range(4096)], dtype=np.float32)
-
-
-def hw24(x: np.ndarray) -> np.ndarray:
-    """Hamming weight of the low 24 bits."""
-    x = np.asarray(x, dtype=np.int64)
-    return _HW12[x & 0xFFF] + _HW12[(x >> 12) & 0xFFF]
-
-
-class Model:
-    """One hypothesis: ``leak(u * g)`` and where in the pipeline it lives."""
-
-    def __init__(self, name, title, equation, register, bits, cycles, source, leak, limitations):
-        self.name, self.title, self.equation, self.register = name, title, equation, register
-        self.bits, self.cycles, self.source, self.leak, self.limitations = bits, cycles, source, leak, limitations
-
-    def hypotheses(self, u: np.ndarray, guesses: np.ndarray) -> np.ndarray:
-        """``(N, G)`` float32 Hamming weights for ``u`` ``(N,)`` and candidates ``guesses`` ``(G,)``."""
-        return self.leak(np.asarray(u, dtype=np.int64)[:, None] * np.asarray(guesses, dtype=np.int64)[None, :])
-
-    def describe(self) -> dict:
-        return {"name": self.name, "title": self.title, "equation": self.equation, "register": self.register,
-                "bits": self.bits, "cycles_after_read": list(self.cycles), "source": self.source,
-                "limitations": self.limitations}
-
-
-MODELS: dict[str, Model] = {m.name: m for m in (
-    Model("hw_product_mod", "HW of the reduced product", "HW( u[j] * g mod q )",
-          "r (Barrett output) -> p00 / p11", 12, (10, 11),
-          "anshupriyan Source_code.py, Chaosnap CPA.py (model HW)",
-          lambda x: _HW12[x % Q],
-          "Two multipliers finish a pair in the same cycle, so the partner coefficient adds noise of the "
-          "same size as the signal; needs many traces (thousands). u[j] = 0 carries no information."),
-    Model("hw_product_raw", "HW of the raw product", "HW( u[j] * g )",
-          "DSP product register P (24 bit)", 24, (5, 6),
-          "same recipe, one stage earlier (mlkem_modmul.sv p1 / p2)",
-          hw24,
-          "Raw 24-bit product before the Barrett reduction: more bits toggle, so a stronger signal than the "
-          "reduced product when the DSP register is what the probe sees. The same pair noise applies."),
-)}
-DEFAULT_MODEL = "hw_product_mod"
-
-
-def get_model(name: str) -> Model:
-    if name not in MODELS:
-        raise ValueError("unknown model %r (available: %s)" % (name, ", ".join(MODELS)))
-    return MODELS[name]
-
-
-def list_models() -> list[dict]:
-    return [m.describe() for m in MODELS.values()]
-
 
 # --------------------------------------------------------------------------- statistics
 def noise_floor_corr(n_traces: int, trials: int) -> float:

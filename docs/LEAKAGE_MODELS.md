@@ -1,6 +1,6 @@
 # 简单 CPA 速查：做什么、两个假设、结果怎么读
 
-对应代码：`cpa_toolkit/cpa.py`（引擎 + 命令行）、`cpa_toolkit/web_gui.py` / `web_static/`（Analysis 页）、`tests/test_cpa.py`。
+对应代码：`cpa_toolkit/cpa.py`（引擎 + 命令行）、`cpa_toolkit/models/`（模型，一个模型族一个文件）、`cpa_toolkit/web_gui.py` / `web_static/`（Analysis 页）、`tests/test_cpa.py`。
 
 > **2026-10-20 变更**：旧的泄漏模型目录（`cpa_toolkit/models/` 的 hw / hd / pipe 全部模型）、逐周期对齐的分析（`aligned_cpa.py`、`cycle_features.py`）和对应测试已经移除，换成下面的最简配方。旧代码在 git 历史里（`git log -- cpa_toolkit/models`）。`MODEL.md` 第 5 节和本文件旧版（流水线模型）描述的是被移除的模型，只作为记录保留；`mlkem_pipeline.py`（流水线的软件孪生）和 `scripts/sim/pipeline_check.py` 仍然保留，因为它们是对 RTL 的独立核对。
 
@@ -35,7 +35,7 @@
 
 - 一对系数（2w，2w+1）在**同一个周期**由两个乘法器算完，所以搭档系数对另一个来说是算法噪声（和信号一样大），需要上千条 trace；
 - `u[j] = 0` 的 trace 对该系数没有信息；整个 campaign 里 `u[j]` 都不变时这个系数没有信息，报告会标出来；
-- 没有 R_prev、没有部分和：为了保持最简单，不建模“寄存器之前是什么”（旧的 `hd_*` 模型在周期精确仿真里和真实翻转的相关性只有约 0.01）。想要更强的假设，在 `cpa.py` 的 `MODELS` 里加一个 `Model(...)`。
+- 没有 R_prev、没有部分和：为了保持最简单，不建模“寄存器之前是什么”（旧的 `hd_*` 模型在周期精确仿真里和真实翻转的相关性只有约 0.01）。想要更强的假设，在 `cpa_toolkit/models/` 里加一个文件（例如 `HD.py`，定义 `MODELS = [Model(...)]`），它会被自动加载。
 
 ---
 

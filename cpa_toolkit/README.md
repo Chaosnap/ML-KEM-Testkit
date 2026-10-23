@@ -161,7 +161,7 @@ python cpa.py FILE.hdf5 --polys 0 --coeffs 0-15 --model hw_product_raw
 
 **时间轴**：示波器报告的“第一个采样点相对触发的时间”（LeCroy 的 `HORIZ_OFFSET`）现在随每条 campaign 一起存下来（`record_start_s`），BMUL 窗口按**时间**放在 trace 上，所以触发位置在屏幕中间（有预触发数据）也不会错位；旧 campaign 没有这个字段时按“采样 0 = 触发”处理，GUI 的覆盖检查会提示。窗口两侧的余量 `TRIGGER_SLACK_CYCLES` 的单位是**核心周期**（旧版误当成采样点，2.5 GS/s 下只有 1/12 的预期）。
 
-**加一个新假设**：在 `cpa.py` 的 `MODELS` 里加一个 `Model(...)`，`leak(x)` 接收 `u·g`（整数，shape = trace × 候选）并返回汉明权重 / 汉明距离；GUI 刷新后就能在下拉框里选到。
+**加一个新假设**：模型放在 `cpa_toolkit/models/`，一个模型族一个文件（现有 `models/HW.py`）。新建例如 `models/HD.py`，在里面定义 `MODELS = [Model(...)]`；`leak(x)` 接收 `u·g`（整数，shape = trace × 候选），需要别的输入时继承 `Model` 并重写 `hypotheses()`。文件会被自动加载，命令行 `--list-models` 和 GUI 的下拉框里就能选到（说明见 `models/__init__.py`）。
 
 把 RTL 里每个触发器的翻转和流水线孪生逐周期比对的工具仍然保留（需要 Verilator）：
 

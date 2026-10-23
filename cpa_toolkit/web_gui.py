@@ -1565,9 +1565,10 @@ def _csv_paths(h5_path: str, job_id: str) -> tuple[Path, Path]:
 
 
 def _model_version(model: str = "") -> str:
-    """Content hash of cpa.py and mlkem_ref.py: which version of the analysis produced a report."""
+    """Content hash of cpa.py, the models and mlkem_ref.py: which version of the analysis produced a report."""
     import mlkem_ref
-    h = hashlib.sha256(Path(CA.__file__).read_bytes() + Path(mlkem_ref.__file__).read_bytes()).hexdigest()[:12]
+    files = [Path(CA.__file__), Path(mlkem_ref.__file__)] + sorted((Path(CA.__file__).parent / "models").glob("*.py"))
+    h = hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest()[:12]
     return "%s:%s" % (model or "cpa", h)
 
 

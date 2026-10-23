@@ -79,6 +79,9 @@ a { color: var(--accent); }
 .grid-acq > .card > .chart { flex: 1; }
 /* Setup capture: trigger checks and notes on the left, the capture chart on the right. */
 .setup-grid { display: grid; grid-template-columns: minmax(360px, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
+/* nothing captured or checked yet: no empty left column, the chart takes the whole width */
+.setup-grid:has(#cap-parse:empty):has(#trig-wrap.hidden):has(#cap-kpis:empty) { grid-template-columns: minmax(0, 1fr); }
+.setup-grid:has(#cap-parse:empty):has(#trig-wrap.hidden):has(#cap-kpis:empty) > .setup-side { display: none; }
 .split { display: grid; grid-template-columns: minmax(340px, 0.85fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
 .split > .card { overflow-x: auto; }
 .span-2 { grid-column: span 2; }

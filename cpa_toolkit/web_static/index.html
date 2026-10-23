@@ -240,7 +240,7 @@
         </div>
 
         <div class="card">
-          <div class="card-head"><h2>Setup capture</h2><span class="sub">One Decaps of a new valid vector. Use it to set the trigger, the scale and the timebase.</span>
+          <div class="card-head"><h2>Setup capture</h2><span class="sub">One Decaps of a new valid vector</span>
             <div class="actions"><button class="btn ghost sm" id="cap-clear">Clear</button><button class="btn secondary" id="trig-check">Check trigger</button><button class="btn primary" id="cap-one">Capture</button></div></div>
           <div class="setup-grid">
             <div class="setup-side">
@@ -248,11 +248,6 @@
               <div class="hidden" id="trig-wrap">
                 <div class="table-wrap" style="margin-bottom:12px"><table class="t trig"><thead><tr><th>trigger check</th><th>result</th><th>detail</th></tr></thead><tbody id="trig-table"></tbody></table></div>
               </div>
-              <details class="hint" style="margin:0 0 10px"><summary>Trigger wiring and scope settings</summary>
-                <p><b>trig_out</b> is high while Decaps runs (CYCLE_COUNT core cycles).</p>
-                <p>Arty A7: Pmod JA1. Arty Z7: Pmod JA3. SAKURA-X: CN8 pin 3, GND on CN8 pin 13.</p>
-                <p>Probe trig_out with the marker channel. Trigger on that channel: NORMAL or SINGLE, rising edge. Level: 1.6 V (Arty), 1.25 V (SAKURA-X).</p>
-                <p>Put the trigger point about one division from the left edge. The record must start before the Decaps and continue for 23 µs or more after it.</p></details>
               <div class="kpis compact" id="cap-kpis"></div>
             </div>
             <div class="chart tall" id="cap-chart"><div class="chart-empty">No capture yet. The chart shows the last 5 captures.</div></div>
