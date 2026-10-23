@@ -12,7 +12,7 @@ every ciphertext with the shared secret the core must return. Every capture
 is checked against that expected key, so a reset board, a corrupted link or
 a wrong key shows up on the very trace it happens.
 
-CPA mode: N different ciphertexts (``valid`` / ``invalid`` / ``structured``),
+CPA mode: N different ciphertexts (``valid`` / ``invalid`` / ``pc-oracle``),
 one trace each, for correlation against the leakage model in ``mlkem_ref.py``
 (``docs/ATTACK_MODEL.md``). TVLA mode: fixed-vs-random (FIPS 203 Decaps TVLA
 methodology), for Welch's t-test.
@@ -334,7 +334,7 @@ def _vectors_for(args, mode: str) -> tuple[TV.VectorSet, str]:
     seed = bytes.fromhex(args.seed) if args.seed else os.urandom(64)
     print("seed: %s  (pass --seed to reproduce)" % seed.hex())
     if mode == "cpa":
-        vs = TV.generate("cpa", args.traces, seed, args.strategy, args.poly, args.pair)
+        vs = TV.generate("cpa", args.traces, seed, args.strategy)
     else:
         vs = TV.generate("tvla", args.traces, seed, invalid_random=args.invalid_random)
     path = vs.save()
@@ -406,8 +406,6 @@ def main() -> None:
     add_hw(sp)
     add_vectors(sp)
     sp.add_argument("--strategy", default="valid", choices=list(TV.STRATEGIES))
-    sp.add_argument("--poly", type=int, default=0, choices=[0, 1, 2], help="structured strategy only")
-    sp.add_argument("--pair", type=int, default=0, help="structured strategy only, 0..127")
     sp.set_defaults(fn=lambda a: _run(a, "cpa"))
 
     sp = sub.add_parser("tvla-run", help="TVLA (fixed-vs-random) campaign on the board + scope")

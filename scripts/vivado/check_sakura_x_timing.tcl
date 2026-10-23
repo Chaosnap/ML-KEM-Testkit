@@ -1,8 +1,8 @@
 # Run on the routed design, BEFORE write_bitstream, in GUI and batch flows.
 # Keep reports on failure so the user can inspect paths without CLI commands.
-namespace eval sakura_shell_timing {
+namespace eval sakura_x_timing {
     set root [file normalize [file join [file dirname [info script]] ../..]]
-    set report_dir [file join $root build vivado sakura-shell_mlkem]
+    set report_dir [file join $root build vivado sakura-x_mlkem]
     file mkdir $report_dir
     report_timing_summary -report_unconstrained -file [file join $report_dir timing.rpt]
     report_utilization -hierarchical -file [file join $report_dir utilization.rpt]

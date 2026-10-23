@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 import time
 
+import sakura_x
 import uart_target as T
 
 
@@ -166,15 +167,15 @@ class Managed:
 
 # --- openers ------------------------------------------------------------------
 NO_ANSWER_HINT = (
-    "Wrong port or baud? Arty A7: the on-board USB serial's ...1 interface. Arty Z7 PS build: "
-    "the ...1 interface answers only after `uv run scripts/board/boot_arty_z7_ps.py` since the "
-    "last power-up. Arty Z7 pure-PL build: the external 3.3 V USB-UART on Pmod JA.")
+    "Make sure that the port and the baud rate are correct. Arty A7: use the ...1 interface of the "
+    "on-board USB. Arty Z7 PS build: after each power-up, run `uv run scripts/board/boot_arty_z7_ps.py`. "
+    "Arty Z7 PL build: use the external 3.3 V USB-UART on Pmod JA.")
 
 
 def open_board(params: dict, publish):
     """Connect with staged shell diagnostics; never retry an incomplete FIFO frame."""
-    if params["port"].startswith("sakura-shell:"):
-        from sakura_shell import ShellLink, ShellTarget
+    if sakura_x.is_port(params["port"]):
+        from sakura_x import ShellLink, ShellTarget
 
         def report(name, ok, detail):
             publish(check={"name": name, "ok": ok, "detail": detail})
@@ -189,12 +190,12 @@ def open_board(params: dict, publish):
             target.link.check_controller(report)
             stage = "Kintex shell identity"
             target.probe_run()
-            report(stage, True, "SK ABI 1 received from Kintex; inter-FPGA read path works")
+            report(stage, True, "The Kintex-7 replies (ABI 1). The bus between the FPGAs is OK.")
             stage = "ML-KEM core"
             info = target.info()
             if info["alg_id"] != 1:
-                raise ValueError("unexpected ALG_ID %d; expected ML-KEM (1)" % info["alg_id"])
-            report(stage, True, "ML-KEM core %s; connection ready for Decaps" % info["version"])
+                raise ValueError("ALG_ID is %d, not 1 (ML-KEM). Load sakura_x_top.bit on CN5." % info["alg_id"])
+            report(stage, True, "ML-KEM core %s. Ready for Decaps." % info["version"])
             return target, info
         except Exception as e:
             if stage != "Spartan controller":      # check_controller reported its own failure
@@ -284,7 +285,7 @@ class LinkMonitor:
         self._misses = 0 if ok else self._misses + 1
         if self._misses >= 2:
             self._misses = 0
-            hint = ("Use Reset & connect, then reload DK/CT." if
-                    snap["params"]["port"].startswith("sakura-shell:") else
+            hint = ("Click Connect. Then load DK and CT again." if
+                    sakura_x.is_port(snap["params"]["port"]) else
                     "Board reset or reprogrammed? Arty Z7 PS build: rerun scripts/board/boot_arty_z7_ps.py.")
-            self.board.mark_lost("the core stopped answering. " + hint, target)
+            self.board.mark_lost("The core does not reply. " + hint, target)

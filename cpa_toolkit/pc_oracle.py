@@ -98,7 +98,7 @@ def chosen_ciphertext(poly: int, t: int, v_code: int) -> bytes:
 
     Not a valid encapsulation (no ek, no m). ``u`` is placed as a *compressed* coefficient so the
     core's Decompress_10 reconstructs exactly U_CODE -- no NTT, so no rounding is amplified (unlike
-    ``mlkem_ref.structured_ciphertext``, which compresses a time-domain polynomial and loses the
+    the removed "structured" vectors, which compressed a time-domain polynomial and lost the
     isolation). ``v`` likewise is one compressed coefficient the core's Decompress_4 reconstructs.
     """
     if not 0 <= poly < R.K:

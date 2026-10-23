@@ -44,7 +44,7 @@ import scope as S
 import testvectors as TV
 import tvla_analysis as TVA
 import uart_target as T
-import sakura_shell as SH
+import sakura_x as SH
 from gui_config_io import save_config_values
 
 STATIC_DIR = Path(__file__).with_name("web_static")
@@ -269,7 +269,7 @@ def api_log(body: dict) -> dict:
 # Board connection
 # =============================================================================
 def api_fpga_ports(_body: dict) -> dict:
-    """List legacy/UART entries and explicit, paired shell FIFO candidates."""
+    """List UART ports and the paired SAKURA-X FIFO devices."""
     return {"ports": [{"device": d, "description": desc, "hint": hint, "recommended": rec}
                       for d, desc, hint, rec in T.list_ports()],
             "shell_devices": SH.connection_devices(),
@@ -282,20 +282,16 @@ LINK_SETTINGS = {"op_timeout": 5.0}
 
 
 def api_fpga_connect(body: dict) -> dict:
-    """Connect, or explicitly pulse shell RTS reset before connection diagnostics."""
+    """Connect; on the SAKURA-X every connect starts with the Channel-B RTS reset."""
     port = str(body.get("port", "")).strip()
     if not port:
-        raise ValueError("choose a board device")
+        raise ValueError("Select a board device.")
     if _busy():
-        raise ValueError("a job is using the board -- stop it first")
-    if port.startswith(SH.PREFIX):
-        hard_reset = body.get("hard_reset") is True
-        log("%s SAKURA-X USB FIFO on %s (Channel B: RTS reset only)" %
-            ("resetting and connecting" if hard_reset else "connecting", port))
-        params = {"port": port, "hard_reset": hard_reset, **LINK_SETTINGS}
+        raise ValueError("A job uses the board. Stop the job first.")
+    if SH.is_port(port):
+        log("connecting to the SAKURA-X USB FIFO on %s (Channel B: RTS reset only)" % port)
+        params = {"port": port, **LINK_SETTINGS}
     else:
-        if body.get("hard_reset"):
-            raise ValueError("RTS reset is only available for the SAKURA-X shell transport")
         baud = int(body.get("baud") or C.BAUD)
         log("connecting to the board on %s @ %d baud..." % (port, baud))
         params = {"port": port, "baud": baud, **LINK_SETTINGS}
@@ -660,7 +656,6 @@ def api_vectors_generate(body: dict) -> dict:
     except ValueError:
         raise ValueError("seed must be hex")
     kw = {"mode": mode, "n": n, "seed": seed, "strategy": body.get("strategy", "valid"),
-          "poly": int(body.get("poly") or 0), "pair": int(body.get("pair") or 0),
           "invalid_random": bool(body.get("invalid_random", False))}
     if mode not in ("cpa", "tvla") or (mode == "cpa" and kw["strategy"] not in TV.STRATEGIES):
         raise ValueError("unknown mode/strategy")
@@ -962,7 +957,7 @@ def api_acquire_start(body: dict) -> dict:
             raise ValueError("no such campaign file to resume")
         s = HS.summarize(p)
         if not s["resumable"]:
-            raise ValueError("%s is not resumable (complete, or written before vector sets)" % p.name)
+            raise ValueError("You cannot resume %s (it is complete, or it is too old)" % p.name)
     elif not vs_path:
         raise ValueError("choose a test-vector set (Test Vectors tab) first")
     else:
@@ -1045,8 +1040,8 @@ def api_acquire_capture_one(body: dict) -> dict:
 
 
 #: Where trig_out comes out, for the trigger-check messages.
-TRIG_PINS = ("Arty A7: Pmod JA1, Arty Z7: Pmod JA3 -- 3.3 V, level about 1.6 V; "
-             "SAKURA-X: CN8 pin 3, ground on CN8 pin 13 (or 11) -- 2.5 V, level about 1.25 V")
+TRIG_PINS = ("Arty A7: Pmod JA1. Arty Z7: Pmod JA3. Level 1.6 V. "
+             "SAKURA-X: CN8 pin 3, GND on CN8 pin 13. Level 1.25 V")
 
 #: A record may start this many core cycles off the trigger (LeCroy reports the
 #: trigger time to a fraction of a sample) before the BMUL windows are misplaced.
@@ -1083,33 +1078,33 @@ def api_acquire_trigger_check(_body: dict) -> dict:
             time.sleep(0.3)
             fired = query()
             if fired is None:
-                checks.append((name, None, "this scope driver cannot report its trigger state -- skipped"))
+                checks.append((name, None, "The scope driver cannot report the trigger state. Skipped."))
             elif fired:
-                checks.append((name, False, "the scope triggered although no operation ran: set the trigger mode "
-                               "to NORMAL / SINGLE (not AUTO), source = the channel probing trig_out, rising edge "
-                               "(%s)" % TRIG_PINS))
+                checks.append((name, False, "The scope triggered, but no operation ran. Set the trigger mode "
+                               "to NORMAL or SINGLE (not AUTO). Set the source to the trig_out channel, rising edge. "
+                               "%s." % TRIG_PINS))
             else:
-                checks.append((name, True, "stayed armed through register and buffer traffic"))
+                checks.append((name, True, "No trigger during register and buffer access."))
         else:
-            checks.append((name, None, "this scope driver cannot report its trigger state -- skipped"))
+            checks.append((name, None, "The scope driver cannot report the trigger state. Skipped."))
 
         A.arm_scope(target, sc)
         out = target.decaps(vs.dk, vs.ct[0].tobytes(), resend_dk=True)
         if out.link_fatal:
             board.mark_lost(out.link_error, target)
         if not out.ok:
-            raise ValueError("the Decaps itself failed: %s" % out.describe())
+            raise ValueError("Decaps failed: %s" % out.describe())
         try:
             trace = np.asarray(sc.read(timeout=3.0), dtype=np.float64)
             checks.append(("trigger on the Decaps start", True,
-                           "triggered by one Decaps; trig_out was high for %d core cycles (%.1f us)"
+                           "One Decaps gave one trigger. trig_out was high for %d core cycles (%.1f us)."
                            % (out.cycles, out.cycles / C.CORE_MHZ)))
         except TimeoutError:
             checks.append(("trigger on the Decaps start", False,
-                           "the Decaps ran (%d cycles) but the scope did not trigger within 3 s: probe trig_out "
-                           "(%s), trigger source = that channel, rising edge" % (out.cycles, TRIG_PINS)))
+                           "Decaps ran (%d cycles), but the scope did not trigger in 3 s. Connect the probe to "
+                           "trig_out. Set the trigger source to that channel, rising edge. %s." % (out.cycles, TRIG_PINS)))
     k_ok = out.output == vs.k[0].tobytes()
-    checks.append(("Decaps result", k_ok, "K equals the FIPS 203 value" if k_ok else "K differs from the expected value"))
+    checks.append(("Decaps result", k_ok, "K is correct (FIPS 203)." if k_ok else "K is not correct."))
     result = {"pulse_us": out.cycles / C.CORE_MHZ, "cycles": out.cycles}
     if trace is not None:
         rate = sc.sample_rate()
@@ -1117,16 +1112,16 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         start = query() if callable(query) else None
         axis = _axis(rate, int(trace.size), start)
         if not axis.get("duration_us"):
-            checks.append(("record covers the BMUL windows", None, "sample rate unknown -- cannot tell"))
+            checks.append(("record covers the BMUL windows", None, "The sample rate is not known. Skipped."))
         elif axis["bmul_outside"] or axis["bmul_cut"]:
-            checks.append(("record covers the BMUL windows", False, "the record spans %.2f .. %.2f us after the trigger; "
-                           "%d BMUL window(s) missing, %d cut: it must reach from 0 to at least %s us after the trigger "
-                           "(trigger at the left edge, timebase long enough)"
+            checks.append(("record covers the BMUL windows", False, "The record is %.2f .. %.2f us after the trigger. "
+                           "%d BMUL windows are missing, %d are cut. The record must go from 0 to %s us or more. "
+                           "Put the trigger at the left edge. Make the timebase longer."
                            % ((start or 0.0) * 1e6, axis["end_us"], axis["bmul_outside"], axis["bmul_cut"],
                               axis["needed_us"])))
         else:
-            checks.append(("record covers the BMUL windows", True, "%.1f us captured, all three BMUL windows inside "
-                           "(need %s us)" % (axis["duration_us"], axis["needed_us"])))
+            checks.append(("record covers the BMUL windows", True, "%.1f us captured. All three BMUL windows are inside "
+                           "(%s us necessary)." % (axis["duration_us"], axis["needed_us"])))
         checks.append(_record_start_check(sc))
         result.update(trace=_series(trace, rate, 4000, start), axis=axis)
     rows = [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks]
@@ -1142,15 +1137,15 @@ def _record_start_check(sc) -> tuple:
     query = getattr(sc, "record_start_s", None)
     start = query() if callable(query) else None
     if start is None:
-        return (name, None, "this scope driver does not report the trigger position -- check it once by eye "
-                "(docs/TRACE_ACQUISITION.md, 4.4)")
+        return (name, None, "The scope driver does not report the trigger position. Check it on the scope "
+                "(docs/TRACE_ACQUISITION.md, 4.4).")
     cycles = start * C.CORE_MHZ * 1e6
     if abs(cycles) <= RECORD_START_TOL_CYCLES:
-        return (name, True, "first sample %+.1f ns from the trigger (%+.1f core cycles)" % (start * 1e9, cycles))
-    where = ("BEFORE the trigger (pre-trigger data: every BMUL window would be shifted by %.0f core cycles)"
-             % -cycles if start < 0 else "AFTER the trigger (the start of the Decaps is missing)")
-    return (name, False, "the record starts %.3f us %s. The analysis takes sample 0 as the Decaps start: set the "
-            "horizontal delay so the time axis starts at 0 (trigger marker at the left edge of the grid)"
+        return (name, True, "The first sample is %+.1f ns from the trigger (%+.1f core cycles)." % (start * 1e9, cycles))
+    where = ("BEFORE the trigger (all BMUL windows move by %.0f core cycles)"
+             % -cycles if start < 0 else "AFTER the trigger (the start of Decaps is missing)")
+    return (name, False, "The record starts %.3f us %s. The analysis uses sample 0 as the Decaps start. Set the "
+            "horizontal delay to 0 (trigger marker at the left edge)."
             % (abs(start) * 1e6, where))
 
 
@@ -1245,7 +1240,7 @@ def _campaign(path: str, directory: Path | None = None) -> Path:
 
 def _not_recording(p: Path) -> None:
     if _recording_path() == str(p.resolve()):
-        raise ValueError("%s is being recorded right now -- stop the acquisition first" % p.name)
+        raise ValueError("%s is recording now. Stop the acquisition first." % p.name)
 
 
 def _reports_for(path: str) -> list[dict]:
@@ -1595,10 +1590,10 @@ def _dk_ref(file: str, source: str) -> bytes | None:
             recipe = r.metadata.get("recipe")
             dk_hash = r.dk_hash
         if not recipe:
-            raise ValueError("%s has no vector-set recipe; give a dk file instead" % Path(file).name)
+            raise ValueError("%s has no vector-set recipe. Use a dk file." % Path(file).name)
         dk = A.dk_from_recipe(json.loads(str(recipe)))
         if hashlib.sha3_256(dk).digest() != dk_hash:
-            raise ValueError("the rebuilt key does not match this file's dk_hash")
+            raise ValueError("The key is not the same as the dk_hash of this file")
         return dk
     if not Path(source).is_file():
         raise ValueError("no such dk file: %s" % source)

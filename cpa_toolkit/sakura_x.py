@@ -3,7 +3,7 @@
 Native shell frames (no CRC): 0x8 | R/W nibble | (words-1) nibble |
 32-bit byte address | 0x1, big endian; followed by big-endian 32-bit words.
 The ML-KEM byte buffer itself is little endian. Channel B uses RTS only.
-See docs/SAKURA_X_SHELL.md for the wire map and the quiet-window contract.
+See docs/SAKURA_X.md for the wire map and the quiet-window contract.
 """
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ from contextlib import contextmanager
 import config as C
 import uart_target as T
 
-PREFIX = "sakura-shell:"
+PREFIX = "sakura-x:"
+#: Port prefix of earlier releases; still accepted from saved settings.
+OLD_PREFIX = "sakura-shell:"
 PRODUCT = "SAKURA-X Shell"
 START, IDENT, TAIL, CLOCK_HZ, FAULT, INPUT_READY, RESULT_READY = range(0x100, 0x11c, 4)
 MAGIC = 0x534B0001
@@ -27,26 +29,31 @@ BUFFER = 0x4000
 #: answers two bytes; the shell controller only buffers these three bytes (no 6-byte frame yet).
 AIST_ID_READ = bytes([0x00, 0xFF, 0xFC])
 
+#: Operator texts in ASD-STE100 style (short sentences, one instruction each).
 #: Spartan-6 LEDs (LED11..LED20 = S_LED_0..9) that tell the two controllers apart.
-LED_HINT = ("Spartan-6 LEDs: shell controller = LED17 toggles about every 1.3 s (LED16 lit = stuck "
-            "transaction); AIST factory controller = LED11 blinks about 3 times a second.")
-AIST_FOUND = ("The Spartan-6 runs AIST's FACTORY controller (it answered the factory read with %s), not the "
-              "sakura-x-shell controller. The shell bit is loaded into SRAM only, so a power cycle or USB "
-              "replug (SW1 = USB powers the board from it) brings the factory design back from the flash. "
-              "Load third_party/sakura_x_shell/sakura-x-shell-ctrl/sakura-x-shell-ctrl.bit on CN10 "
-              "(xc3sprog -c xpc -p 1 ...), keep the board powered, then program the Kintex-7 and connect. "
-              "Do not leave this pairing running: the factory controller and sakura_shell_top drive the "
-              "same inter-FPGA lines.")
-NOTHING = ("Neither the shell controller nor AIST's factory controller answers on Channel A, even after a "
-           "Channel-B RTS reset. Before the Kintex-7 is involved: (1) the Spartan-6 is not configured "
-           "(its DONE LED off) or its load failed -- reload the shell bit on CN10 and check xc3sprog "
-           "reports XC6SLX45; (2) Channel A is not in 245 FIFO mode (EEPROM); (3) a factory controller "
-           "locked by an earlier shell frame -- it only recovers at power-off or SW6. " + LED_HINT)
-
+LED_HINT = ("Spartan-6 LEDs: the shell controller flashes LED17 (about 1.3 s). LED16 on: the controller "
+            "waits in a transaction. The factory controller flashes LED11 (3 times each second).")
+AIST_FOUND = ("The Spartan-6 has the FACTORY controller (reply %s), not the shell controller. "
+              "Each power-off erases the shell bitstream. "
+              "1. Load third_party/sakura_x_shell/sakura-x-shell-ctrl/sakura-x-shell-ctrl.bit on CN10. "
+              "2. Load sakura_x_top.bit on CN5. Do not remove the power between the steps. "
+              "3. Click Connect.")
+NOTHING = ("No Spartan-6 controller replies on channel A. "
+           "1. Make sure that the Spartan-6 DONE LED is on. If it is off, load sakura-x-shell-ctrl.bit on CN10. "
+           "2. Make sure that channel A is in 245 FIFO mode: run bash scripts/board/sakura_x_eeprom.sh check. "
+           "3. Turn the board power off and on. Then load the two FPGAs again. " + LED_HINT)
 
 def device_of(port: str) -> str:
     """Strip only this transport's prefix."""
-    return port[len(PREFIX):] if port.startswith(PREFIX) else port
+    for prefix in (PREFIX, OLD_PREFIX):
+        if port.startswith(prefix):
+            return port[len(prefix):]
+    return port
+
+
+def is_port(port: str) -> bool:
+    """A port name that selects this transport."""
+    return port.startswith((PREFIX, OLD_PREFIX))
 
 
 def usb_identity(port) -> dict:
@@ -125,8 +132,8 @@ def usb_ports() -> list[dict]:
 def _reset_peer(a, ports):
     matches = [p for p in ports if p["interface"] == 1 and _same_usb(a, p)]
     if len(matches) != 1:
-        raise T.LinkError("Channel B could not be paired with Channel A on the same USB device. "
-                          "Reconnect the board USB and click Refresh devices.")
+        raise T.LinkError("Channel B is not on the same USB device as channel A. "
+                          "Connect the board USB cable again. Then click Refresh.")
     return matches[0]
 
 
@@ -146,7 +153,7 @@ def connection_devices() -> list[dict]:
         result.append(dict(a, device=PREFIX + a["device"], data_port=a["device"],
                            reset_port=b.get("device", ""), pair_error=error,
                            recommended=a["product"] == PRODUCT,
-                           hint="Channel A: FIFO data; Channel B: RTS reset only"))
+                           hint="Channel A: FIFO data. Channel B: RTS reset."))
     return result
 
 
@@ -155,11 +162,11 @@ def paired_reset_port(data_port: str) -> str:
     ports = usb_ports()
     selected = [p for p in ports if os.path.realpath(p["device"]) == os.path.realpath(data_port)]
     if len(selected) != 1:
-        raise T.LinkError("cannot identify Channel A: %s" % data_port)
+        raise T.LinkError("Channel A is not found: %s" % data_port)
     a = selected[0]
     if (a["vid"], a["pid"], a["interface"]) != (0x0403, 0x6010, 0):
-        raise T.LinkError("selected device is not FT2232H Channel A (USB interface 00). "
-                          "Select a SAKURA-X USB FIFO device in Connection; do not select Channel B.")
+        raise T.LinkError("The device is not FT2232H channel A (USB interface 00). "
+                          "Select a SAKURA-X device on the Connection page.")
     return _reset_peer(a, ports)["device"]
 
 
@@ -179,7 +186,7 @@ class ShellLink:
             self.data_port = device_of(port)
             self.reset_port = paired_reset_port(self.data_port)
             if report:
-                report(stage, True, "A: %s; B: %s (same USB device)" % (self.data_port, self.reset_port))
+                report(stage, True, "A: %s. B: %s. Same USB device." % (self.data_port, self.reset_port))
             # Set RTS before open: active-low RTS_N must stay HIGH in normal use.
             # Opening B with pyserial's default RTS=True would hold S6 in reset.
             stage = "Open reset channel B"
@@ -190,20 +197,20 @@ class ShellLink:
             self.reset_ser.port = self.reset_port
             self.reset_ser.open()
             if report:
-                report(stage, True, "RTS_N released; no UART data is sent")
+                report(stage, True, "Open. RTS is released.")
             stage = "Open FIFO channel A"
             # The tty API requires a nominal baud; EEPROM FIFO mode ignores it.
             self.ser = serial.Serial(self.data_port, C.BAUD, timeout=0.5,
                                      write_timeout=2, exclusive=True)
             self.ser.reset_input_buffer()
             if report:
-                report(stage, True, "USB FIFO handle opened; protocol response not yet checked")
+                report(stage, True, "Open.")
         except Exception as e:
             self.close()
             if report:
-                report(stage, False, str(e) + " Close other applications using either A or B; "
-                       "check device access permissions in Linux if access is denied.")
-            raise T.LinkError("cannot open shell data/reset ports: %s" % e) from e
+                report(stage, False, str(e) + " Close all programs that use channel A or B. "
+                       "On Linux, make sure that your user is in the dialout group.")
+            raise T.LinkError("Cannot open the SAKURA-X USB channels: %s" % e) from e
 
     def close(self):
         """Release both ports; do not send a reset on disconnect."""
@@ -232,12 +239,11 @@ class ShellLink:
         if len(data) != n:
             # There is no in-band resync after a partial native shell frame.
             # Stop the campaign; explicit Channel-B reset is the recovery path.
-            hint = ("No complete Spartan command ACK. Check Channel A FIFO mode, the shell "
-                    "Spartan bitstream and reset state. " + LED_HINT if phase == "Spartan ACK" else
-                    "Spartan ACK was received, but Kintex did not return a complete word. "
-                    "Check the matching sakura_shell_top.bit, inter-FPGA bus and clocks.")
-            raise T.ProtocolError("%s timeout (%d/%d bytes). %s Use Reset & connect in the GUI, "
-                                  "then reload DK/CT." % (phase, len(data), n, hint), fatal=True)
+            hint = ("The Spartan-6 does not reply. " + LED_HINT if phase == "Spartan ACK" else
+                    "The Spartan-6 replied, but the Kintex-7 did not send all data. "
+                    "Make sure that sakura_x_top.bit is loaded on CN5.")
+            raise T.ProtocolError("%s time-out (%d/%d bytes). %s Click Connect again. "
+                                  "Then load DK and CT again." % (phase, len(data), n, hint), fatal=True)
         return data
 
     @staticmethod
@@ -293,7 +299,7 @@ class ShellLink:
                 report(name, ok, detail)
         with self._io():
             self._pulse_rts()
-            note("Channel B reset", True, "RTS_N pulsed 20 ms and released; any unfinished shell transaction is cleared")
+            note("Channel B reset", True, "RTS reset sent. The controller state is clear.")
             self.ser.write(AIST_ID_READ)
             self.ser.timeout = 0.3
             got = self.ser.read(2)
@@ -304,18 +310,18 @@ class ShellLink:
             self._pulse_rts()
             ack = self._probe_frame()
             if ack == b"\x02":
-                note("Spartan controller", True, "sakura-x-shell controller answered (0x02 to the unknown-command probe); "
-                     "PC -> FT2232H FIFO -> Spartan-6 path works")
+                note("Spartan controller", True, "The shell controller replies (0x02). "
+                     "The USB FIFO path to the Spartan-6 is OK.")
                 return "shell"
             if ack == b"\x01":
                 self.ser.write(bytes(3))          # complete the misaligned frame: it is ACKed 0x01
                 self.ser.timeout = 0.5
                 self.ser.read(1)
                 if self._probe_frame() == b"\x02":
-                    note("Spartan controller", True, "shell controller answers, but the Channel-B RTS reset does "
-                         "not reach it (stray bytes were parsed); hard reset will not work -- power-cycle to recover")
+                    note("Spartan controller", True, "The shell controller replies, but the RTS reset does not "
+                         "reach it. If the link stops, turn the board power off and on.")
                     return "shell-no-rts"
-            msg = NOTHING if not ack else ("unexpected Spartan reply 0x%02x to the probe. " % ack[0]) + LED_HINT
+            msg = NOTHING if not ack else ("Unknown Spartan-6 reply 0x%02x. " % ack[0]) + LED_HINT
             note("Spartan controller", False, msg)
             raise T.ProtocolError(msg, fatal=True)
 
@@ -329,10 +335,10 @@ class ShellLink:
         with self._io():
             ack = self._probe_frame()
             if len(ack) != 1:
-                raise T.ProtocolError("Spartan ACK timeout (0/1 bytes). " + NOTHING, fatal=True)
+                raise T.ProtocolError("Spartan ACK time-out (0/1 bytes). " + NOTHING, fatal=True)
             if ack != b"\x02":
-                raise T.ProtocolError("unexpected Spartan probe response 0x%02x; expected shell "
-                                      "response 0x02. Use Reset & connect; verify the S6 shell bit." % ack[0],
+                raise T.ProtocolError("Unknown Spartan-6 reply 0x%02x (expected 0x02). Click Connect "
+                                      "again. Make sure that the Spartan-6 has the shell bitstream." % ack[0],
                                       fatal=True)
 
     def read_words(self, address, count=1, wait=0.0):
@@ -348,7 +354,7 @@ class ShellLink:
         """Read identity without starting an operation."""
         value = self.read_words(IDENT)[0]
         if value != MAGIC:
-            raise T.BitstreamError("wrong Kintex shell ABI: 0x%08x; program sakura_shell_top.bit" % value)
+            raise T.BitstreamError("Wrong Kintex-7 ABI 0x%08x. Load sakura_x_top.bit on CN5." % value)
         return value
 
     def rd(self, name):
@@ -370,8 +376,8 @@ class ShellLink:
     def _check_fault(self):
         fault = self.read_words(FAULT)[0]
         if fault:
-            raise T.ProtocolError("Kintex shell fault %d (1=access, 2=AXI, 3=timeout, "
-                                  "4=busy, 5=incomplete inputs); RESET and reload DK/CT" % fault,
+            raise T.ProtocolError("Kintex-7 fault %d (1 access, 2 AXI, 3 time-out, 4 busy, "
+                                  "5 input not complete). Send RESET. Then load DK and CT again." % fault,
                                   fatal=fault in (2, 3, 4))
 
     def write_data(self, offset, data):
@@ -451,7 +457,7 @@ class ShellTarget(T.Target):
     def info(self):
         """Return GUI metadata including FIFO mode and the quiet tail."""
         info = super().info()
-        info.update(transport="sakura-shell", run_command="START", baud=None,
+        info.update(transport="sakura-x", run_command="START", baud=None,
                     data_port=self.link.data_port, reset_port=self.link.reset_port,
                     quiet_tail_ms=self.link.quiet_ms)
         return info
@@ -459,7 +465,7 @@ class ShellTarget(T.Target):
     def configure(self, op=T.OP_DECAPS, in_len=T.DK_LEN + T.CT_LEN, force=False):
         """Configure only the fixed ML-KEM-768 decapsulation operation."""
         if op != T.OP_DECAPS or in_len != T.DK_LEN + T.CT_LEN:
-            raise ValueError("the SAKURA shell command set supports ML-KEM-768 Decaps only")
+            raise ValueError("The SAKURA-X supports only ML-KEM-768 Decaps")
         super().configure(op, in_len, force)
 
     def load_dk(self, dk):
@@ -494,6 +500,6 @@ class ShellTarget(T.Target):
             self.link.write_data(C.IN_BASE, pattern)
             ok = self.link.read_data(C.IN_BASE, len(pattern)) == pattern
             self.reset()  # invalidate partial inputs from the loopback
-            return [("shell ABI", True, "SK ABI 1; native FIFO, Channel B reserved for RTS reset"),
-                    ("bulk transfer", ok, "1024-byte buffer round trip"),
-                    ("START completion", self.probe_run(), "blocking completion read; no READ_STATUS polling")]
+            return [("shell ABI", True, "ABI 1. Channel A: FIFO data. Channel B: RTS reset."),
+                    ("bulk transfer", ok, "1024 bytes written and read back."),
+                    ("START completion", self.probe_run(), "START replies when Decaps is done. No polling.")]

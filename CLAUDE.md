@@ -7,10 +7,10 @@ ML-KEM-768 (FIPS 203) hardware core for Xilinx Arty boards plus the host tool ch
 ## Architecture
 
 - **HDL** (`hdl/core/`, vendor-agnostic SystemVerilog): `pqc_mlkem_top` (CSR + 8 KB data buffer + microcoded datapath: Keccak, NTT, BaseMul, CBD, (de)compress, pack/unpack), `uart_axi_bridge` (host protocol to AXI-Lite), `axil_cdc` (100/125 MHz bridge clock to the 206 MHz core clock), `status_leds` (green + RGB LEDs, frozen while the core is busy), and `mlkem_uart_system`, which wires all of these plus `trig_out` and is the one block every board top instantiates.
-- **Board tops** (`hdl/xilinx/`): clocking (MMCM), reset synchronisers and pins only: `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO), `sakura_x` (SAKURA-X / SASEBO-GIII Kintex-7 XC7K160T, 200 MHz diff. clock; host link = board USB through the Spartan-6's FACTORY bitstream: `sakura_lbus_bridge` maps the inter-FPGA local bus onto a byte stream, host side `cpa_toolkit/sakura_lbus.py`, port name `sakura:/dev/ttyUSB0`; AIST's minimal controller reference is bundled under `third_party/aist_sasebo_giii/` with its own license; `make sim-sakura` checks the bridge against it (SASEBO_DIR can override); portable SRAM bitstreams are tracked under `firmware/sakura_x/`, and `tclsh scripts/board/program_sakura_dual.tcl` programs them sequentially via CN10/CN5; Linux clone instructions are in docs/SAKURA_X_LINUX.md; the XDC lists every pin on its own line because XDC rejects Tcl loops; optional 2.5 V USB-UART on CN8; `scripts/vivado/build_sakura_x.tcl`, `program_sakura_x.tcl`, docs/SAKURA_X.md). `trig_out = STATUS.busy` is the scope trigger.
+- **Board tops** (`hdl/xilinx/`): clocking (MMCM), reset synchronisers and pins only: `arty_a7`, `arty_z7` (pure PL, external USB-UART on Pmod JA), `arty_z7_ps` (on-board USB via the Zynq PS; `sw/arty_z7_uart_fwd` forwards bytes PS UART0 <-> PS UART1/EMIO), `sakura_x` (SAKURA-X / SASEBO-GIII Kintex-7 XC7K160T; its own top, not `mlkem_uart_system`, see the SAKURA-X section below). `trig_out = STATUS.busy` is the scope trigger.
 - **Timing at 206 MHz**: the core-clock critical paths ran from the read FIFO (`mlkem_word_fifo`) into the sponge / unpack; the FIFO now registers its bank addresses and fill flags (cycle-exact). Any RTL change must keep ACVP cycle counts identical (`make acvp-sim`, compare `data/acvp/*/results.csv`) unless a cycle change is intended.
-- **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference), `cpa_attack` (the simple coefficient CPA, 2026-10-20: two hypotheses `hw_product_mod` = HW(u·g mod q) and `hw_product_raw` = HW(u·g), correlated with every sample of the BMUL window; top-10 + stability vote over 3/5/7/9-sample windows around the POI; the peak position is compared with the cycle the RTL schedule predicts; the true key only RANKS the guesses, hypotheses are built from the public ciphertext alone -- replaces the removed `models/` catalogue and row-aligned attack, see docs/LEAKAGE_MODELS.md), `mlkem_pipeline` (bit-exact software twin of the two Barrett multipliers, checked against the RTL by `scripts/sim/pipeline_check.py`), `pc_oracle` (plaintext-checking oracle key recovery: chosen ciphertexts that read one time-domain secret coefficient per query from the message-dependent re-encryption; a `pc-oracle` testvectors strategy captures it and `decode_campaign` recovers the key), `testvectors`, `acquire_cpa` + `hdf5_trace_store` (campaigns store `record_start_s`: the time of sample 0 relative to the trigger, so BMUL windows are placed by time; `TRIGGER_SLACK_CYCLES` is in core cycles), `tvla_analysis`, `scope` (VISA: `LeCroyScope` for Teledyne LeCroy MAUI over VICP/VXI-11, `VisaScope` for SCPI; `open_scope()` picks by `SCOPE_DIALECT`, transport by `SCOPE_TRANSPORT`), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
-- **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs), `scripts/sim/` (analyses of the RTL simulation: `bmul_timing.py` measures the Decaps windows that go into `cpa_toolkit/config.py`).
+- **Host** (`cpa_toolkit/`, Python, flat modules imported by name): `uart_target` (protocol driver, `Target` step API), `sakura_x` (SAKURA-X FIFO transport, `sakura-x:` ports), `connection` (non-blocking connect/disconnect, link monitor), `mlkem768` / `mlkem_ref` (FIPS 203 reference), `cpa_attack` (the simple coefficient CPA, 2026-10-20: two hypotheses `hw_product_mod` = HW(u·g mod q) and `hw_product_raw` = HW(u·g), correlated with every sample of the BMUL window; top-10 + stability vote over 3/5/7/9-sample windows around the POI; the peak position is compared with the cycle the RTL schedule predicts; the true key only RANKS the guesses, hypotheses are built from the public ciphertext alone -- replaces the removed `models/` catalogue and row-aligned attack, see docs/LEAKAGE_MODELS.md), `mlkem_pipeline` (bit-exact software twin of the two Barrett multipliers, checked against the RTL by `scripts/sim/pipeline_check.py`), `pc_oracle` (plaintext-checking oracle key recovery: chosen ciphertexts that read one time-domain secret coefficient per query from the message-dependent re-encryption; a `pc-oracle` testvectors strategy captures it and `decode_campaign` recovers the key), `testvectors`, `acquire_cpa` + `hdf5_trace_store` (campaigns store `record_start_s`: the time of sample 0 relative to the trigger, so BMUL windows are placed by time; `TRIGGER_SLACK_CYCLES` is in core cycles), `tvla_analysis`, `scope` (VISA: `LeCroyScope` for Teledyne LeCroy MAUI over VICP/VXI-11, `VisaScope` for SCPI; `open_scope()` picks by `SCOPE_DIALECT`, transport by `SCOPE_TRANSPORT`), `web_gui` + `web_static/` (stdlib HTTP server, vanilla JS, vendored Plotly).
+- **Scripts**: `scripts/vivado/` (build/program Tcl), `scripts/board/` (Z7 PS boot over JTAG; SAKURA-X EEPROM tool `sakura_x_eeprom.sh` and CLI `sakura_x_cli.py`), `scripts/test/acvp_test.py`, `scripts/gen/gen_mlkem_ucode.py` (microcode + zeta ROMs), `scripts/sim/` (analyses of the RTL simulation: `bmul_timing.py` measures the Decaps windows that go into `cpa_toolkit/config.py`).
 
 ## Key design decisions
 
@@ -44,12 +44,14 @@ Vivado builds: `vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tcl
 
 ## Gotchas
 
-- `testvectors` `--strategy structured` is BROKEN and kept only so old campaigns load: the 10-bit
-  compression of a time-domain polynomial does not survive the core's NTT, so it isolates nothing and
-  leaves `u_hat` exactly zero for the two untargeted polynomials (512/768 key coefficients then carry
-  no leakage for any model). Use `valid` for CPA across the whole key, or `pc-oracle` for key recovery.
-  `cpa_attack` now flags coefficients a campaign cannot discriminate (`informative`) instead of
-  scoring them.
+- The `structured` testvectors strategy was removed on 2026-10-23 (it isolated nothing after the
+  core's NTT). Old sets and campaigns that carry it still load. `cpa_attack` flags coefficients a
+  campaign cannot discriminate (`informative`) instead of scoring them.
+- GUI text (index.html, app.js, server messages shown in the GUI) follows ASD-STE100: short
+  sentences, one instruction each, approved words. Keep new text in that style; docs/GUI_GUIDE.md
+  is the Chinese guide written to the same rules.
+- GUI lists: moving to the trash does not ask (the toast offers Undo); permanent deletion asks.
+  Ticked rows drive the action buttons and Del/Esc/Ctrl+A shortcuts.
 
 ## Conventions
 
@@ -58,26 +60,24 @@ Vivado builds: `vivado -mode batch -source scripts/vivado/build_arty_a7.tcl -tcl
 - HDL: vendor-agnostic in `hdl/core/`, board-specific in `hdl/xilinx/<board>/`; simulation in `testbench/`.
 
 
-## SAKURA-X shell port (2026-10-22, not locally tested)
+## SAKURA-X
 
-- New independent board top: `hdl/xilinx/sakura_shell/sakura_shell_top.sv`.
-  Source-synchronous parallel handshake from the pinned upstream Spartan controller;
-  50 MHz forwarded bus clock and existing 206.25 MHz core through axil_cdc.
-- Build: `scripts/vivado/build_sakura_shell.tcl`; prebuilt Spartan bit in
-  `third_party/sakura_x_shell/`. That directory is a vendored snapshot, not a submodule.
-  The local `sakura-x-shell/` clone is ignored and is not a build dependency.
-- New transport: `sakura-shell:<channel-A-device>` routes Target.open to ShellTarget.
-  Channel B is paired by serial + USB interface and used only for RTS_N reset.
-  Exact product string `SAKURA-X Shell` is required for recommended auto-selection.
-- The five application commands are RESET, LOAD_DK, LOAD_CT, START, READ_SS.
-  START is a pending native shell read; the bridge writes CTRL.start internally,
-  waits on synchronized busy (no status polling), then returns completion after a
-  quiet tail. Input loading only fills BRAM. Decode/NTT happen after START.
-  This transport supports Decaps only; Arty and legacy transport behavior is retained.
-- Native shell data words are big endian; core memory bytes retain their little-endian
-  word layout. No CRC in the upstream protocol. Application payload lengths are exact.
-- GUI/acquisition arm_scope reserves the quiet tail using known scope metadata.
-  RESET clears loaded-input flags, START consumes CT validity, READ_SS rejects stale K.
-- User explicitly requested no local tests/builds/simulations for this port.
-  Source was reviewed statically; Linux commands in docs/SAKURA_X_SHELL.md remain unrun.
-  Do not describe the new bitstream, timing or board communication as verified.
+- Top `hdl/xilinx/sakura_x/sakura_x_top.sv` + `sakura_x_bridge.sv`: the pinned upstream Spartan-6
+  shell controller (`third_party/sakura_x_shell/`, vendored snapshot, prebuilt bit) drives a
+  source-synchronous parallel handshake; 50 MHz bus clock deskewed by MMCM + BUFG, IOB registers on
+  all bus I/O, core at 206.25 MHz through `axil_cdc`. `make sim-sakura` checks the bridge against the
+  unmodified upstream `command_control.v` / `fifo.v`.
+- Build `scripts/vivado/build_sakura_x.tcl` (blocks the bitstream on negative WNS/WHS); program the
+  Kintex with `program_sakura_x.tcl`, the Spartan with xc3sprog (docs/SAKURA_X.md).
+- Host transport `cpa_toolkit/sakura_x.py`, port `sakura-x:<channel-A device>` (`sakura-shell:` from
+  older saved settings is still accepted). Channel B is paired by USB parent / serial and used only
+  for the RTS_N reset; every connect starts with it and identifies the Spartan controller (shell /
+  AIST factory / none) before touching the Kintex.
+- FT2232H channel A must be 245 FIFO (the cause of every early "no reply" failure); fix it with
+  `bash scripts/board/sakura_x_eeprom.sh` (93C46 = 128 bytes; pyftdi must be opened with that size).
+- Commands RESET, LOAD_DK, LOAD_CT, START, READ_SS; Decaps only. START is a pending read: the bridge
+  writes CTRL.start, waits on synchronized busy (no polling), then answers after a quiet tail.
+  Bus words are big endian; core buffer bytes keep their little-endian word layout; no CRC.
+- The old AIST local-bus stack (sakura_lbus, factory-controller bridge, firmware/sakura_x) was
+  removed on 2026-10-23; history is in git.
+- Board status: after the EEPROM fix the GUI connects and runs on the Linux bench (user, 2026-10-23).

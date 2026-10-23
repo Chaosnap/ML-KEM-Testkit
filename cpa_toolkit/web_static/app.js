@@ -39,10 +39,18 @@ const pct = (x) => (x === null || x === undefined ? "—" : (100 * x).toFixed(x 
 const short = (h, n = 16) => (h ? (h.length > n ? h.slice(0, n) + "…" : h) : "—");
 const rateTxt = (hz) => (hz ? (hz >= 1e9 ? (hz / 1e9).toFixed(2) + " GSa/s" : (hz / 1e6).toFixed(1) + " MSa/s") : "unknown");
 
-function toast(msg, kind = "info", ms = 4500) {
+// action: {label, fn} -> a button in the toast (e.g. Undo); the toast then stays longer.
+function toast(msg, kind = "info", ms = 4500, action) {
   const el = document.createElement("div");
   el.className = "toast " + kind;
   el.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-act"; b.textContent = action.label;
+    b.addEventListener("click", () => { el.remove(); action.fn(); });
+    el.appendChild(b);
+    ms = Math.max(ms, 9000);
+  }
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
@@ -59,9 +67,22 @@ function dialog({ title, body, ok = "OK", danger = false, cancel = true }) {
     $("modal-back").classList.add("open");
     const first = $("modal-body").querySelector("input,textarea");
     if (first) setTimeout(() => first.focus(), 30);
-    const done = (v) => { $("modal-back").classList.remove("open"); okb.onclick = cb.onclick = null; resolve(v); };
+    // Enter = OK (not inside a text area), Esc = Cancel, a click beside the box = Cancel
+    const keys = (e) => {
+      if (e.key === "Escape" && cancel) { e.preventDefault(); done(false); }
+      else if (e.key === "Enter" && !danger && !e.target.closest?.("textarea")) { e.preventDefault(); done(true); }
+    };
+    const outside = (e) => { if (e.target === $("modal-back") && cancel) done(false); };
+    const done = (v) => {
+      $("modal-back").classList.remove("open"); okb.onclick = cb.onclick = null;
+      document.removeEventListener("keydown", keys, true); $("modal-back").removeEventListener("mousedown", outside);
+      resolve(v);
+    };
     okb.onclick = () => done(true);
     cb.onclick = () => done(false);
+    document.addEventListener("keydown", keys, true);
+    $("modal-back").addEventListener("mousedown", outside);
+    if (!first) setTimeout(() => (danger && cancel ? cb : okb).focus(), 30);   // a danger dialog: Enter does not confirm
   });
 }
 
@@ -98,12 +119,14 @@ function seg(id, onChange) {
 
 // Sortable table. columns: [{key, label, num, sortable, value(row), render(row)}]
 // opts.checks: a Set of row keys -> a tick-box column (with select-all over the
-// visible rows); opts.onCheck() after every change. opts.onTag(tag): a click on
-// any [data-tag] chip in the table.
+// visible rows); opts.onCheck() after every change. A click anywhere in the box
+// cell ticks; Shift+click ticks the range from the last ticked row; Ctrl/Cmd+click
+// on a row ticks it without opening it. opts.onTag(tag): a click on any [data-tag]
+// chip in the table.
 function makeTable(tableId, columns, opts = {}) {
   const t = $(tableId), tb = t.querySelector("tbody"), checks = opts.checks;
-  let rows = [], list = [], sortKey = opts.sortKey || null, dir = opts.dir || -1, selected = null;
-  t.querySelector("thead").innerHTML = "<tr>" + (checks ? '<th class="chk-col"><input type="checkbox" class="chk-all" title="select all shown"></th>' : "") +
+  let rows = [], list = [], sortKey = opts.sortKey || null, dir = opts.dir || -1, selected = null, anchor = null;
+  t.querySelector("thead").innerHTML = "<tr>" + (checks ? '<th class="chk-col"><input type="checkbox" class="chk-all" title="Select all shown rows. Shift+click: select a range. Ctrl/⌘+click a row: add it."></th>' : "") +
     columns.map((c) => `<th data-k="${c.key}" class="${c.sortable === false ? "" : "sort"} ${c.num ? "num" : ""}">${esc(c.label)}</th>`).join("") + "</tr>";
   t.querySelectorAll("th.sort").forEach((th) => th.addEventListener("click", () => {
     const k = th.dataset.k;
@@ -114,13 +137,27 @@ function makeTable(tableId, columns, opts = {}) {
     list.forEach((r) => (e.target.checked ? checks.add(opts.key(r)) : checks.delete(opts.key(r))));
     draw(); opts.onCheck && opts.onCheck();
   });
+  function tick(key, on, range) {
+    const keys = list.map((r) => opts.key(r)), a = keys.indexOf(anchor), b = keys.indexOf(key);
+    (range && a >= 0 ? keys.slice(Math.min(a, b), Math.max(a, b) + 1) : [key]).forEach((k) => (on ? checks.add(k) : checks.delete(k)));
+    anchor = key;
+    draw(); opts.onCheck && opts.onCheck();
+  }
+  if (checks) tb.addEventListener("mousedown", (e) => { if (e.shiftKey) e.preventDefault(); });   // no text selection
   tb.addEventListener("click", (e) => {
     const chip = e.target.closest("[data-tag]");
     if (chip && opts.onTag) { e.stopPropagation(); opts.onTag(chip.dataset.tag); return; }
-    const box = e.target.closest("input.chk");
-    if (box) {
-      box.checked ? checks.add(box.dataset.key) : checks.delete(box.dataset.key);
-      syncAll(); opts.onCheck && opts.onCheck();
+    if (!checks) return;
+    const cell = e.target.closest("td.chk-col");
+    if (cell) {
+      const box = cell.querySelector("input.chk");
+      // a click on the box has flipped it already; a click beside it flips it here
+      tick(box.dataset.key, e.target === box ? box.checked : !checks.has(box.dataset.key), e.shiftKey);
+      return;
+    }
+    const tr = e.target.closest("tr[data-key]");
+    if (tr && (e.metaKey || e.ctrlKey || e.shiftKey) && !e.target.closest("button,a,input,label")) {
+      tick(tr.dataset.key, e.shiftKey || !checks.has(tr.dataset.key), e.shiftKey);
     }
   });
   function val(r, c) { return c.value ? c.value(r) : r[c.key]; }
@@ -153,12 +190,14 @@ function makeTable(tableId, columns, opts = {}) {
         columns.map((c) => `<td class="${c.num ? "num" : ""} ${c.cls || ""}">${c.render ? c.render(r) : esc(val(r, c) ?? "—")}</td>`).join("") + "</tr>";
     }).join("");
     if (opts.onRow) tb.querySelectorAll("tr[data-key]").forEach((tr) => tr.addEventListener("click", (e) => {
-      if (e.target.closest("button,a,input,label,[data-tag]")) return;
+      if (e.target.closest("button,a,input,label,[data-tag],td.chk-col")) return;
+      if (checks && (e.metaKey || e.ctrlKey || e.shiftKey)) return;      // ticked by the tbody handler
       opts.onRow(list.find((r) => opts.key(r) === tr.dataset.key));
     }));
     syncAll();
   }
-  return { set(r) { rows = r; draw(); }, select(k) { selected = k; draw(); }, redraw: draw, rows: () => rows, visible: () => list };
+  return { set(r) { rows = r; draw(); }, select(k) { selected = k; draw(); }, redraw: draw, rows: () => rows, visible: () => list,
+           checkAll() { list.forEach((r) => checks.add(opts.key(r))); draw(); opts.onCheck && opts.onCheck(); } };
 }
 
 // ---- tags: chips, an inline editor, the filter list, bulk actions ----
@@ -227,15 +266,18 @@ async function bulkTagDialog(rows) {
   const add = splitTags($("dlg-add").value), remove = [...$("modal-body").querySelectorAll(".tag-pick input:checked")].map((x) => x.value);
   return add.length || remove.length ? { add, remove } : null;
 }
-// The bar above a table while rows are ticked: "n selected", actions [label, btn class, fn], Clear.
-function bulkBar(id, n, actions, onClear) {
+// The bar above a table while rows are ticked: "n selected", actions [label, btn class, fn],
+// "Select all" while only some of the shown rows are ticked, and Clear.
+function bulkBar(id, n, actions, { onClear, onAll, shown }) {
   const el = $(id);
   el.classList.toggle("hidden", !n);
   if (!n) return;
-  el.innerHTML = `<span><b>${n}</b> selected</span>` + actions.map(([label, cls], i) => `<button class="btn ${cls} sm" data-i="${i}">${label}</button>`).join("") +
-    `<span class="grow"></span><button class="btn ghost sm" data-clear>Clear</button>`;
+  el.innerHTML = `<span><b>${n}</b> selected</span>` + (shown > n ? `<button class="btn ghost sm" data-all>Select all ${shown}</button>` : "") +
+    actions.map(([label, cls], i) => `<button class="btn ${cls} sm" data-i="${i}">${label}</button>`).join("") +
+    `<span class="grow"></span><span class="keys" title="keyboard">Del · Esc</span><button class="btn ghost sm" data-clear>Clear</button>`;
   el.querySelectorAll("button[data-i]").forEach((b) => b.addEventListener("click", actions[+b.dataset.i][2]));
   el.querySelector("[data-clear]").addEventListener("click", onClear);
+  if (el.querySelector("[data-all]")) el.querySelector("[data-all]").addEventListener("click", onAll);
 }
 // Drop ticks of rows that are no longer listed (filtered out, moved, deleted).
 function pruneChecks(checks, rows, key) {
@@ -444,14 +486,14 @@ function applyState(s) {
   renderConnectionChecks(b);
   ["scope-ip", "scope-channel", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
   kv("board-info", b.info ? [["Algorithm", b.info.alg_id === 1 ? "ML-KEM (ALG_ID 1)" : b.info.alg_id], ["Core version", b.info.version],
-    ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING — rebuild the bitstream; operations are disabled"], ["Device", b.info.port], ["Transport", transportText(b.info)]] : [["Status", "connect the board to read the core"]]);
+    ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING. Build the bitstream again. Operations are off."], ["Device", b.info.port], ["Transport", transportText(b.info)]] : [["Status", "Connect the board to read the core."]]);
   const si = sc.info;
   kv("scope-info", si ? [["Instrument", si.id || si.idn], ["Resource", si.resource], ["Channel", si.channel],
     ["Samples", si.samples || (si.wave_array_count ? `${si.wave_array_count} (last record)` : si.samples)], ["Sample rate", si.sample_rate],
     ...(si.trigger ? [["Trigger", si.trigger + (si.trigger_level_v ? " @ " + si.trigger_level_v : "")]] : []),
     ...(si.timebase_s_div ? [["Timebase", si.timebase_s_div + " s/div"]] : []),
     ...(si.record_start_s !== undefined ? [["Record start", startTxt(si.record_start_s) + " from the trigger"]] : []),
-    ...(si.nominal_bits ? [["ADC", si.nominal_bits + " bit"]] : [])] : [["Status", "connect to read the instrument"]]);
+    ...(si.nominal_bits ? [["ADC", si.nominal_bits + " bit"]] : [])] : [["Status", "Connect the scope to read its data."]]);
 
   const dotCls = (st) => "dot " + STATE_DOT[st];
   $("pill-board").className = dotCls(b.state); $("pill-board-txt").textContent = b.state === "connected" ? "Board " + (b.info?.version || "") : "Board";
@@ -478,7 +520,7 @@ function applyState(s) {
   if (prev && prev.board.state !== b.state) {
     if (b.state === "connected") toast("Board connected", "ok");
     if (b.state === "connected" && b.info && !b.info.has_run)
-      toast(`This bitstream has no ${b.info.run_command || "0x05 Run"}: operations are disabled until it is rebuilt.`, "bad", 12000);
+      toast(`The bitstream has no ${b.info.run_command || "0x05 Run"}. Build the bitstream again. Operations are off until then.`, "bad", 12000);
     if (b.state === "lost") toast("Board link lost: " + b.error, "bad", 8000);
     if (b.state === "error" && prev.board.state === "connecting") toast("Board: " + b.error, "bad", 8000);
   }
@@ -502,51 +544,46 @@ async function pollState() {
 // =====================================================================================
 // Connection page
 // =====================================================================================
-function isShellInfo(info) {
-  return info?.transport === "sakura-shell" || String(info?.port || "").startsWith("sakura-shell:");
-}
+const isShellPort = (port) => /^sakura-(x|shell):/.test(String(port || ""));     // sakura-shell: = older saved settings
+const isShellInfo = (info) => ["sakura-x", "sakura-shell"].includes(info?.transport) || isShellPort(info?.port);
 function shellSelected() {
   return ["connected", "connecting"].includes(S?.board?.state)
     ? isShellInfo(S.board.info || S.board.params) : $("board-transport").value === "shell";
 }
 function transportText(info) {
   if (isShellInfo(info)) return "USB FIFO · FT2232H A";
-  if (String(info?.port || "").startsWith("sakura:")) return "USB FIFO · legacy AIST local bus";
   return info?.baud != null ? `UART · ${info.baud} baud` : "—";
 }
 function updateBoardInterface() {
   const shell = shellSelected(), active = ["connected", "connecting"].includes(S?.board?.state);
-  const fifo = shell || (active ? String(S.board.params?.port || "").startsWith("sakura:") : $("board-transport").value === "legacy");
-  $("board-link-sub").textContent = shell ? "SAKURA-X: Spartan-6 controller → Kintex-7 ML-KEM" : "ML-KEM-768 board link";
-  $("board-device-label").textContent = shell ? "SAKURA-X USB device (data channel A)" : "Device / port";
-  ["board-shell-help", "board-shell-actions", "board-reset-hint"].forEach(id => $(id).classList.toggle("hidden", !shell));
-  $("board-baud-field").classList.toggle("hidden", fifo);
+  $("board-link-sub").textContent = shell ? "Spartan-6 controller → Kintex-7 core" : "UART link";
+  $("board-device-label").textContent = shell ? "SAKURA-X USB device" : "Serial port";
+  $("board-shell-help").classList.toggle("hidden", !shell);
+  $("board-baud-field").classList.toggle("hidden", shell);
   $("board-auto-field").classList.toggle("hidden", shell);
-  $("board-baud").disabled = fifo || active;
-  if (shell && !active) $("board-conn-btn").textContent = "Connect & diagnose";
+  $("board-baud").disabled = shell || active;
   const unavailable = !!S?.busy || boardStepBusy || S?.board?.state === "connecting";
-  $("board-hard-reset").disabled = unavailable || !$("board-port").value;
   $("board-preflight").disabled = unavailable || S?.board?.state !== "connected";
   $("ls-reprobe").disabled = unavailable || S?.board?.state !== "connected";
   $("op-run").disabled = unavailable || S?.board?.state !== "connected";
   document.querySelectorAll("[data-step]").forEach(b => b.disabled = unavailable || S?.board?.state !== "connected");
   $("ls-protocol-help").textContent = shell
-    ? "Preload DK and CT through Spartan-6. START runs Decaps independently on Kintex-7 and waits for completion without READ_STATUS polling. READ_SS retrieves K afterward. No board transfers occur during the reserved capture window."
-    : "Every operation uses one 0x05 Run frame. The FPGA starts the core and replies after completion with status, cycle count, error and output. There is no STATUS polling.";
-  $("ls-protocol-ref").textContent = "Protocol reference: docs/" + (shell ? "SAKURA_X_SHELL.md" : "UART_PROTOCOL.md");
-  $("ls-reprobe").textContent = shell ? "Check Kintex shell identity" : "Probe 0x05 again";
-  $("op-protocol-sub").textContent = shell ? "RESET → LOAD_DK → LOAD_CT → START → READ_SS · Decaps only" : "Configure, load inputs, run and read output";
+    ? "LOAD_DK and LOAD_CT send the inputs. START runs Decaps and replies when it is done. The host sends nothing during the capture. READ_SS reads K."
+    : "Each operation is one 0x05 Run frame. The FPGA replies when the core is done. The host does not poll STATUS.";
+  $("ls-protocol-ref").textContent = "Protocol reference: docs/" + (shell ? "SAKURA_X.md" : "UART_PROTOCOL.md");
+  $("ls-reprobe").textContent = shell ? "Check the Kintex-7 identity" : "Check 0x05 Run again";
+  $("op-protocol-sub").textContent = shell ? "RESET → LOAD_DK → LOAD_CT → START → READ_SS · Decaps only" : "Configure, load the inputs, run, read the output";
   $("op-configure-step").classList.toggle("hidden", shell);
   $("op-out-len").classList.toggle("hidden", shell);
   $("op-mode").querySelectorAll("option").forEach(o => o.disabled = shell && o.value !== "2");
   $("ls-layout").querySelectorAll("tr[data-extra]").forEach(row => row.classList.toggle("hidden", shell));
   if (shell) { $("op-mode").value = "2"; $("op-out-len").value = "32"; }
   const rows = [
-    ["reset", "RESET", "Reset", "Clear run state; reload DK and CT", "CTRL ← RESET"],
-    ["load_sk", "LOAD_DK", "Send dk", "Buffer 2,400-byte DK; no processing yet", "dk → 0x0000 (2400 B)"],
-    ["load_ct", "LOAD_CT", "Send c", "Buffer 1,088-byte ciphertext; no processing yet", "c → 0x0960 (1088 B)"],
-    ["run", "START", "Run", "Wait for completion; read K with READ_SS", null],
-    ["read_output", "READ_SS", "Read", "Read the completed 32-byte shared secret K", "read the output at 0x0E00"]
+    ["reset", "RESET", "Reset", "Clear the run state. Then load DK and CT again.", "CTRL ← RESET"],
+    ["load_sk", "LOAD_DK", "Send dk", "Write the 2,400-byte DK. No calculation starts.", "dk → 0x0000 (2400 B)"],
+    ["load_ct", "LOAD_CT", "Send c", "Write the 1,088-byte ciphertext. No calculation starts.", "c → 0x0960 (1088 B)"],
+    ["run", "START", "Run", "Run Decaps. The reply comes when it is done.", null],
+    ["read_output", "READ_SS", "Read", "Read the 32-byte shared secret K.", "read the output at 0x0E00"]
   ];
   rows.forEach(([id, cmd, label, detail, oldDetail], i) => {
     const button = document.querySelector(`[data-step="${id}"]`), row = button.closest(".step");
@@ -555,7 +592,7 @@ function updateBoardInterface() {
     row.querySelector(".key").textContent = shell ? i + 1 : ["x", "s", "c", "e", "a"][i];
     if (id !== "run") row.querySelector(".sub").textContent = shell ? detail : oldDetail;
   });
-  $("op-run-sub").textContent = shell ? "Wait for completion; read K with READ_SS"
+  $("op-run-sub").textContent = shell ? "Run Decaps. The reply comes when it is done."
     : `START, reply when done with ${$("op-out-len").value} output bytes`;
 }
 function renderConnectionChecks(board) {
@@ -566,10 +603,9 @@ function renderConnectionChecks(board) {
 function populateBoardPorts() {
   const sel = $("board-port"), mode = $("board-transport").value;
   const current = sel.value, keep = current || localStorage.getItem("board-port");
-  ports = mode === "shell" ? shellDevices : allPorts.filter(p => mode === "legacy"
-    ? p.device.startsWith("sakura:") : !p.device.startsWith("sakura:") && !p.device.startsWith("sakura-shell:"));
-  const placeholder = mode === "shell" ? "Select your SAKURA-X board (Channel A)" : "Select a device";
-  sel.innerHTML = `<option value="">${ports.length ? placeholder : "No matching USB devices found — check the board USB cable"}</option>` + ports.map(p => {
+  ports = mode === "shell" ? shellDevices : allPorts.filter(p => !isShellPort(p.device));
+  const placeholder = mode === "shell" ? "Select the SAKURA-X board" : "Select a serial port";
+  sel.innerHTML = `<option value="">${ports.length ? placeholder : "No device found. Connect the board USB cable."}</option>` + ports.map(p => {
     const label = mode === "shell" ? `${p.product || "FT2232H"} · ${p.serial || "USB " + p.usb_path.split("/").pop()} · A ${p.data_port}`
       : `${p.device.split("/").pop()} — ${p.hint || p.description || ""}`;
     return `<option value="${esc(p.device)}">${esc(label)}</option>`;
@@ -582,8 +618,8 @@ function populateBoardPorts() {
       if (saved?.serial) pick = same.length === 1 ? same[0] : null;
     } catch (e) { /* no saved identity */ }
   }
-  // Generic FTDI product names require the user's explicit board selection.
-  if (!pick) pick = ports.find(p => p.recommended) || (mode !== "shell" ? ports[0] : null);
+  // Generic FTDI product names need an explicit choice, unless it is the only SAKURA-X device.
+  if (!pick) pick = ports.find(p => p.recommended) || (mode !== "shell" || ports.length === 1 ? ports[0] : null);
   if (pick) sel.value = pick.device;
   portHint();
 }
@@ -595,55 +631,52 @@ async function refreshPorts(quiet) {
       const id = n => n == null ? "?" : Number(n).toString(16).padStart(4, "0");
       const iface = p.interface == null ? "unknown" : Number(p.interface).toString(16).padStart(2, "0");
       return `<tr><td>${esc(p.device)}</td><td>${id(p.vid)}:${id(p.pid)} / ${iface}</td><td>${esc(p.serial || "no serial")}<br>${esc(p.product)}</td></tr>`;
-    }).join("") || '<tr><td colspan="3">No USB serial devices visible to the GUI server.</td></tr>';
+    }).join("") || '<tr><td colspan="3">The GUI server sees no USB serial device.</td></tr>';
     populateBoardPorts();
-    if (!quiet) toast(ports.length ? `${ports.length} device(s) found` : "No matching board USB device found", ports.length ? "info" : "warn");
+    if (!quiet) toast(ports.length ? `${plural(ports.length, "device")} found` : "No board device found", ports.length ? "info" : "warn");
   } catch (e) { err(e); }
 }
 function portHint() {
   const p = ports.find(x => x.device === $("board-port").value), shell = $("board-transport").value === "shell";
   const h = $("board-port-hint");
-  h.textContent = p ? (shell ? p.pair_error || p.hint : [p.description, p.hint].filter(Boolean).join(" · ")) : "Select the board USB connection, not the Xilinx JTAG programming cable.";
+  h.textContent = p ? (shell ? p.pair_error || p.hint : [p.description, p.hint].filter(Boolean).join(" · ")) : "Select the board USB port. Do not select the JTAG cable.";
   h.className = "hint" + (p?.pair_error || p?.hint?.startsWith("JTAG") ? " warn" : p?.recommended ? " good" : "");
-  kv("board-channels", p && shell ? [["USB serial", p.serial || "unavailable; paired by physical USB parent"],
-    ["Channel A · FIFO data", p.data_port], ["Channel B · RTS reset", p.reset_port || "NOT FOUND"],
+  kv("board-channels", p && shell ? [["USB serial", p.serial || "none (paired by USB port)"],
+    ["Channel A · data", p.data_port], ["Channel B · reset", p.reset_port || "NOT FOUND"],
     ["USB product", p.product || "unknown"]] : []);
   $("board-shell-identity").textContent = p && shell && !p.recommended
-    ? "Generic FTDI name: selecting this device explicitly uses the shell protocol. Renaming the USB device is not required; its FIFO mode and both FPGA files still need to match." : "";
+    ? "The USB name is generic. To find the board automatically, run scripts/board/sakura_x_eeprom.sh once." : "";
   updateBoardInterface();
 }
 setInterval(() => { if (S && !["connected", "connecting"].includes(S.board.state) && currentPage === "connect") refreshPorts(true); }, 3000);
 
-async function connectSelectedBoard(hardReset = false) {
+async function connectSelectedBoard() {
   const port = $("board-port").value;
-  if (!port) return toast("Select your board USB device first", "warn");
-  const p = ports.find(x => x.device === port), shell = port.startsWith("sakura-shell:");
+  if (!port) return toast("Select the board device first", "warn");
+  const p = ports.find(x => x.device === port), shell = isShellPort(port);
   if (shell && p?.pair_error) return toast(p.pair_error, "bad", 10000);
   localStorage.setItem("board-port", port);
   localStorage.setItem("board-transport", $("board-transport").value);
   if (shell && p) localStorage.setItem("board-shell-device", JSON.stringify({serial:p.serial}));
-  const body = shell ? {port, hard_reset:hardReset} : {port, baud:$("board-baud").value};
+  const body = shell ? {port} : {port, baud:$("board-baud").value};
   applyState({ ...S, board: await api("POST", "/api/fpga/connect", body) });
 }
 async function boardConnBtn() {
   const st = $("board-conn-btn").dataset.state || "disconnected";
   try {
     if (st === "connected" || st === "connecting") {
-      if (S && S.busy && !(await dialog({ title: "Disconnect the board?", body: "A job is using the board; it will stop after the current trace (the file stays resumable).", ok: "Disconnect", danger: true }))) return;
+      if (S && S.busy && !(await dialog({ title: "Disconnect the board?", body: "A job uses the board. The job stops after the current trace. You can resume the campaign later.", ok: "Disconnect", danger: true }))) return;
       await api("POST", "/api/fpga/disconnect", {});
     } else await connectSelectedBoard();
     applyState(await api("GET", "/api/state"));
   } catch (e) { err(e); }
-}
-async function boardHardReset() {
-  try { await connectSelectedBoard(true); } catch (e) { err(e); }
 }
 async function copyConnectionReport() {
   const report = { interface:$("board-transport").value, selected:$("board-port").value,
     devices:usbDevices, shell_candidates:shellDevices, board:S?.board };
   try {
     await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-    toast("Connection report copied (device details and checks only)", "ok");
+    toast("Connection report copied (devices and checks only)", "ok");
   } catch (e) { err(e); }
 }
 async function boardPreflight() {
@@ -665,13 +698,13 @@ const SCOPE_REMOTE = { vicp: "TCPIP (VICP)", vxi11: "LXI (VXI11)" };  // LeCroy 
 function scopeHint() {
   const ip = $("scope-ip").value.trim(), h = $("scope-hint"), tr = $("scope-transport").value, d = $("scope-dialect").value;
   const tpl = S && S.defaults.scope_resources ? S.defaults.scope_resources[tr] : "";
-  if (S && ip === S.defaults.scope_placeholder_ip) { h.textContent = "This is config.py's placeholder address — enter the scope's real IP."; h.className = "hint warn"; }
-  else if (d === "lecroy" && !SCOPE_REMOTE[tr]) { h.textContent = "LeCroy scopes are controlled over VICP or LXI (VXI-11), not a raw socket."; h.className = "hint warn"; }
-  else if (d !== "lecroy" && tr === "vicp") { h.textContent = "VICP is Teledyne LeCroy's protocol — use VXI-11 or a raw socket for this scope."; h.className = "hint warn"; }
+  if (S && ip === S.defaults.scope_placeholder_ip) { h.textContent = "This is the example address. Type the IP address of the scope."; h.className = "hint warn"; }
+  else if (d === "lecroy" && !SCOPE_REMOTE[tr]) { h.textContent = "For LeCroy, use VICP or LXI (VXI-11). Do not use a raw socket."; h.className = "hint warn"; }
+  else if (d !== "lecroy" && tr === "vicp") { h.textContent = "VICP is for LeCroy only. Use VXI-11 or a raw socket."; h.className = "hint warn"; }
   else {
     const res = ip && tpl ? tpl.replace("{ip}", ip) : "";
     const remote = d === "lecroy" ? ` · scope: Utilities › Remote › ${SCOPE_REMOTE[tr]}` : "";
-    h.textContent = res ? `VISA resource: ${res}${remote}${tr === "vicp" ? " · needs pyvicp (uv sync --extra scope)" : ""}` : "";
+    h.textContent = res ? `VISA resource: ${res}${remote}${tr === "vicp" ? " · pyvicp is necessary (uv sync --extra scope)" : ""}` : "";
     h.className = "hint";
   }
 }
@@ -712,7 +745,7 @@ async function scopeFind() {
           $("scope-ip").value = m[2];
           if (/^VICP/i.test(m[1])) $("scope-transport").value = "vicp";
           else if (/::INSTR$/i.test(tr.dataset.r)) $("scope-transport").value = "vxi11";
-          scopeHint(); toast("IP filled in from " + tr.dataset.r);
+          scopeHint(); toast("IP address set from " + tr.dataset.r);
         }
       }));
     } catch (e) { err(e); }
@@ -721,7 +754,7 @@ async function scopeFind() {
 async function scopeSave() {
   try { await api("POST", "/api/scope/save_config", { ip: $("scope-ip").value, channel: $("scope-channel").value,
                                                        dialect: $("scope-dialect").value, transport: $("scope-transport").value });
-        toast("Saved as the default scope settings (config.py)", "ok"); } catch (e) { err(e); }
+        toast("Scope settings saved as default (config.py)", "ok"); } catch (e) { err(e); }
 }
 
 // =====================================================================================
@@ -738,7 +771,6 @@ function vgVisibility() {
   const cpa = vgMode.get() === "cpa";
   $("vg-cpa-fields").classList.toggle("hidden", !cpa);
   $("vg-tvla-fields").classList.toggle("hidden", cpa);
-  $("vg-structured-fields").classList.toggle("hidden", !(cpa && $("vg-strategy").value === "structured"));
 }
 async function pollJob(id, tick, every = 400) {
   for (;;) {
@@ -750,7 +782,7 @@ async function pollJob(id, tick, every = 400) {
 }
 async function vgGenerate() {
   const body = { mode: vgMode.get(), n: $("vg-n").value, seed: $("vg-seed").value.trim(), strategy: $("vg-strategy").value,
-                 poly: $("vg-poly").value, pair: $("vg-pair").value, invalid_random: $("vg-tvla-random").value === "invalid" };
+                 invalid_random: $("vg-tvla-random").value === "invalid" };
   await busy($("vg-generate"), async () => {
     try {
       const { job_id, seed } = await api("POST", "/api/vectors/generate", body);
@@ -790,8 +822,17 @@ function vsFilter() {
   vsTable.set(rows);
   vsBulk();
 }
+// The rows an action button works on: the ticked rows, else the selected set.
+function vsTargets() {
+  const ticked = vsTable.visible().filter((m) => vsChecks.has(m.path));
+  return ticked.length ? ticked : vsSel ? [vsSel] : [];
+}
 function vsBulk() {
-  const sel = vsTable.visible().filter((m) => vsChecks.has(m.path));
+  const sel = vsTable.visible().filter((m) => vsChecks.has(m.path)), n = sel.length > 1 ? ` (${sel.length})` : "";
+  ["vs-delete", "vs-purge", "vs-restore"].forEach((id) => ($(id).disabled = !vsSel && !sel.length));
+  $("vs-delete").textContent = "Move to trash" + n;
+  $("vs-restore").textContent = "Restore" + n;
+  $("vs-purge").textContent = "Delete permanently" + n;
   bulkBar("vs-bulk", sel.length, vsTrash ? [
     ["Restore", "secondary", () => vsRestore(sel)],
     ["Delete permanently", "danger", () => vsPurge(sel)],
@@ -803,8 +844,9 @@ function vsBulk() {
       vsRefresh();
     }],
     ["Move to trash", "ghost", () => vsDelete(sel)],
-  ], () => { vsChecks.clear(); vsTable.redraw(); vsBulk(); });
+  ], { onClear: vsClearChecks, onAll: () => vsTable.checkAll(), shown: vsTable.visible().length });
 }
+function vsClearChecks() { vsChecks.clear(); vsTable.redraw(); vsBulk(); }
 function vsSelect(path) {
   vsSel = vsRows().find((m) => m.path === path) || null;
   vsTable.select(path);
@@ -818,7 +860,8 @@ function vsShowMeta() {
   $("vs-selected").textContent = $("vs-trash-selected").textContent = m ? `${m.filename} · ${fmtBytes(m.size_bytes)}` : "no set selected";
   $("vs-actions").classList.toggle("hidden", vsTrash);
   $("vs-trash-actions").classList.toggle("hidden", !vsTrash);
-  ["vs-verify-sw", "vs-download-btn", "vs-delete", "vs-use", "vs-purge", "vs-restore"].forEach((id) => ($(id).disabled = !m));
+  ["vs-verify-sw", "vs-download-btn", "vs-use"].forEach((id) => ($(id).disabled = !m));
+  vsBulk();
   const el = $("vs-meta");
   if (!m) { el.innerHTML = ""; return; }
   if (vsTrash) { el.innerHTML = m.label || m.tags?.length ? `<div>${esc(m.label)} ${tagChips(m.tags, false)}</div>` : ""; return; }
@@ -840,38 +883,39 @@ function vsShowMeta() {
 }
 // After a name/tag change of the selected set: list, tag filter, acquisition choices.
 function vsAfterEdit() { fillTagFilter("vs-tag", vsRows()); vsFilter(); acqFillSets(); }
+// Moving to the trash can be undone, so it does not ask first: the toast has an Undo button.
+// Campaigns captured with a set keep working: each campaign file stores its own vectors.
 async function vsDelete(sets) {
   if (!sets.length) return;
-  let used = 0;
-  try {        // only for the message: campaigns record the set by path (or id)
-    const { files } = await api("GET", "/api/traces/list"), names = new Set(sets.flatMap((m) => [m.filename, m.id]));
-    used = files.filter((f) => names.has(String(f.vector_set || "").split("/").pop())).length;
-  } catch (e) { /* ignore */ }
-  const what = sets.length === 1 ? `<b>${esc(sets[0].label || sets[0].id)}</b> moves` : `<b>${sets.length} vector sets</b> move`;
-  if (!(await dialog({ title: "Move to trash?", ok: "Move to trash", danger: true, body:
-    `${what} to <code>data/vectors/.trash/</code> together with ${sets.length === 1 ? "its" : "their"} name and tags; restore from the Trash view.` +
-    (used ? `<p class="help" style="margin:10px 0 0">${plural(used, "campaign")} in the library ${used === 1 ? "was" : "were"} captured with ${sets.length === 1 ? "this set" : "these sets"}. ` +
-      `They keep working: each campaign file stores its own ciphertexts, expected keys and the seed.</p>` : "") }))) return;
-  try { await api("POST", "/api/vectors/delete", { paths: sets.map((m) => m.path) }); toast(`Moved ${plural(sets.length, "vector set")} to the trash`, "ok"); } catch (e) { err(e); }
+  try {
+    const r = await api("POST", "/api/vectors/delete", { paths: sets.map((m) => m.path) });
+    sets.forEach((m) => vsChecks.delete(m.path));
+    toast(`${plural(sets.length, "vector set")} moved to the trash`, "ok", 9000,
+          { label: "Undo", fn: () => vsRestore(r.trashed.map((path) => ({ path }))) });
+  } catch (e) { err(e); }
   vsRefresh();
 }
 async function vsRestore(sets) {
   if (!sets.length) return;
-  try { await api("POST", "/api/vectors/restore", { paths: sets.map((m) => m.path) }); toast(`Restored ${plural(sets.length, "vector set")}`, "ok"); } catch (e) { err(e); }
+  try {
+    await api("POST", "/api/vectors/restore", { paths: sets.map((m) => m.path) });
+    sets.forEach((m) => vsChecks.delete(m.path));
+    toast(`${plural(sets.length, "vector set")} restored`, "ok");
+  } catch (e) { err(e); }
   vsRefresh();
 }
 async function vsPurge(sets) {
   if (!sets.length) return;
   const what = sets.length === 1 ? `<b>${esc(sets[0].label || sets[0].id)}</b> is` : `<b>${sets.length} vector sets</b> are`;
   if (!(await dialog({ title: "Delete permanently?", ok: "Delete permanently", danger: true, body:
-    `${what} deleted from disk. This cannot be undone, but a set can be generated again: the same settings and seed give the same vectors.` }))) return;
+    `${what} deleted from the disk. You cannot undo this. The same settings and seed make the same vectors again.` }))) return;
   try { const r = await api("POST", "/api/vectors/purge", { paths: sets.map((m) => m.path) }); toast(`Deleted ${plural(r.deleted, "vector set")}`, "ok"); } catch (e) { err(e); }
   vsRefresh();
 }
 async function vsEmptyTrash() {
   if (!vsTrashSets.length) return;
   if (!(await dialog({ title: "Empty the vector-set trash?", ok: "Delete all", danger: true,
-    body: `${vsTrashSets.length === 1 ? "The vector set" : `All ${vsTrashSets.length} vector sets`} in <code>data/vectors/.trash/</code> ${vsTrashSets.length === 1 ? "is" : "are"} deleted from disk. This cannot be undone.` }))) return;
+    body: `${vsTrashSets.length === 1 ? "The vector set" : `All ${vsTrashSets.length} vector sets`} in the trash ${vsTrashSets.length === 1 ? "is" : "are"} deleted from the disk. You cannot undo this.` }))) return;
   try { const r = await api("POST", "/api/vectors/empty_trash", {}); toast(`Deleted ${plural(r.deleted, "vector set")}`, "ok"); } catch (e) { err(e); }
   vsRefresh();
 }
@@ -913,7 +957,7 @@ async function vsVerifySw() {
   await busy($("vs-verify-sw"), async () => {
     try {
       const r = await api("POST", "/api/vectors/verify_software", { path: vsSel.path });
-      toast(r.ok ? `Software Decaps reproduces all ${r.checked} expected keys` : `Mismatch at rows ${r.mismatches.join(", ")}`, r.ok ? "ok" : "bad");
+      toast(r.ok ? `All ${r.checked} expected K values are correct` : `K is not correct in rows ${r.mismatches.join(", ")}`, r.ok ? "ok" : "bad");
     } catch (e) { err(e); }
   });
 }
@@ -966,9 +1010,9 @@ async function acqRefreshResume() {
 async function acqStart() {
   const resume = $("acq-resume").value;
   if (!resume && trigOk === false && !(await dialog({ title: "The trigger check failed",
-      body: `Failed: <b>${trigFails.map(esc).join(", ") || "see the trigger check table"}</b>.<br><br>With the record cut short or ` +
-            `not starting at the trigger, the traces miss or misplace the BMUL windows and cannot be used for CPA. ` +
-            `Fix the scope's timebase / trigger position and run <i>Check trigger</i> again.`,
+      body: `Failed: <b>${trigFails.map(esc).join(", ") || "see the trigger check table"}</b>.<br><br>` +
+            `The traces can miss the BMUL windows. Then you cannot use them for CPA. ` +
+            `Correct the timebase and the trigger position. Then click <i>Check trigger</i> again.`,
       ok: "Start anyway", danger: true }))) return;
   try {
     const { job_id } = await api("POST", "/api/acquire/start", { vector_set: resume ? "" : $("acq-vector-set").value,
@@ -1053,7 +1097,7 @@ function liveDraw(r) {
 let trigOk = null;   // last trigger check of this session: true / false / null (not run)
 let trigFails = [];  // names of the checks that failed in that run
 async function trigCheck() {
-  if ($("trig-check").disabled) return toast("Connect the board and the oscilloscope first", "warn");
+  if ($("trig-check").disabled) return toast("Connect the board and the scope first", "warn");
   await busy($("trig-check"), async () => {
     try {
       const r = await api("POST", "/api/acquire/trigger_check", {});
@@ -1062,7 +1106,7 @@ async function trigCheck() {
       $("trig-wrap").classList.remove("hidden");
       $("trig-table").innerHTML = r.checks.map((c) => `<tr><td>${esc(c.name)}</td><td class="${c.ok === true ? "pass" : c.ok === false ? "fail" : "dim"}">${c.ok === true ? "PASS" : c.ok === false ? "FAIL" : "skipped"}</td><td>${esc(c.detail)}</td></tr>`).join("");
       if (r.trace) { captures = captures.concat([{ trace: r.trace, axis: r.axis, captured_unix: Date.now() / 1000 }]).slice(-5); capDraw(); }
-      toast(r.ok ? "Trigger OK: fires on the Decaps start and not otherwise" : "Trigger check failed — see the table", r.ok ? "ok" : "bad", 7000);
+      toast(r.ok ? "Trigger OK. It starts only with Decaps." : "Trigger check failed. See the table.", r.ok ? "ok" : "bad", 7000);
       applyState(S);
     } catch (e) { trigOk = false; applyState(S); err(e); }
   });
@@ -1082,7 +1126,7 @@ async function capOne() {
   });
 }
 function capDraw() {
-  if (!captures.length) { $("cap-kpis").innerHTML = ""; return chartEmpty("cap-chart", "No capture yet. The last 5 captures are overlaid for comparison."); }
+  if (!captures.length) { $("cap-kpis").innerHTML = ""; return chartEmpty("cap-chart", "No capture yet. The chart shows the last 5 captures."); }
   const last = captures[captures.length - 1];
   const tr = captures.map((c, i) => line(`capture ${i + 1} · ${new Date(c.captured_unix * 1000).toLocaleTimeString()}`, C.s[(i + 4) % 8],
     c.trace.x, c.trace.y, { width: c === last ? 1.5 : 1, opacity: c === last ? 1 : 0.5 }));
@@ -1124,7 +1168,7 @@ function libFilter() {
 }
 function libBulk() {
   // a campaign being recorded cannot be tagged or moved
-  const sel = libTable.visible().filter((f) => libChecks.has(f.path) && f.status !== "recording");
+  const sel = libTicked();
   bulkBar("lib-bulk", sel.length, libTrash ? [
     ["Restore", "secondary", () => libRestore(sel)],
     ["Delete permanently", "danger", () => libPurge(sel)],
@@ -1136,27 +1180,41 @@ function libBulk() {
       libRefresh();
     }],
     ["Move to trash", "ghost", () => libDelete(sel)],
-  ], () => { libChecks.clear(); libTable.redraw(); libBulk(); });
+  ], { onClear: libClearChecks, onAll: () => libTable.checkAll(), shown: libTable.visible().length });
 }
-const libWhat = (rows, verb) => rows.length === 1 ? `<b>${esc(rows[0].label || rows[0].filename)}</b> ${verb}s` : `<b>${rows.length} campaigns</b> ${verb}`;
+const libTicked = () => libTable.visible().filter((f) => libChecks.has(f.path) && f.status !== "recording");
+function libClearChecks() { libChecks.clear(); libTable.redraw(); libBulk(); }
+// The rows Del works on: the ticked rows, else the open campaign.
+function libTargets() {
+  const ticked = libTicked(), open = libFiles.find((f) => f.path === libSel && f.status !== "recording");
+  return ticked.length ? ticked : open ? [open] : [];
+}
+// Moving to the trash can be undone (Undo in the toast), so it does not ask first. Analysis reports stay.
 async function libDelete(rows) {
   if (!rows.length) return;
-  if (!(await dialog({ title: "Move to trash?", ok: "Move to trash", danger: true, body:
-    `${libWhat(rows, "move")} to <code>data/traces/.trash/</code> with ${rows.length === 1 ? "its" : "their"} name, notes and tags. Restore from the Trash view; analysis reports stay.` }))) return;
-  try { await api("POST", "/api/traces/delete", { paths: rows.map((f) => f.path) }); toast(`Moved ${plural(rows.length, "campaign")} to the trash`, "ok"); } catch (e) { err(e); }
+  try {
+    const r = await api("POST", "/api/traces/delete", { paths: rows.map((f) => f.path) });
+    rows.forEach((f) => libChecks.delete(f.path));
+    toast(`${plural(rows.length, "campaign")} moved to the trash`, "ok", 9000,
+          { label: "Undo", fn: () => libRestore(r.trashed.map((path) => ({ path }))) });
+  } catch (e) { err(e); }
   if (rows.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
   libRefresh(); acqRefreshResume();
 }
 async function libRestore(rows) {
   if (!rows.length) return;
-  try { await api("POST", "/api/traces/restore", { paths: rows.map((f) => f.path) }); toast(`Restored ${plural(rows.length, "campaign")}`, "ok"); } catch (e) { err(e); }
+  try {
+    await api("POST", "/api/traces/restore", { paths: rows.map((f) => f.path) });
+    rows.forEach((f) => libChecks.delete(f.path));
+    toast(`${plural(rows.length, "campaign")} restored`, "ok");
+  } catch (e) { err(e); }
   if (rows.some((f) => f.path === libSel)) { libSel = null; libDetailEmpty(); }
   libRefresh(); acqRefreshResume();
 }
 function purgeText(rows) {
   const bytes = rows.reduce((a, f) => a + (f.size_bytes || 0), 0), reps = rows.reduce((a, f) => a + (f.n_reports || 0), 0);
-  return ` (${fmtBytes(bytes)}) ${rows.length === 1 ? "is" : "are"} deleted from disk` +
-    (reps ? `, together with the ${plural(reps, "analysis report")} made from ${rows.length === 1 ? "it" : "them"}` : "") + ". This cannot be undone.";
+  return ` (${fmtBytes(bytes)}) ${rows.length === 1 ? "is" : "are"} deleted from the disk` +
+    (reps ? `, with the ${plural(reps, "analysis report")} of ${rows.length === 1 ? "it" : "them"}` : "") + ". You cannot undo this.";
 }
 async function libPurge(rows) {
   if (!rows.length) return;
@@ -1172,7 +1230,7 @@ async function libPurge(rows) {
 async function libEmptyTrash() {
   if (!libTrash || !libFiles.length) return;
   if (!(await dialog({ title: "Empty the trash?", ok: "Delete all", danger: true,
-    body: `${libFiles.length === 1 ? "The campaign" : `All ${libFiles.length} campaigns`} in <code>data/traces/.trash/</code>` + purgeText(libFiles) }))) return;
+    body: `${libFiles.length === 1 ? "The campaign" : `All ${libFiles.length} campaigns`} in the trash` + purgeText(libFiles) }))) return;
   try {
     const r = await api("POST", "/api/traces/empty_trash", {});
     toast(`Deleted ${plural(r.deleted, "campaign")}${r.reports ? ` and ${plural(r.reports, "report")}` : ""}`, "ok");
@@ -1180,7 +1238,7 @@ async function libEmptyTrash() {
   libSel = null; libDetailEmpty(); libRefresh();
 }
 function libDetailEmpty() {
-  $("lib-detail").innerHTML = `<div class="empty"><div class="t">No campaign selected</div>Pick a campaign on the left to see its details.</div>`;
+  $("lib-detail").innerHTML = `<div class="empty"><div class="t">No campaign selected</div>Click a campaign to see its data.</div>`;
   libViewer(false);
 }
 async function libShow(path) {
@@ -1201,7 +1259,7 @@ async function libShow(path) {
     return;
   }
   if (f.status === "recording" || f.status === "unreadable") {
-    $("lib-detail").innerHTML = `<div class="empty"><div class="t">${esc(f.filename)}</div>${f.status === "recording" ? "Being recorded right now — details appear when the acquisition stops." : "This file cannot be read."}</div>`;
+    $("lib-detail").innerHTML = `<div class="empty"><div class="t">${esc(f.filename)}</div>${f.status === "recording" ? "Recording now. The data shows when the acquisition stops." : "The GUI cannot read this file."}</div>`;
     return;
   }
   try {
@@ -1321,7 +1379,7 @@ function tvDraw() {
   r.traces.forEach((t, i) => tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[(i + 3) % 8], t.x, t.y, { width: 1, opacity: 0.85 })));
   const wb = $("tv-bands").checked ? axisBands(r.axis) : { shapes: [], annotations: [] };
   chart("tv-chart", tr, { height: tvH(), xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
-  $("tv-note").textContent = `${r.traces.length} trace(s) of ${r.n_completed} · ${rateTxt(r.axis.sample_rate_hz)} · each line is a min/max envelope (narrow peaks are kept) · ` +
+  $("tv-note").textContent = `${r.traces.length} of ${r.n_completed} traces · ${rateTxt(r.axis.sample_rate_hz)} · min/max envelope · ` +
     r.traces.map((t) => `#${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"}`).join(", ");
 }
 function tvStep(d) {
@@ -1331,7 +1389,7 @@ function tvStep(d) {
   tvLoad();
 }
 function tvCsv() {
-  if (!tvData) return toast("Plot something first", "warn");
+  if (!tvData) return toast("Plot traces first", "warn");
   const r = tvData, n = r.traces[0].x.length;
   const rows = [["x_" + r.axis.unit].concat(r.traces.map((t) => "trace_" + t.index)).join(",")];
   for (let j = 0; j < n; j++) rows.push([r.traces[0].x[j]].concat(r.traces.map((t) => t.y[j])).join(","));
@@ -1421,7 +1479,7 @@ async function tvTick() {
   try {
     if (!(await tvShowPos(p, p.pos))) {
       tvPause();
-      if (tvPlay === p) toast("End of the campaign — press Play to start again from the first trace");
+      if (tvPlay === p) toast("End of the campaign. Click Play to start again.");
       if (tvPlay === p) p.pos = 0;
       return;
     }
@@ -1435,7 +1493,7 @@ async function tvTick() {
   p.timer = setTimeout(tvTick, Math.max(0, period - (performance.now() - t0)));
 }
 function tvPlayToggle() {
-  if (!libSel) return toast("Pick a campaign first", "warn");
+  if (!libSel) return toast("Select a campaign first", "warn");
   const p = tvPlayState();
   if (p.running) return tvPause();
   p.running = true;
@@ -1504,10 +1562,10 @@ async function anDatasetChanged(reportPath) {
   anMeta();
   anSetupFor(f);
   const reports = await anReportsList(reportPath);
-  if (!f) { anConfig(false); return anEmpty("No campaigns yet", 'Capture one on the <a data-goto="acquire">Acquisition</a> page first.'); }
+  if (!f) { anConfig(false); return anEmpty("No campaigns", 'Start a campaign on the <a data-goto="acquire">Acquisition</a> page.'); }
   if (reportPath || reports.length) { anConfig(false); return anOpenReport(reportPath || reports[0].path); }
   anConfig(true);
-  anEmpty("No analysis of this campaign yet", `Choose the settings above and press <b>${f.mode === "cpa" ? "Run CPA" : "Run TVLA"}</b>.`);
+  anEmpty("No analysis yet", `Click <b>New analysis</b>.`);
 }
 function anSetupFor(f) {
   const cpa = !f || f.mode === "cpa";
@@ -1560,7 +1618,7 @@ async function anReportAction(act) {
   $("an-more").classList.remove("open");
   if (!cur) return toast("Open a report first", "warn");
   if (act === "summary") {
-    try { await navigator.clipboard.writeText(summaryText(cur)); toast("Summary copied — paste into your slides", "ok"); }
+    try { await navigator.clipboard.writeText(summaryText(cur)); toast("Summary copied", "ok"); }
     catch (e) { err(e); }
     return;
   }
@@ -1568,7 +1626,7 @@ async function anReportAction(act) {
   if (act === "csv") return cur.results_csv ? download("/api/analysis/download", { path: cur.results_csv }) : toast("This report has no CSV export", "warn");
   if (act === "rerun") { anPrefill(cur); anConfig(true); $("an-config").scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
   if (act === "delete") {
-    if (!(await dialog({ title: "Delete this report?", body: `<b>${esc(reportLabel(cur))}</b> from ${esc(fmtDate(cur.analysis_timestamp_unix))} and its CSV files are removed from <code>data/analysis/</code>. The campaign itself is not touched.`, ok: "Delete", danger: true }))) return;
+    if (!(await dialog({ title: "Delete this report?", body: `<b>${esc(reportLabel(cur))}</b> (${esc(fmtDate(cur.analysis_timestamp_unix))}) and its CSV files are deleted. The campaign stays.`, ok: "Delete", danger: true }))) return;
     try {
       await api("POST", "/api/results/delete", { path: cur.report_path });
       toast("Report deleted", "ok");
@@ -1618,7 +1676,7 @@ function anPrefill(r) {
   $("an-max-traces").value = mc.max_traces_requested ?? 0;
   if (r.kind !== "cpa" || !cpaOk(r)) return;
   if (anModelOf(r.model)) { $("an-model").value = r.model; anModel(); }
-  else toast(`The hypothesis of this report (${r.model}) is not in cpa_attack.py any more`, "warn");
+  else toast(`Hypothesis ${r.model} is not available now`, "warn");
   $("an-polys").value = mc.polys || "0-2"; $("an-coeffs").value = mc.coeffs || "8";
   anSearch.set(r.search || "full"); anSearchChanged(r.search || "full");
   $("an-margin").value = r.margin_cycles ?? 10; $("an-delay").value = r.delay_cycles ?? 0;
@@ -1647,13 +1705,13 @@ function anModel() {
 function anSearchChanged(v) {
   $("an-gate-fields").classList.toggle("hidden", v !== "gate");
   $("an-search-hint").textContent = v === "gate"
-    ? "Only ± the given number of core cycles around where the RTL schedule puts the register: far fewer samples, so fewer false peaks and a much faster run — but a wrong prediction (probe delay, record start) finds nothing. “shift” moves the prediction."
-    : "The whole window finds the peak wherever it is — use it first, then read the offset column and switch to the predicted cycle (faster, fewer false peaks).";
+    ? "Searches only ± these core cycles around the RTL prediction. This is faster and gives fewer false peaks. If the prediction is wrong (probe delay, record start), it finds nothing. “shift” moves the prediction."
+    : "Start with the whole window. Then use the offset column to set the predicted cycle. This is faster and gives fewer false peaks.";
 }
 function anOracleChanged(v) {
   $("an-dkref").classList.toggle("hidden", v !== "file");
-  $("an-oracle-warn").textContent = v ? "The true key only ranks the attack's guesses afterwards (rank, recovered ✓); the hypotheses are built from the public ciphertext alone."
-    : "Blind: what a real attacker gets — the best guess per coefficient, its correlation and stability.";
+  $("an-oracle-warn").textContent = v ? "The true key only ranks the guesses after the attack. The hypotheses use only the public ciphertext."
+    : "Blind: the result of a real attacker. You get the best guess, its correlation and its stability for each coefficient.";
 }
 const anDkRef = () => (anOracle.get() === "file" ? $("an-dkref").value.trim() : anOracle.get());
 
@@ -1661,7 +1719,7 @@ async function anRun() {
   const f = anFile();
   if (!f || anJob) return;
   const kind = f.mode === "cpa" ? "cpa" : "tvla";
-  if (kind === "cpa" && anOracle.get() === "file" && !$("an-dkref").value.trim()) return toast("Enter the path of the dk file", "warn");
+  if (kind === "cpa" && anOracle.get() === "file" && !$("an-dkref").value.trim()) return toast("Type the path of the dk file", "warn");
   const body = kind === "cpa" ? { file: f.path, model: $("an-model").value, max_traces: $("an-max-traces").value, dk_ref: anDkRef(),
       polys: $("an-polys").value.trim(), coeffs: $("an-coeffs").value.trim(), search: anSearch.get(),
       margin: $("an-margin").value, delay: $("an-delay").value }
@@ -1744,23 +1802,23 @@ function detailsKv(r) {
 // and (when the key is known) did the right candidate win.
 function cpaVerdict(r) {
   const rows = (r.results || []).filter((x) => x.informative), floor = r.noise_floor_corr, n = rows.length;
-  if (!n) return { cls: "bad", text: "No coefficient carries key information: the ciphertexts give u = 0 or too few traces were used." };
+  if (!n) return { cls: "bad", text: "No coefficient has key information. The ciphertexts give u = 0, or there are not sufficient traces." };
   const above = rows.filter((x) => x.best_corr > floor).length, al = r.alignment || {};
-  if (!above) return { cls: "bad", text: `No signal: no coefficient's best peak clears the noise floor (|ρ| ≈ ${floor.toFixed(3)} for ${r.n_traces_used} traces). ` +
-    `More traces, a lower-noise setup, the other hypothesis, or a check of the trigger/record start (Acquisition → Check trigger) are the next steps.` };
-  const where = al.n ? ` The confident peaks sit ${al.median_offset_cycles >= 0 ? "+" : ""}${al.median_offset_cycles.toFixed(1)} core cycles from where the RTL schedule puts the register ` +
-    `(spread ${al.spread_cycles.toFixed(1)} cycles): ${al.spread_cycles <= 3 ? "a tight pile-up, so the traces are aligned and the leakage is real." : "scattered, so treat these peaks with caution."}` : "";
+  if (!above) return { cls: "bad", text: `No signal. No peak is above the noise floor (|ρ| ≈ ${floor.toFixed(3)} for ${r.n_traces_used} traces). ` +
+    `Next: capture more traces, decrease the noise, try the other hypothesis, or do Acquisition → Check trigger.` };
+  const where = al.n ? ` The strong peaks are ${al.median_offset_cycles >= 0 ? "+" : ""}${al.median_offset_cycles.toFixed(1)} core cycles from the RTL prediction ` +
+    `(spread ${al.spread_cycles.toFixed(1)} cycles). ${al.spread_cycles <= 3 ? "The spread is small: the traces are aligned and the leakage is real." : "The spread is large: be careful with these peaks."}` : "";
   if (r.oracle_assisted)
-    return { cls: r.rank1_fraction >= 0.5 ? "good" : "bad", text: `${rows.filter((x) => x.true_rank === 1).length} of ${n} coefficients recovered (the true key has the highest peak); ` +
+    return { cls: r.rank1_fraction >= 0.5 ? "good" : "bad", text: `${rows.filter((x) => x.true_rank === 1).length} of ${n} coefficients recovered (the true key has the highest peak). ` +
       `median true-key rank ${Math.round(r.median_true_rank)} of ${r.n_candidates} (chance ≈ ${Math.round(r.chance_rank_mean)}).` + where };
-  return { cls: "good", text: `${above} of ${n} coefficients have a peak above the noise floor, ${r.n_stable} are stable in all 4 windows.` + where +
-    " A blind run cannot say which guesses are right — rank the campaign key to find out." };
+  return { cls: "good", text: `${above} of ${n} coefficients have a peak above the noise floor. ${r.n_stable} are stable in all 4 windows.` + where +
+    " A blind run cannot tell which guesses are correct. To find out, rank the campaign key." };
 }
 function renderCPA(r) {
   cur = r; insp = null; ccCache.clear(); anDrawn = new Set();
   if (!cpaOk(r)) {
-    $("an-results").innerHTML = reportHead(r) + `<div class="card"><div class="empty"><div class="t">An older report</div>This report was made with the model catalogue that has been removed ` +
-      `(${esc(r.model || "?")}). Press <b>New analysis</b> to run the current simple CPA on this campaign.</div></div><div class="card"><div class="kv" id="an-details-kv"></div></div>`;
+    $("an-results").innerHTML = reportHead(r) + `<div class="card"><div class="empty"><div class="t">An older report</div>This report uses a removed model ` +
+      `(${esc(r.model || "?")}). Click <b>New analysis</b> to analyse the campaign again.</div></div><div class="card"><div class="kv" id="an-details-kv"></div></div>`;
     kv("an-details-kv", detailsKv(r));
     return;
   }
@@ -1781,7 +1839,7 @@ function renderCPA(r) {
         <div class="card"><div class="card-head"><h2>Where do the peaks sit?</h2><span class="sub">peak position − predicted cycle, confident peaks only</span></div><div class="chart" id="cpa-align"></div>
           <div class="chart-note" id="cpa-align-note"></div></div>
       </div>`) +
-    pan("coef", `<div class="card" id="cpa-insp"><div class="empty"><div class="t">Pick a coefficient</div>Click a row in the Overview, or use the selector here once a coefficient is open.</div></div>`) +
+    pan("coef", `<div class="card" id="cpa-insp"><div class="empty"><div class="t">No coefficient selected</div>Click a row in the Overview.</div></div>`) +
     pan("compare", `<div class="card"><div class="card-head"><h2>Every CPA report of this campaign</h2><span class="sub" id="cpa-models-sub"></span></div>
         <div class="table-wrap"><table class="t click" id="cpa-models"><thead></thead><tbody></tbody></table></div>
         <div class="chart-note">Run <b>New analysis</b> with the other hypothesis (or another search) to add a row. Compare like with like: the same trace count and coefficients; scored runs by rank-1 and median rank, blind runs by peaks above the floor.</div></div>`) +
@@ -1819,7 +1877,7 @@ function drawCPATab(t) {
     };
     setRows("");
     if (oracle) seg("cpa-filter", setRows);
-    $("cpa-dl-results").addEventListener("click", () => r.results_csv ? download("/api/analysis/download", { path: r.results_csv }) : toast("no CSV", "warn"));
+    $("cpa-dl-results").addEventListener("click", () => r.results_csv ? download("/api/analysis/download", { path: r.results_csv }) : toast("No CSV", "warn"));
     // peaks vs the floor
     const lab = rows.map((x) => `p${x.poly}[${x.coeff}]`);
     const tr = [{ type: "bar", x: lab, y: rows.map((x) => x.best_corr), name: "best peak", marker: { color: rows.map((x) => (oracle ? (x.true_rank === 1 ? C.s[1] : C.s[2]) : (x.best_corr > floor ? C.s[0] : "#475569"))) },
@@ -1829,12 +1887,12 @@ function drawCPATab(t) {
     chart("cpa-bars", tr, { height: 250, yTitle: "peak |ρ|", hovermode: "closest", showlegend: oracle, shapes: [hLine(floor, C.s[3])], annotations: [hLabel(floor, C.s[3], "noise floor")] });
     // alignment histogram
     const offs = r.alignment?.offsets || [];
-    if (!offs.length) chartEmpty("cpa-align", "No peak clears the noise floor, so there is no alignment to show.");
+    if (!offs.length) chartEmpty("cpa-align", "No peak is above the noise floor.");
     else chart("cpa-align", [{ type: "histogram", x: offs, xbins: { size: 1 }, marker: { color: C.s[0] }, hovertemplate: "%{x} cycles: %{y} coefficients<extra></extra>" }],
       { height: 250, xTitle: "core cycles from the predicted position", yTitle: "coefficients", showlegend: false, hovermode: "closest" });
     $("cpa-align-note").textContent = offs.length
       ? `Real leakage piles up on one value (here ${r.alignment.median_offset_cycles >= 0 ? "+" : ""}${r.alignment.median_offset_cycles.toFixed(1)} cycles, spread ${r.alignment.spread_cycles.toFixed(1)}). ` +
-        `A constant non-zero offset is a probe / amplifier delay: enter it as “shift” and use the predicted-cycle search. Peaks scattered over the whole window are noise.`
+        `A constant offset that is not zero is a probe or amplifier delay. Enter it as “shift” and use the predicted-cycle search. Peaks everywhere in the window are noise.`
       : "";
   } else if (t === "coef") {
     if (!insp) {
@@ -1884,7 +1942,7 @@ function drawCoef(d) {
   const floor = d.noise_floor_corr, oracle = d.true_value !== null && d.true_value !== undefined;
   if (!d.informative) {
     kpis("in-kpis", [["no key information", "—", "u is constant for this coefficient, or too few traces", "bad"]]);
-    ["in-time", "in-guess", "in-conv", "in-heat"].forEach((id) => chartEmpty(id, "nothing to correlate"));
+    ["in-time", "in-guess", "in-conv", "in-heat"].forEach((id) => chartEmpty(id, "No data"));
     return;
   }
   const top = d.top, best = top[0], second = top[1];
@@ -1901,17 +1959,17 @@ function drawCoef(d) {
   if (oracle && d.true_value !== d.best_guess) tr.push(line(`true key ${d.true_value}`, C.s[1], x, d.true_curve), peak("true", C.s[1], x, d.true_curve));
   chart("in-time", tr, { height: vh(0.30, 240, 360), yTitle: "ρ", xTitle: d.x_unit === "us" ? "time after the trigger (µs)" : "sample", shapes,
     annotations: [{ x: d.predicted_us[0], y: 1, yref: "paper", text: "predicted", showarrow: false, yanchor: "top", xanchor: "left", font: { size: 9, color: C.s[3] } }] });
-  $("in-time-note").textContent = `Pearson ρ between the hypothesis and every sample. The yellow band is where the RTL schedule says the register holds this product ` +
-    `(cycle ${d.predicted_cycle[0]}${d.predicted_cycle[1] !== d.predicted_cycle[0] ? "–" + d.predicted_cycle[1] : ""}); dashed lines ±${floor.toFixed(3)} = what noise alone reaches. ` +
-    `A real result: one sharp peak at the right key, inside or near the band, well above the dashed lines.`;
+  $("in-time-note").textContent = `ρ for each sample. Yellow band: the RTL prediction ` +
+    `(cycle ${d.predicted_cycle[0]}${d.predicted_cycle[1] !== d.predicted_cycle[0] ? "–" + d.predicted_cycle[1] : ""}). Dashed lines: noise floor ±${floor.toFixed(3)}. ` +
+    `A real leak gives one sharp peak near the band, above the dashed lines.`;
   // 2: peak of every candidate
   const pp = d.peak_per_guess, idx = pp.map((_, i) => i);
   const gtr = [{ type: "scattergl", mode: "markers", x: idx, y: pp, name: "candidates", marker: { size: 3, color: "#64748b" }, hovertemplate: "candidate %{x}: |ρ| %{y:.4f}<extra></extra>" },
     { type: "scatter", mode: "markers", x: [d.best_guess], y: [d.best_corr], name: "best", marker: { size: 10, color: C.s[0], line: { color: "#0b1220", width: 1 } } }];
   if (oracle && d.true_value !== d.best_guess) gtr.push({ type: "scatter", mode: "markers", x: [d.true_value], y: [d.true_corr], name: "true key", marker: { size: 11, symbol: "diamond", color: C.s[1], line: { color: "#0b1220", width: 1 } } });
   chart("in-guess", gtr, { height: 270, xTitle: "candidate value (0 … 3328)", yTitle: "peak |ρ|", hovermode: "closest", shapes: [hLine(floor, C.s[3])], annotations: [hLabel(floor, C.s[3], "noise floor")] });
-  $("in-guess-note").textContent = `Every one of the 3329 candidates, scored by its highest |ρ| anywhere in the window. ` +
-    (d.best_corr - (second ? Math.abs(second.corr) : 0) > 0.02 ? "The winner stands clear of the cloud." : "The winner barely leaves the cloud: with this many traces it is a guess.");
+  $("in-guess-note").textContent = `All 3329 candidates, each with its highest |ρ| in the window. ` +
+    (d.best_corr - (second ? Math.abs(second.corr) : 0) > 0.02 ? "The best candidate is clearly above the others." : "The best candidate is almost the same as the others. With this number of traces, it is a guess.");
   // 3: convergence
   const cv = d.convergence, pts = cv.points;
   chart("in-conv", [line(`${cv.reference} (${cv.ref_guess})`, oracle ? C.s[1] : C.s[0], pts.map((p) => p.n_traces), pts.map((p) => p.ref)),
@@ -1919,14 +1977,14 @@ function drawCoef(d) {
     line("noise floor", C.s[3], pts.map((p) => p.n_traces), pts.map((p) => p.floor), { width: 1 })],
     { height: 270, xTitle: "traces used", yTitle: "peak |ρ| near the POI", xaxis: { type: "log" } });
   const last = pts[pts.length - 1];
-  $("in-conv-note").textContent = `The ${cv.reference} should climb above the grey line (the best wrong candidate) and stay there as traces are added; ` +
-    `after ${last.n_traces} traces it ranks ${last.rank} of 3329.`;
+  $("in-conv-note").textContent = `The ${cv.reference} must go above the grey line (best wrong candidate) and stay there. ` +
+    `After ${last.n_traces} traces, its rank is ${last.rank} of 3329.`;
   // 4: top-10
   $("in-top").innerHTML = `<thead><tr><th class="num">#</th><th class="num">candidate</th><th class="num">ρ</th><th class="num">time (us)</th><th class="num">votes</th>${oracle ? "<th></th>" : ""}</tr></thead><tbody>` +
     top.map((t, i) => `<tr class="${t.guess === d.true_value ? "sel" : ""}"><td class="num">${i + 1}</td><td class="num">${t.guess}</td><td class="num">${t.corr.toFixed(4)}</td><td class="num">${t.time_us ?? "—"}</td>` +
       `<td class="num">${t.votes}/4</td>${oracle ? `<td>${t.guess === d.true_value ? "✓ true key" : ""}</td>` : ""}</tr>`).join("") + "</tbody>";
-  $("in-top-note").textContent = "votes: sum ρ² over windows of 3, 5, 7 and 9 samples around the best peak, keep the 10 best, count how many windows each candidate appears in. " +
-    "A key that is in all four is not riding on one noisy sample.";
+  $("in-top-note").textContent = "Votes: the sum of ρ² in windows of 3, 5, 7 and 9 samples around the best peak. Each window keeps its 10 best candidates. " +
+    "A candidate in all four windows does not come from one noisy sample.";
   // 5: heat map
   const hm = d.heat, labels = hm.guesses.map((g) => (g === d.best_guess ? "★ " : g === d.true_value ? "✓ " : "") + g);
   chart("in-heat", [{ type: "heatmap", x: hm.x, y: labels, z: hm.z, colorscale: "Viridis", zmin: 0, colorbar: { thickness: 8, len: 0.9, tickfont: { size: 9 }, title: "|ρ|" },
@@ -1942,7 +2000,7 @@ document.addEventListener("keydown", (e) => {
 // The CPA reports of the open campaign, one row per run (anReports carries their summary numbers).
 function drawModelCompare() {
   const rows = anReports.filter((x) => x.kind === "cpa" && !x.legacy);
-  $("cpa-models-sub").textContent = `${rows.length} report(s)` + (anReports.some((x) => x.kind === "cpa" && x.legacy) ? " · older-format reports are not listed" : "");
+  $("cpa-models-sub").textContent = `${rows.length} report(s)` + (anReports.some((x) => x.kind === "cpa" && x.legacy) ? " · older reports are not shown" : "");
   const num = (v, d) => (v === null || v === undefined ? "—" : v.toFixed(d));
   makeTable("cpa-models", [
     { key: "model", label: "hypothesis", render: (x) => `<div class="name mono">${esc(x.model || "?")}</div><div class="sub">${esc(anModelOf(x.model)?.equation || "")}</div>` },
@@ -2028,7 +2086,7 @@ function drawTVLATab(t) {
 
 // CLI default
 async function modelSaveDefault() {
-  try { await api("POST", "/api/model/save_default", { model: $("an-model").value }); toast("Saved as the cpa_attack.py default (config.py)", "ok"); }
+  try { await api("POST", "/api/model/save_default", { model: $("an-model").value }); toast("Saved as default (config.py)", "ok"); }
   catch (e) { err(e); }
 }
 
@@ -2067,7 +2125,7 @@ async function lsLoad() {
 function lsInfo() {
   const b = S && S.board, i = b && b.info;
   kv("ls-info", i ? [["Board", `core ${i.version} · ${String(i.port).split("/").pop()} · ${transportText(i)}`],
-    [i.run_command || "0x05 Run", i.has_run ? "supported — operations enabled" : "MISSING — rebuild the bitstream; operations are disabled"],
+    [i.run_command || "0x05 Run", i.has_run ? "supported — operations enabled" : "MISSING. Build the bitstream again. Operations are off."],
     ["Timeout", (i.op_timeout ?? "—") + " s"]] : [["Board", b ? STATE_TXT[b.state] : "—"]]);
 }
 async function lsSave() {
@@ -2081,7 +2139,7 @@ async function lsReprobe() {
   await busy($("ls-reprobe"), async () => {
     try {
       const r = await api("POST", "/api/fpga/reprobe", {});
-      toast(r.has_run ? `${r.command} is supported by this bitstream` : `${r.command} is unavailable — rebuild the matching bitstream`, r.has_run ? "ok" : "bad", 8000);
+      toast(r.has_run ? `The bitstream has ${r.command}` : `The bitstream has no ${r.command}. Build the bitstream again.`, r.has_run ? "ok" : "bad", 8000);
       applyState(await api("GET", "/api/state"));
     } catch (e) { err(e); }
   });
@@ -2114,7 +2172,7 @@ async function opStep(step, btn) {
   if (step === "run") body.out_len = $("op-out-len").value;
   if (step === "read_output") body.length = $("op-out-len").value;
   if ((step === "load_sk" && !body.hex.trim()) || (step === "load_ct" && !body.hex.trim()))
-    return toast("Paste the hex first, or load the selected test vector", "warn");
+    return toast("Paste hex, or load a test vector", "warn");
   boardStepBusy = true; updateBoardInterface();
   await busy(btn, async () => {
     try {
@@ -2142,7 +2200,7 @@ async function opLoadFile(field, length) {
     if (hex.length !== length * 2) throw new Error(`Expected ${length} bytes; file contains ${hex.length / 2}`);
     $(field).value = hex;
     // Manually supplied inputs must not be compared against a stale selected vector.
-    $("op-expected").textContent = `${file.name} loaded into form; use the corresponding load button to send it to the board`;
+    $("op-expected").textContent = `${file.name} is in the form. Click LOAD to send it.`;
     toast(`${file.name}: ${length} bytes ready`, "ok");
   } catch (e) { err(e); }
   finally { input.value = ""; }
@@ -2185,7 +2243,7 @@ async function regReadAll() {
 async function regRead() { try { const r = await api("POST", "/api/fpga/read_reg", { name: $("reg-name").value }); $("reg-result").textContent = `${r.name} = ${r.hex}  (${r.value})`; $("reg-value").value = r.hex; } catch (e) { err(e); } }
 async function regWrite() {
   const name = $("reg-name").value;
-  if (["CTRL", "SEC_LEVEL", "OP_MODE"].includes(name) && !(await dialog({ title: `Write ${name}?`, body: `Writing <b>${name}</b> changes what the core does next. The next Decaps from the GUI rewrites the configuration it needs.`, ok: "Write" }))) return;
+  if (["CTRL", "SEC_LEVEL", "OP_MODE"].includes(name) && !(await dialog({ title: `Write ${name}?`, body: `This changes the next operation of the core. The next Decaps from the GUI sets the configuration again.`, ok: "Write" }))) return;
   try { const r = await api("POST", "/api/fpga/write_reg", { name, value: $("reg-value").value }); $("reg-result").textContent = `${r.name} ← 0x${r.value.toString(16)}`; opLog(`write_reg   ${r.name} <- 0x${r.value.toString(16)}`); } catch (e) { err(e); }
 }
 async function bufRead() { try { const r = await api("POST", "/api/fpga/read_data", { offset: $("buf-read-offset").value, length: $("buf-read-len").value }); $("buf-read-result").textContent = hexDump(r.hex, r.offset); } catch (e) { err(e); } }
@@ -2211,8 +2269,9 @@ async function init() {
     S = s;
     const port = s.board.params?.port || localStorage.getItem("board-port") || "";
     $("board-transport").value = ["connected", "connecting"].includes(s.board.state)
-      ? (port.startsWith("sakura-shell:") ? "shell" : port.startsWith("sakura:") ? "legacy" : "uart")
-      : localStorage.getItem("board-transport") || (port.startsWith("sakura:") ? "legacy" : port && !port.startsWith("sakura-shell:") ? "uart" : "shell");
+      ? (isShellPort(port) ? "shell" : "uart")
+      : (["shell", "uart"].includes(localStorage.getItem("board-transport")) ? localStorage.getItem("board-transport")
+         : port && !isShellPort(port) ? "uart" : "shell");
     if (["connected", "connecting"].includes(s.board.state)) localStorage.setItem("board-port", port);
   } catch (e) { err(e); }
   scopeDialectChanged(false);
@@ -2223,7 +2282,6 @@ async function init() {
     localStorage.setItem("board-transport", $("board-transport").value);
     $("board-port").value = ""; populateBoardPorts();
   });
-  $("board-hard-reset").addEventListener("click", boardHardReset);
   $("board-copy-report").addEventListener("click", copyConnectionReport);
   $("board-refresh-ports").addEventListener("click", () => refreshPorts(false));
   $("board-conn-btn").addEventListener("click", boardConnBtn);
@@ -2240,8 +2298,7 @@ async function init() {
   // vectors
   const info = await api("GET", "/api/vectors/info").catch(() => ({ strategies: {} }));
   const STRAT = { valid: "Valid encapsulations (accept path)", invalid: "Random bytes (implicit rejection)",
-    structured: "Structured (BROKEN — does not isolate a pair; use valid or pc-oracle)",
-    "pc-oracle": "PC-oracle: chosen ciphertexts that recover the whole key (pc_oracle.py)" };
+    "pc-oracle": "PC-oracle chosen ciphertexts (analyse with pc_oracle.py)" };
   $("vg-strategy").innerHTML = Object.keys(info.strategies).map((k) => `<option value="${k}">${STRAT[k] || k}</option>`).join("");
   vgMode = seg("vg-mode", vgVisibility);
   $("vg-strategy").addEventListener("change", vgVisibility);
@@ -2259,14 +2316,14 @@ async function init() {
     { key: "n", label: "vectors", num: true }, { key: "created_unix", label: "created", render: (m) => fmtAgo(m.created_unix) },
   ], { key: (m) => m.path, onRow: (m) => vsSelect(m.path), sortKey: "created_unix", dir: -1, checks: vsChecks, onCheck: vsBulk,
        onTag: (t) => { $("vs-tag").value = t; vsFilter(); },
-       empty: () => vsTrash ? '<div class="empty"><div class="t">Trash is empty</div>Deleted vector sets wait here until you delete them permanently.</div>'
-         : '<div class="empty"><div class="t">Nothing here</div>Generate a vector set with the form on the left (or clear the filters).</div>' });
+       empty: () => vsTrash ? '<div class="empty"><div class="t">The trash is empty</div></div>'
+         : '<div class="empty"><div class="t">No vector sets</div>Make a vector set on the left, or clear the filters.</div>' });
   $("vs-search").addEventListener("input", vsFilter);
   $("vs-tag").addEventListener("change", vsFilter);
   $("vs-trash-toggle").addEventListener("click", () => { vsTrash = !vsTrash; vsChecks.clear(); vsSel = null; vsRefresh(); });
-  $("vs-delete").addEventListener("click", () => vsSel && vsDelete([vsSel]));
-  $("vs-restore").addEventListener("click", () => vsSel && vsRestore([vsSel]));
-  $("vs-purge").addEventListener("click", () => vsSel && vsPurge([vsSel]));
+  $("vs-delete").addEventListener("click", () => vsDelete(vsTargets()));
+  $("vs-restore").addEventListener("click", () => vsRestore(vsTargets()));
+  $("vs-purge").addEventListener("click", () => vsPurge(vsTargets()));
   $("vs-empty-trash").addEventListener("click", vsEmptyTrash);
   $("vs-use").addEventListener("click", () => {
     if (!vsSel) return toast("Select a vector set first", "warn");
@@ -2290,7 +2347,7 @@ async function init() {
   $("acq-vector-set").addEventListener("change", () => { acqSetHint(); applyState(S); });
   $("acq-resume").addEventListener("change", () => applyState(S));
   $("acq-start").addEventListener("click", acqStart);
-  $("acq-stop").addEventListener("click", async () => { if (acqJob) { await api("POST", "/api/jobs/stop", { job_id: acqJob }).catch(err); toast("Stopping after the current trace…", "warn"); } });
+  $("acq-stop").addEventListener("click", async () => { if (acqJob) { await api("POST", "/api/jobs/stop", { job_id: acqJob }).catch(err); toast("The job stops after the current trace", "warn"); } });
   ["live-show-last", "live-show-mean", "live-show-diff"].forEach((id) => $(id).addEventListener("change", () => liveDraw()));
   $("cap-one").addEventListener("click", capOne);
   $("trig-check").addEventListener("click", trigCheck);
@@ -2312,8 +2369,8 @@ async function init() {
     { key: "created_unix", label: "captured", render: (f) => fmtAgo(f.created_unix) },
   ], { key: (f) => f.path, onRow: (f) => libShow(f.path), sortKey: "created_unix", dir: -1, checks: libChecks, onCheck: libBulk,
        onTag: (t) => { $("lib-tag").value = t; libFilter(); },
-       empty: () => libTrash ? '<div class="empty"><div class="t">Trash is empty</div>Campaigns moved to the trash wait here until you delete them permanently.</div>'
-         : '<div class="empty"><div class="t">No campaigns here</div>Captured campaigns appear here (or clear the filters). Start one on the Acquisition page.</div>' });
+       empty: () => libTrash ? '<div class="empty"><div class="t">The trash is empty</div></div>'
+         : '<div class="empty"><div class="t">No campaigns</div>Start a campaign on the Acquisition page, or clear the filters.</div>' });
   $("lib-search").addEventListener("input", libFilter);
   $("lib-tag").addEventListener("change", libFilter);
   $("lib-empty-trash").addEventListener("click", libEmptyTrash);
@@ -2332,6 +2389,18 @@ async function init() {
     if (e.code !== "Space" || currentPage !== "library" || $("lib-viewer").classList.contains("hidden")) return;
     if (/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(document.activeElement?.tagName || "")) return;
     e.preventDefault(); tvPlayToggle();
+  });
+  // Lists: Del (or Backspace) moves the ticked rows, else the open item, to the trash; in the trash it
+  // deletes them permanently (asks first). Esc clears the ticks. Ctrl/Cmd+A ticks every row shown.
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest?.("input,textarea,select") || $("modal-back").classList.contains("open")) return;
+    const L = currentPage === "vectors" ? { trash: vsTrash, table: vsTable, targets: vsTargets, del: vsDelete, purge: vsPurge, clear: vsClearChecks, n: vsChecks.size }
+      : currentPage === "library" && !$("lib-list").classList.contains("hidden")
+        ? { trash: libTrash, table: libTable, targets: libTargets, del: libDelete, purge: libPurge, clear: libClearChecks, n: libChecks.size } : null;
+    if (!L) return;
+    if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); (L.trash ? L.purge : L.del)(L.targets()); }
+    else if (e.key === "Escape" && L.n) { e.preventDefault(); L.clear(); }
+    else if (e.key.toLowerCase() === "a" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); L.table.checkAll(); }
   });
   $("tv-bands").addEventListener("change", tvDraw);
   $("tv-export-csv").addEventListener("click", tvCsv);

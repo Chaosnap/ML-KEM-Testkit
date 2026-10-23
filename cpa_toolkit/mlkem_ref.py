@@ -1,8 +1,8 @@
 """FIPS 203 helpers for the CPA evaluation (ML-KEM-768 only).
 
 ByteDecode / Decompress, the NTT / INTT, BaseCaseMultiply, parsing of ``dk``
-and ``c``, K-PKE.Decrypt and the structured chosen ciphertexts. The leakage
-the CPA hypotheses built on these are in ``cpa_attack.py``.
+and ``c`` and K-PKE.Decrypt. The CPA hypotheses built on these are in
+``cpa_attack.py``.
 
 Everything here is vectorised over a leading "trace" axis so the same code
 serves the test-vector generator (``mlkem768.py`` builds on these
@@ -56,8 +56,7 @@ def byte_encode(vals, d: int) -> np.ndarray:
     ``(..., 256)`` integers in ``[0, 2**d)`` -> ``(..., 32*d)`` uint8 bytes.
 
     Exact mathematical inverse of byte_decode's bit unpacking (same
-    little-endian bit order both ways); used to build ciphertexts (mlkem768.py,
-    structured_ciphertext below), never on data from the board.
+    little-endian bit order both ways); used to build ciphertexts (mlkem768.py), never on data from the board.
     """
     vals = np.asarray(vals, dtype=np.int64) & ((1 << d) - 1)
     bits = ((vals[..., None] >> np.arange(d, dtype=np.int64)) & 1).astype(np.uint8)
@@ -157,41 +156,3 @@ def fixed_message(seed: bytes) -> bytes:
     The label is kept from the original Go generator so a seed gives the same
     fixed ciphertext as it always did."""
     return hashlib.sha3_256(b"pqc-testkit tvla fixed m" + seed).digest()
-
-
-# --- structured (chosen-ciphertext) CPA vectors ------------------------------
-def structured_ciphertext(poly: int, pair: int, rng: np.random.Generator) -> bytes:
-    """A ciphertext whose u_hat is zero everywhere except one BaseMul pair.
-
-    Sets u_hat[poly][2*pair] and u_hat[poly][2*pair+1] to fresh random values
-    and every other coefficient (in all 3 polynomials) to zero, then encodes
-    that back into valid ciphertext bytes. This isolates the one targeted
-    BMUL pair's contribution: every *other* BMUL pair, in every polynomial,
-    multiplies by zero and so cannot add noise to the accumulator (c_old
-    stays exactly 0 up to the targeted pair) -- a template-attack-style
-    technique to raise SNR at a chosen pair, the "structured chosen
-    ciphertext" strategy in acquire_cpa.py --strategy structured.
-
-    Only c1 (the three compressed-u chunks) needs constructing: Decaps reads
-    c2 (v) only *after* all three BMULs finish (microcode ADDR 248, well
-    after ADDR 238-246 -- see docs/ATTACK_MODEL.md section 4.1), so c2's content
-    cannot affect the attacked stage and is zero-filled here.
-
-    The actual u_hat the hardware computes is whatever
-    u_hat_from_ct() returns for the bytes produced here (compression at
-    DU=10 bits is lossy, so it will be close to, not bit-exact with, the
-    chosen values) -- callers must always recompute u_hat from the returned
-    ciphertext bytes for the hypothesis, never assume the chosen values
-    verbatim. This is not a valid encapsulation (no m, no ek involved): it
-    is for isolating one BMUL pair's power contribution, not for producing a
-    ciphertext anyone would accept as genuine -- the core's own implicit-
-    rejection path still runs to completion and returns *something*, it is
-    simply not a real encapsulated key.
-    """
-    u_hat = np.zeros((K, 256), dtype=np.int64)
-    u_hat[poly, 2 * pair] = int(rng.integers(0, Q))
-    u_hat[poly, 2 * pair + 1] = int(rng.integers(0, Q))
-    u = intt(u_hat)
-    c1 = byte_encode(compress(u, DU), DU).tobytes()
-    c2 = bytes(CT_LEN - C1_LEN)
-    return c1 + c2

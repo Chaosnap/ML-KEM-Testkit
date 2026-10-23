@@ -1,10 +1,10 @@
-// tb_shell_bridge.sv - sakura_shell_bridge against the template's REAL Spartan-6 decoder.
+// tb_sakura_x_bridge.sv - sakura_x_bridge against the template's REAL Spartan-6 decoder.
 //
 // Spartan side: third_party/sakura_x_shell/sakura-x-shell-ctrl/command_control.v and fifo.v,
 // unmodified, at 50 MHz. The host pushes USB bytes into the "from FTDI" FIFO and pops
 // replies from the "to FTDI" FIFO (the FT2232H itself is not modelled).
-// Kintex side: hdl/xilinx/sakura_shell/sakura_shell_bridge.sv behind the same input and
-// output register stage as sakura_shell_top.sv, clocked by the INVERTED Spartan clock (the
+// Kintex side: hdl/xilinx/sakura_x/sakura_x_bridge.sv behind the same input and
+// output register stage as sakura_x_top.sv, clocked by the INVERTED Spartan clock (the
 // controller forwards it through ODDR2 D0=0 / D1=1), with WIRE_NS of board delay each way.
 // Behind the bridge: an AXI-Lite memory and a core that is busy for CORE_CYCLES after
 // CTRL.start, then reports STATUS = DONE.
@@ -15,7 +15,7 @@
 `timescale 1ns/1ps
 `include "def.v"
 
-module tb_shell_bridge;
+module tb_sakura_x_bridge;
     parameter real WIRE_NS = 3.0;
     localparam int BUS_HZ = 50_000;                 // shortened delays: PRE 100, tail 1000 cycles
     localparam int CORE_CYCLES = 300;
@@ -68,7 +68,7 @@ module tb_shell_bridge;
     assign s_read_data = s_read_data_d, s_addr_ready = s_addr_ready_d;
     assign s_write_ready = s_write_ready_d, s_read_valid = s_read_valid_d;
 
-    // ---------------- Kintex-7: reset sync + I/O registers (as sakura_shell_top.sv) + bridge ----------------
+    // ---------------- Kintex-7: reset sync + I/O registers (as sakura_x_top.sv) + bridge ----------------
     logic [3:0] reset_bus;
     always_ff @(posedge k_clk or negedge k_bus_reset_n)
         if (!k_bus_reset_n) reset_bus <= 0; else reset_bus <= {reset_bus[2:0], 1'b1};
@@ -98,7 +98,7 @@ module tb_shell_bridge;
     logic [1:0] bresp = 0, rresp = 0;
     logic core_busy = 0, run_active;
 
-    sakura_shell_bridge #(.BUS_HZ(BUS_HZ)) u_bridge (
+    sakura_x_bridge #(.BUS_HZ(BUS_HZ)) u_bridge (
         .clk(k_clk), .rst_n(rst_n),
         .i_addr_valid(addr_valid_q), .i_write_enable(write_enable_q), .i_write_data_valid(write_valid_q),
         .i_read_data_ready(read_ready_q), .i_common(common_q), .o_read_data(bridge_read_data),

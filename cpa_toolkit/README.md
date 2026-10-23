@@ -35,12 +35,12 @@ uv run python cpa_toolkit/web_gui.py              # http://127.0.0.1:8765，自�
 uv run python cpa_toolkit/web_gui.py --port 8900 --no-browser
 ```
 
-GUI 只依赖标准库 `http.server`，加上随仓库附带的 Plotly.js，不需要联网，只绑定 `127.0.0.1`。左侧导航按实验顺序排列，顶栏的指示灯显示板子、示波器和后台任务的状态，底部可展开 Console 查看完整日志。
+操作步骤见 [docs/GUI_GUIDE.md](../docs/GUI_GUIDE.md)。GUI 只依赖标准库 `http.server`，加上随仓库附带的 Plotly.js，不需要联网，只绑定 `127.0.0.1`。左侧导航按实验顺序排列，顶栏的指示灯显示板子、示波器和后台任务的状态，底部可展开 Console 查看完整日志。
 
 | 页面 | 内容 |
 | ---- | ---- |
-| **Connection** | 串口列表：标出推荐接口；Digilent 板的 `…0` 是 JTAG 通道，会被标注出来。连接和断开不阻塞，可随时断开，可开启自动重连。链路自检中的最后一项显示当前 bitstream 是否支持 `0x05` 完成通知。示波器部分可以搜索 VISA 仪器（点击一行即填入 IP），也可以把设置存为 `config.py` 的默认值 |
-| **Test Vectors** | 生成 CPA（valid / invalid / structured）或 TVLA（fixed vs random）向量集。可以逐行查看 c / m / K（支持复制），导出 csv / json / dk / ek，用软件 Decaps 复核，或在板上跑前 N 条，核对 K 和恒定周期。向量集可以命名、加标签（见下文“标签与删除”），可以删除到回收站；删除前会提示有几个 campaign 用过它——这些 campaign 不受影响，因为每个 campaign 文件自带密文、期望 K 和种子 |
+| **Connection** | 先选板子：SAKURA-X（USB FIFO，自动配对 FT2232H A/B 通道，Connect 时逐步显示检查结果）或 Arty（UART）。串口列表：标出推荐接口；Digilent 板的 `…0` 是 JTAG 通道，会被标注出来。连接和断开不阻塞，可随时断开，可开启自动重连。链路自检中的最后一项显示当前 bitstream 是否支持 `0x05` 完成通知。示波器部分可以搜索 VISA 仪器（点击一行即填入 IP），也可以把设置存为 `config.py` 的默认值 |
+| **Test Vectors** | 生成 CPA（valid / invalid / pc-oracle）或 TVLA（fixed vs random）向量集。可以逐行查看 c / m / K（支持复制），导出 csv / json / dk / ek，用软件 Decaps 复核，或在板上跑前 N 条，核对 K 和恒定周期。向量集可以命名、加标签（见下文“标签与删除”），可以移到回收站（可撤销）——用过它的 campaign 不受影响，因为每个 campaign 文件自带密文、期望 K 和种子 |
 | **Acquisition** | 开始前会列出检查项（板子、示波器、向量集）。采集时实时显示最新 trace、均值和 fixed−random 差值，以及速度和剩余时间；可随时停止，文件可以续采。另有 Setup capture：用一次性向量抓一条波形，用来调触发、量程和时基；*Check trigger* 检查示波器只在 Decaps 开始时触发（无运算时不触发、Decaps 时触发、波形覆盖全部 BMUL 窗口），结果也显示在检查项里 |
 | **Trace Library** | 所有 campaign 的列表，可搜索、按模式和状态筛选、排序。详情页显示 K 正确率、CYCLE_COUNT 分布、trace 是否覆盖全部 BMUL 窗口、来源信息（向量集、种子、板子、示波器），可以命名、写备注、加标签。波形查看器可以按序号、类别或指定索引叠加 trace，并显示均值 ± σ 带。支持导出 .hdf5 和 .npz 片段。回收站里可以恢复或永久删除；永久删除时，由该 campaign 生成的分析报告也一起删除 |
 | **Analysis** | 顶部选 campaign 和已保存的报告。*New analysis* 打开配置面板：1 假设（`hw_product_mod` / `hw_product_raw`，显示公式、寄存器和发生的周期）、2 攻击什么（哪几个多项式、每个多项式前几个系数、在整个 BMUL 窗口里找，还是只看 RTL 预测的周期附近 ± N 个周期）、3 打分（盲攻击 / 用 campaign 的真实密钥给猜测排名 / dk 文件）、4 运行。CPA 报告有四个标签：**Overview**（一行一个系数的表：最佳猜测、峰值 \|ρ\|、是噪声底的几倍、领先第二名多少、峰值位置、与预测周期的偏差、4 个窗口里的稳定性投票；下方是“峰值是真的吗”条形图和“峰值落在哪”直方图）、**Coefficient**（单个系数的五张图：相关系数随时间、3329 个候选各自的峰值、随 trace 数的收敛、top-10 表、候选×时间热图，← → ↑ ↓ 切换系数）、**Compare**（同一个 campaign 的全部 CPA 报告对比）、**Details**。TVLA 有四个标签：\|t\| 曲线（可一键缩放到各 BMUL 窗口，点击图中任意位置读取该采样点）、类均值、检测曲线、Details。报告保存在 `data/analysis/`；旧模型目录生成的旧报告仍能列出，但需要重新运行 |
@@ -53,8 +53,8 @@ GUI 和下面的命令行工具调用的是同一套函数，所以结果一致�
 Test Vectors 和 Trace Library 两页的管理方式相同：
 
 - **标签**：在详情里输入，回车或逗号确认，退格删除最后一个，也可以从已有标签中选。每个对象最多 16 个，每个最长 32 个字符，大小写不同算同一个。列表中点击标签即按该标签筛选；工具栏的标签下拉框列出所有标签和数量；搜索框也会匹配标签。campaign 的标签存在 HDF5 元数据里，向量集的名称和标签存在旁边的 `<set>.meta.json` 里。
-- **批量操作**：勾选多行（表头的勾选框选中当前筛选结果的全部行），上方会出现操作栏：*Tags…* 批量加减标签，*Move to trash* 移入回收站。正在采集的 campaign 不能被改动。
-- **删除分两步**：先移入回收站（`data/traces/.trash/`、`data/vectors/.trash/`），名称、备注、标签随文件一起移动，可以恢复。在回收站视图中可以 *Delete permanently* 或 *Empty trash*，这一步不可撤销。永久删除 campaign 时，从它生成的分析报告（.json 和 .csv）也一起删除；删除向量集不影响已采集的 campaign，而且用同样的设置（用途、密文类型、数量）和种子可以重新生成完全相同的向量集。
+- **批量操作**：勾选多行（Shift+点击选范围，Ctrl/⌘+点击加一行，表头勾选框或 Ctrl/⌘+A 选当前筛选结果的全部行），上方会出现操作栏：*Tags…* 批量加减标签，*Move to trash* 移入回收站。下方的 *Move to trash* / *Restore* / *Delete permanently* 按钮也作用于勾选的行。Del 键移到回收站，Esc 取消勾选。正在采集的 campaign 不能被改动。
+- **删除分两步**：先移入回收站（`data/traces/.trash/`、`data/vectors/.trash/`），不需要确认，提示框里的 *Undo* 可以撤销；名称、备注、标签随文件一起移动，可以恢复。在回收站视图中可以 *Delete permanently* 或 *Empty trash*，这一步不可撤销。永久删除 campaign 时，从它生成的分析报告（.json 和 .csv）也一起删除；删除向量集不影响已采集的 campaign，而且用同样的设置（用途、密文类型、数量）和种子可以重新生成完全相同的向量集。
 
 ---
 
@@ -76,7 +76,7 @@ cd cpa_toolkit
 P="uv run python"
 
 # 测试向量
-$P testvectors.py gen --mode cpa -n 20000 --strategy valid       # 也可选 invalid / structured --poly 0 --pair 5
+$P testvectors.py gen --mode cpa -n 20000 --strategy valid       # 也可选 invalid / pc-oracle
 $P testvectors.py gen --mode tvla -n 20000                       # 加 --invalid-random 则 random 类为随机字节
 $P testvectors.py list
 $P testvectors.py verify ../data/vectors/<set>.npz
@@ -112,7 +112,7 @@ CPA 的密文策略（`--strategy`）：
 | ---- | ---- |
 | `valid`（默认） | 每条都是一次全新的、合法的 FIPS 203 封装 |
 | `invalid` | 随机字节当密文，走隐式拒绝路径（BaseMul 照样执行） |
-| `structured` | 只让一个 BaseMul 对（`--poly` / `--pair`）的 `û` 非零，其余清零，提升该点的信噪比，见 `ATTACK_MODEL.md` 第 7 节 |
+| `pc-oracle` | 明文检查预言机的选择密文，用 `pc_oracle.py` 恢复密钥，见 `ATTACK_MODEL.md` 第 9 节 |
 
 TVLA 中，class 0 是同一条固定密文的重复（`m0 = SHA3-256("pqc-testkit tvla fixed m" ‖ seed)`），class 1 每次都是新封装（加 `--invalid-random` 时为随机字节）。两类以确定的乱序交替出现。
 
@@ -185,7 +185,6 @@ python scripts/sim/register_leakage.py      # 哪些触发器携带数据相关�
 4. **同一对系数共用一个周期**：搭档系数是算法噪声，所以 `hw_product_*` 每个系数需要的 trace 数比单个乘法器的教科书估计多。
 5. **换一次固定密钥或种子，结果会变。这是预期行为，不是故障。** 要评估是否安全，应当用多个不同的种子分别采集，每个种子的报告在 Analysis 的 *Compare* 标签里并排。
 6. **这里只测了 Decaps 的三条 BMUL。** INTT 之后的减法、KeyGen 的 CBD/NTT、Encaps 的重加密路径都没有覆盖。
-7. **`structured` 策略构造出的密文不是合法密文**，核心照常走隐式拒绝路径，返回的 K 没有意义。它只用于提升目标 BaseMul 对的信噪比。在 KEM 场景下攻击者确实可以发送任意密文，所以这仍然是合理的威胁模型。
 
 **结论应该这样写**：“在 N 条 trace、这个窗口、这个模型下，CPA [能 / 不能] 以 <rank-1 比例> 的成功率恢复密钥系数。”不要笼统地说“硬件安全”或“硬件不安全”。
 

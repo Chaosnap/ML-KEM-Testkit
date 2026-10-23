@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cpa_toolkit"))
 import uart_target as T
-from sakura_shell import PREFIX, ShellLink, ShellTarget, INPUT_READY
+from sakura_x import PREFIX, ShellLink, ShellTarget, INPUT_READY, device_of
 
 COMMANDS = ["RESET", "LOAD_DK", "LOAD_CT", "START", "READ_SS", "INFO", "CHECK", "SESSION"]
 
@@ -65,9 +65,8 @@ def execute(target, command, path=None):
 def main():
     """Open one board session and dispatch explicitly requested commands."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", help="Channel A device or sakura-shell:<device>")
+    parser.add_argument("--port", help="Channel A device or sakura-x:<device>")
     parser.add_argument("--list", action="store_true", help="list ports without opening hardware")
-    parser.add_argument("--hard", action="store_true", help="kept for old scripts: every session now starts with an RTS reset")
     parser.add_argument("--quiet-ms", type=float, default=20, help="START quiet tail after completion")
     parser.add_argument("command", nargs="?", choices=COMMANDS)
     parser.add_argument("file", nargs="?", type=Path, help="binary DK/CT input, or READ_SS output")
@@ -78,7 +77,7 @@ def main():
         return 0
     if not args.port or not args.command:
         parser.error("--port and a command are required (or use --list)")
-    port = args.port if args.port.startswith(PREFIX) else PREFIX + args.port
+    port = PREFIX + device_of(args.port)
     link = ShellLink(port)
     target = ShellTarget(link)
     try:

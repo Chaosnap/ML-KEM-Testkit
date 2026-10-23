@@ -20,8 +20,7 @@ Kinds (``mode`` / ``strategy``):
 
 - CPA ``valid``      fresh FIPS 203 encapsulations of random messages
 - CPA ``invalid``    uniformly random bytes as ciphertext (implicit rejection)
-- CPA ``structured`` ``mlkem_ref.structured_ciphertext``: u_hat zero except one
-                     BaseMul pair (isolates one pair for the leakage model)
+- CPA ``pc-oracle``  chosen ciphertexts for the plaintext-checking oracle (pc_oracle.py)
 - TVLA               half fixed (one ciphertext, repeated), half random
                      (valid encapsulations, or random bytes with
                      ``invalid_random``), shuffled
@@ -58,15 +57,9 @@ GENERATOR = "cpa_toolkit.testvectors/1 (FIPS 203, deterministic from seed)"
 STRATEGIES = {
     "valid": "fresh FIPS 203 encapsulations of random messages (accept path)",
     "invalid": "uniformly random bytes as ciphertext (implicit-rejection path)",
-    "structured": "u_hat zero except one BaseMul pair -- BROKEN, see note below (needs poly 0-2, pair 0-127)",
     "pc-oracle": "chosen ciphertexts that recover the key by a plaintext-checking oracle (pc_oracle.py)",
 }
-# NOTE on "structured": it does NOT isolate one pair. structured_ciphertext compresses a
-# time-domain polynomial at 10 bits; the small rounding error becomes a uniform O(q) error after
-# the core's NTT (a root of unity mod q destroys smallness), so every other coefficient of the
-# targeted polynomial comes back ~random and the other two polynomials' u_hat are exactly zero --
-# which leaves 512 of 768 key coefficients with no leakage for ANY model. Use "valid" for CPA on
-# the whole key, or "pc-oracle" for a working key recovery. Kept only so old campaigns still load.
+# Sets made with the removed "structured" strategy still load and list (their meta keeps it).
 _CHUNK = 256  # ciphertexts per vectorised batch (progress granularity)
 
 
@@ -173,7 +166,7 @@ def _encapsulate(ek: bytes, ms: list[bytes], a_hat, progress) -> tuple[np.ndarra
     return keys, cts
 
 
-def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int = 0, pair: int = 0,
+def generate(mode: str, n: int, seed: bytes, strategy: str = "valid",
              invalid_random: bool = False, progress_cb=None) -> VectorSet:
     """Build a vector set. ``progress_cb(done, total, message)`` is optional."""
     if mode not in ("cpa", "tvla"):
@@ -182,8 +175,6 @@ def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int 
         raise ValueError("strategy must be one of %s" % ", ".join(STRATEGIES))
     if n < (2 if mode == "tvla" else 1):
         raise ValueError("n must be >= %d" % (2 if mode == "tvla" else 1))
-    if not 0 <= poly < R.K or not 0 <= pair < 128:
-        raise ValueError("poly must be 0..2 and pair 0..127")
     report = progress_cb or (lambda done, total, msg: None)
     s64 = seed64(seed)
     rng = _rng(seed)
@@ -209,12 +200,8 @@ def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int 
         rng.shuffle(queries)
         ct = np.stack([np.frombuffer(queries[i % len(queries)]["ct"], dtype=np.uint8) for i in range(n)])
         k, valid = _expected_keys(dk, ct, a_hat, lambda d: report(d, n, "computing expected K"))
-    elif mode == "cpa":
-        if strategy == "invalid":
-            ct = rng.integers(0, 256, size=(n, R.CT_LEN), dtype=np.uint8)
-        else:
-            ct = np.stack([np.frombuffer(R.structured_ciphertext(poly, pair, rng), dtype=np.uint8)
-                           for _ in range(n)])
+    elif mode == "cpa":                                   # invalid
+        ct = rng.integers(0, 256, size=(n, R.CT_LEN), dtype=np.uint8)
         k, valid = _expected_keys(dk, ct, a_hat, lambda d: report(d, n, "computing expected K"))
     else:
         n_fixed = n // 2
@@ -245,8 +232,6 @@ def generate(mode: str, n: int, seed: bytes, strategy: str = "valid", poly: int 
         "id": "%s_%s_%s_n%d" % (time.strftime("%Y%m%d_%H%M%S", time.localtime(created)), mode,
                                 label, n),
         "mode": mode, "strategy": strategy if mode == "cpa" else label,
-        "poly": poly if strategy == "structured" else None,
-        "pair": pair if strategy == "structured" else None,
         "invalid_random": bool(invalid_random) if mode == "tvla" else None,
         "n": n, "seed": seed.hex(), "created_unix": created, "generator": GENERATOR,
         "dk_sha3_256": hashlib.sha3_256(dk).hexdigest(),

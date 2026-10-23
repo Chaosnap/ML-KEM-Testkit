@@ -36,8 +36,7 @@
 # From the Vivado GUI Tcl console (no -tclargs there):
 #   source <repo>/scripts/vivado/program_sakura_x.tcl
 # programs the bitstream of the open SAKURA-X project's impl_1 run, or else
-# <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit, falling back to
-# <repo>/firmware/sakura_x/sakura_x_top.bit on a fresh clone. To choose another
+# <repo>/build/vivado/sakura-x_mlkem/.../sakura_x_top.bit. To choose another
 # file, cable or JTAG clock, set these before sourcing:
 #   set sakura_bit /path/to/file.bit ; set sakura_xvc host:port ; set sakura_jtag_hz 3000000
 # The Hardware Manager is left open afterwards. `source -notrace` hides the echo of every line.
@@ -64,9 +63,7 @@ proc default_bitstream {repo_root} {
     }
     # 2. where build_sakura_x.tcl puts it
     set built [file join $repo_root build vivado sakura-x_mlkem pqc_mlkem_sakura_x.runs impl_1 sakura_x_top.bit]
-    if {[file isfile $built]} { return $built }
-    # 3. portable prebuilt image tracked in Git (no Vivado build required)
-    return [file join $repo_root firmware sakura_x sakura_x_top.bit]
+    return $built
 }
 
 if {$nargs >= 1} {
@@ -165,7 +162,7 @@ puts "DONE pin: $done"
 if {$done ne "1"} {
     fail "DONE did not go high after programming -- the bitstream may be for another part"
 }
-puts "Programming complete. LED10 should be lit (MMCM locked), LED4 blinking (heartbeat)."
+puts "Programming complete. LED10 should be lit (clocks locked, reset released), LED1 blinking (heartbeat)."
 puts "RESULT: OK -- Kintex-7 configured with [file tail $bitstream] (DONE = 1)"
 flush stdout
 # Nothing is closed here: batch mode exits Vivado after the script anyway, and in the GUI

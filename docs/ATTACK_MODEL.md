@@ -320,7 +320,9 @@ range(256)` 的双重循环）。
   ~281+2×`TRIGGER_SLACK_CYCLES` 个采样点再做相关，不用整条 trace——省计算量，也
   避免窗口外其他运算（NTT、Keccak）的翻转稀释相关系数。
 
-### 7.1 结构化选择密文（`--strategy structured`）
+### 7.1 结构化选择密文（`--strategy structured`，已删除）
+
+> 2026-10-23：这个策略已从 `testvectors` 删除（原因见 9.6 节）。本节保留原始思路作记录。
 
 CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace——经典的"模板攻击"思路：
 让除了目标 BaseMul 对以外的一切都不贡献能量。`mlkem_ref.py: structured_ciphertext
@@ -430,7 +432,7 @@ CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 
 - `cpa_attack.py` 会检测"这个系数的假设根本不随猜测/trace 变化"（`informative`），把它们单独计数并从统计里剔除，
   CLI/报告明确写出"本次采集有 N 个系数不含密钥信息——是密文的问题，不是攻击"（而不是打印一个看起来像失败的随机 rank）；
 - `pipe_*` 的周期偏移搜索窗口放宽到 `−12..12`，并在最优偏移落在边界时告警（你那次 `−6` 正好railed 在旧窗口边缘）；
-- `testvectors` 的 `structured` 标注为 BROKEN 仅为兼容旧文件，CPA 请用 `valid`（覆盖整条密钥），密钥恢复用 `pc-oracle`。
+- `testvectors` 的 `structured` 已于 2026-10-23 删除（旧文件仍能读取）。CPA 请用 `valid`（覆盖整条密钥），密钥恢复用 `pc-oracle`。
 
 ## 10. 文件索引
 

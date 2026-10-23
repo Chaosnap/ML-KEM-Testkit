@@ -1,204 +1,176 @@
-// sakura_x_top.sv - Board-level wrapper for SAKURA-X (SASEBO-GIII), main FPGA
-//
-// The ML-KEM-768 core runs in the board's cryptographic FPGA, the Kintex-7
-// XC7K160T-1FBG676C (U11). Clocking, resets and pins only; everything else is
-// hdl/core/mlkem_uart_system.sv (UART -> uart_axi_bridge -> axil_cdc ->
-// pqc_mlkem_top, trigger, LEDs), exactly as on the Arty boards. Pin
-// citations: constraints.xdc (SASEBO-GIII Specification v1.1, Tables 13-20,
-// cross-checked against AMD's xc7k160tfbg676 package file).
-//
-// Host link: the board's own USB port (CN15, FT2232H channel A) through the
-// Spartan-6 control FPGA running its FACTORY bitstream (sasebo_giii_ctrl,
-// AIST). That bitstream turns USB bytes into accesses on the inter-FPGA local
-// bus; sakura_lbus_bridge turns those back into the byte stream of the host
-// protocol (docs/UART_PROTOCOL.md), which reaches mlkem_uart_system over a
-// internal serial line at BAUD_RATE. The host opens the port as "sakura:<device>"
-// (cpa_toolkit/sakura_lbus.py). hdl/core/ is unchanged.
-//
-// Optional second link: an external 2.5 V USB-UART adapter on the Kintex-7
-// GPIO header CN8 (pins 1/2) still works -- both receive lines are ANDed
-// (idle high; CN8.1 has a pull-up) and the reply goes to both. Use one link
-// at a time.
-//
-//   !! CN8 is in a 2.5 V bank (HR, VCCO = 2.5 V). An adapter there must use
-//   !! 2.5 V I/O; 3.3 V exceeds the pin's absolute maximum (VCCO + 0.55 V).
-//   !! CN8 pin 14 is VIN, not logic.
-//
-// Clocks:
-//   clk200   200 MHz differential oscillator U16 (K_CLK_OSC1, pins AA3/AA2).
-//   clk_core 206.25 MHz = 200 MHz / 1 * 4.125 / 4 (VCO 825 MHz): the whole
-//            ML-KEM core; equals cpa_toolkit/config.py's CORE_MHZ, as on the
-//            Arty Z7, so the host's cycle <-> time conversion is unchanged.
-//   clk      103.125 MHz = VCO / 8: UART, bridge, LEDs. axil_cdc crosses the
-//            AXI-Lite bus between the two (they are treated as asynchronous).
-//
-// Pins (constraints.xdc):
-//   - local bus to the Spartan-6 (lbus_*, pins from AIST's pin_sasebo_giii_k7.ucf)
-//   - J8 osc_en_b = 1 (K_CLK_INH_B: keep both 200 MHz oscillators running,
-//     AES reference uses the local-bus clock and disables these oscillators)
-//   - CN8.1 (D19) uart_rxd  FPGA input  <- optional adapter TXD
-//   - CN8.2 (N17) uart_txd  FPGA output -> optional adapter RXD
-//   - CN8.3 (N16) trig_out  scope trigger = STATUS.busy (2.5 V logic: trigger
-//                           level about 1.25 V); GND on CN8.11 or CN8.13
-//   - LED1-LED10 (led[0..9]), see the mapping below
-//   - SW4 (L23) reset push switch, pressed = high (schematic p.54, R212 pull-down)
-//
-// LEDs (status_leds.sv with N_RGB = 2; SAKURA-X has no RGB LEDs, so each
-// colour channel of the two "RGB" indicators gets its own LED):
-//   LED1-LED4  activity / done / error / heartbeat (led[3:0] of status_leds)
-//   LED5       in reset: SW4 held or the core clock not locked (RGB 0 red)
-//   LED6       running, dim (RGB 0 green)
-//   LED7       host link: flash per reply frame (RGB 1 blue)
-//   LED8       host link: rejected frame, 0.5 s (RGB 1 red)
-//   LED9       0x05 completion notice flash (RGB 1 green)
-//   LED10      MMCM locked (static; dark = reset or unlocked clock -- check SW4/SW3.7)
-// Like on the Arty boards, nothing here switches while the core is busy.
-//
-// Build:
-//   vivado -mode batch -source scripts/vivado/build_sakura_x.tcl
-// Program (JTAG on CN5):
-//   vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bit> [xvc-url]
-
-module sakura_x_top #(
-    parameter int CLK_FREQ       = 103_125_000,   // clk: MMCM CLKOUT1
-    parameter int BAUD_RATE      = 115200,
-    parameter bit BTN_ACTIVE_LOW = 1'b0,          // SW4: pressed = 1, released = 0
-    parameter bit LED_ACTIVE_LOW = 1'b0           // LED1-LED10: 1 = lit
-) (
-    input  logic       clk200_p,      // 200 MHz oscillator U16, differential.
-    input  logic       clk200_n,
-    input  logic       pushsw,        // SW4 (K_PUSHSW): reset.
-
-    // Local bus from the Spartan-6 (board USB, see above).
-    input  logic [15:0] lbus_di_a,
-    input  logic        lbus_wrn,
-    input  logic        lbus_rdn,
-    output logic [15:0] lbus_do,
-    output logic        osc_en_b,     // J8, K_CLK_INH_B: 1 = oscillators on.
-
-    // Optional external 2.5 V USB-UART adapter on CN8 (see above).
-    input  logic       uart_rxd,      // CN8.1, FPGA input.
-    output logic       uart_txd,      // CN8.2, FPGA output.
-
-    // Oscilloscope trigger (CN8.3) = STATUS.busy.
-    output logic       trig_out,
-
-    // User LEDs LED1-LED10 of the Kintex-7.
+// SPDX-License-Identifier: MIT
+// Kintex-7 ML-KEM top for the pinned sakura-x-shell Spartan-6 controller.
+// Native parallel FIFO bridge, no UART serialization in the Kintex datapath.
+module sakura_x_top (
+    input logic clk200_p, clk200_n, pushsw,
+    input logic bus_clk, i_bus_reset_n,
+    input logic [31:0] i_common,
+    input logic i_addr_valid, i_write_enable, i_write_data_valid, i_read_data_ready,
+    output logic [31:0] o_read_data,
+    output logic o_addr_ready, o_write_data_ready, o_read_data_valid,
+    output logic osc_en_b, trig_out,
     output logic [9:0] led
 );
-
-    // =========================================================================
-    // Clock and reset
-    // =========================================================================
-    logic clk200;
-    IBUFDS u_ibufds (.I(clk200_p), .IB(clk200_n), .O(clk200));
-
-    // VCO = 200 MHz / 1 * 4.125 = 825 MHz (Kintex-7 -1: 600-1200 MHz);
-    // CLKOUT0 = 825 / 4 = 206.25 MHz, CLKOUT1 = 825 / 8 = 103.125 MHz.
-    logic clk, clk_mmcm, clk_core, clk_core_mmcm, mmcm_fb, mmcm_locked;
-    logic btn;
-    assign btn = BTN_ACTIVE_LOW ? !pushsw : pushsw;
-
+    logic clk200, clk, clk_core, core_raw, fb_raw, fb, locked;
+    logic bus_clk_in, bus_raw, bus_fb_raw, bus_fb, bus_locked;
+    IBUFDS u_osc (.I(clk200_p), .IB(clk200_n), .O(clk200));
+    // Deskew the forwarded clock against the clock at the input pin. A direct
+    // IBUF -> BUFG left ~4.9 ns of uncompensated insertion delay on the routed
+    // K7 -> S6 paths, which only have half a 50 MHz cycle for launch/capture.
+    // The feedback BUFG is essential: do not bypass it or put a BUFG before
+    // this MMCM. Input and output remain 50 MHz; VCO = 50 * 20 = 1000 MHz.
+    IBUF u_bus_in (.I(bus_clk), .O(bus_clk_in));
     MMCME2_BASE #(
-        .CLKIN1_PERIOD    (5.000),
-        .DIVCLK_DIVIDE    (1),
-        .CLKFBOUT_MULT_F  (4.125),
-        .CLKOUT0_DIVIDE_F (4.0),
-        .CLKOUT1_DIVIDE   (8)
+        .CLKIN1_PERIOD(20.0), .DIVCLK_DIVIDE(1),
+        .CLKFBOUT_MULT_F(20.0), .CLKOUT0_DIVIDE_F(20.0),
+        .CLKFBOUT_PHASE(0.0), .CLKOUT0_PHASE(0.0)
+    ) u_bus_mmcm (
+        .CLKIN1(bus_clk_in), .CLKFBIN(bus_fb), .CLKFBOUT(bus_fb_raw),
+        .CLKOUT0(bus_raw), .LOCKED(bus_locked), .RST(pushsw), .PWRDWN(1'b0),
+        .CLKFBOUTB(), .CLKOUT0B(), .CLKOUT1(), .CLKOUT1B(), .CLKOUT2(),
+        .CLKOUT2B(), .CLKOUT3(), .CLKOUT3B(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6()
+    );
+    BUFG u_bus_fb (.I(bus_fb_raw), .O(bus_fb));
+    BUFG u_bus (.I(bus_raw), .O(clk));
+    MMCME2_BASE #(
+        .CLKIN1_PERIOD(5.0), .DIVCLK_DIVIDE(1),
+        .CLKFBOUT_MULT_F(4.125), .CLKOUT0_DIVIDE_F(4.0)
     ) u_mmcm (
-        .CLKIN1   (clk200),
-        .CLKFBIN  (mmcm_fb),
-        .CLKFBOUT (mmcm_fb),
-        .CLKOUT0  (clk_core_mmcm),
-        .CLKOUT1  (clk_mmcm),
-        .LOCKED   (mmcm_locked),
-        .RST      (btn),
-        .PWRDWN   (1'b0),
-        .CLKFBOUTB (), .CLKOUT0B (), .CLKOUT1B (), .CLKOUT2 (), .CLKOUT2B (),
-        .CLKOUT3 (), .CLKOUT3B (), .CLKOUT4 (), .CLKOUT5 (), .CLKOUT6 ()
+        .CLKIN1(clk200), .CLKFBIN(fb), .CLKFBOUT(fb_raw),
+        .CLKOUT0(core_raw), .LOCKED(locked), .RST(pushsw), .PWRDWN(1'b0),
+        .CLKFBOUTB(), .CLKOUT0B(), .CLKOUT1(), .CLKOUT1B(), .CLKOUT2(),
+        .CLKOUT2B(), .CLKOUT3(), .CLKOUT3B(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6()
     );
-
-    BUFG u_bufg_core (.I(clk_core_mmcm), .O(clk_core));
-    BUFG u_bufg      (.I(clk_mmcm),      .O(clk));
-
-    // Both domains come from the MMCM, so both are held in reset while it is
-    // unlocked or SW4 is pressed: asserted asynchronously, released
-    // synchronously to each clock.
-    logic arst;
-    assign arst = btn || !mmcm_locked;
-
-    logic       core_rst_n;
-    logic [3:0] core_rst_sync;
-    always_ff @(posedge clk_core or posedge arst) begin
-        if (arst)
-            core_rst_sync <= '0;
-        else
-            core_rst_sync <= {core_rst_sync[2:0], 1'b1};
-    end
-    assign core_rst_n = core_rst_sync[3];
-
-    logic       rst_n;
-    logic [3:0] rst_sync;
-    always_ff @(posedge clk or posedge arst) begin
-        if (arst)
-            rst_sync <= '0;
-        else
-            rst_sync <= {rst_sync[2:0], 1'b1};
-    end
-    assign rst_n = rst_sync[3];
-
-    // =========================================================================
-    // UART, bridge, clock crossing, ML-KEM core, trigger and LEDs
-    // =========================================================================
+    BUFG u_fb (.I(fb_raw), .O(fb));
+    BUFG u_core_clk (.I(core_raw), .O(clk_core));
     assign osc_en_b = 1'b1;
+    // An RTS/soft reset leaves both clock managers running. Loss of either
+    // lock resets both sides of the AXI CDC; each side releases synchronously.
+    wire arst = !locked || !bus_locked || !i_bus_reset_n || pushsw;
+    (* ASYNC_REG = "TRUE" *) logic [3:0] reset_bus, reset_core;
+    always_ff @(posedge clk or posedge arst)
+        if (arst) reset_bus <= 0;
+        else reset_bus <= {reset_bus[2:0], 1'b1};
+    always_ff @(posedge clk_core or posedge arst)
+        if (arst) reset_core <= 0;
+        else reset_core <= {reset_core[2:0], 1'b1};
+    wire rst_n = reset_bus[3], core_rst_n = reset_core[3];
 
-    // Board USB: local bus <-> byte stream. The two receive lines are ANDed
-    // (both idle high); the system's reply goes to both links.
-    logic lbus_ser_tx, sys_rxd, sys_txd;
+    // Capture all S6 signals together in ILOGIC, then use a full cycle inside
+    // the bridge. The upstream controller holds common/valid until ACK. Its
+    // one-cycle read ACK is also captured here, so it cannot be skipped by the
+    // added pipeline stage. These are synchronous I/O registers, not CDC FFs.
+    (* IOB = "TRUE" *) logic [31:0] common_q;
+    (* IOB = "TRUE" *) logic addr_valid_q, write_enable_q;
+    (* IOB = "TRUE" *) logic write_valid_q, read_ready_q;
+    // Register data and its valid together in OLOGIC. No FSM decode or fabric
+    // route remains after the output FF. This adds one bus cycle of response
+    // latency; the four-phase handshake waits for the peer to drop its valid.
+    (* IOB = "TRUE" *) logic [31:0] read_data_q;
+    (* IOB = "TRUE" *) logic addr_ready_q, write_ready_q, read_valid_q;
+    logic [31:0] bridge_read_data;
+    logic bridge_addr_ready, bridge_write_ready, bridge_read_valid;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            common_q <= 0;
+            addr_valid_q <= 0;
+            write_enable_q <= 0;
+            write_valid_q <= 0;
+            read_ready_q <= 0;
+            read_data_q <= 0;
+            addr_ready_q <= 0;
+            write_ready_q <= 0;
+            read_valid_q <= 0;
+        end else begin
+            common_q <= i_common;
+            addr_valid_q <= i_addr_valid;
+            write_enable_q <= i_write_enable;
+            write_valid_q <= i_write_data_valid;
+            read_ready_q <= i_read_data_ready;
+            read_data_q <= bridge_read_data;
+            addr_ready_q <= bridge_addr_ready;
+            write_ready_q <= bridge_write_ready;
+            read_valid_q <= bridge_read_valid;
+        end
+    end
+    assign o_read_data = read_data_q;
+    assign o_addr_ready = addr_ready_q;
+    assign o_write_data_ready = write_ready_q;
+    assign o_read_data_valid = read_valid_q;
 
-    // Share the baud rate with u_sys and the optional CN8 UART.
-    sakura_lbus_bridge #(.CLK_FREQ (CLK_FREQ), .BAUD_RATE (BAUD_RATE)) u_lbus (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .lbus_di_a (lbus_di_a),
-        .lbus_wrn  (lbus_wrn),
-        .lbus_rdn  (lbus_rdn),
-        .lbus_do   (lbus_do),
-        .ser_tx    (lbus_ser_tx),
-        .ser_rx    (sys_txd)
+    logic [15:0] awaddr, araddr;
+    logic awvalid, awready, wvalid, wready, bvalid, bready;
+    logic arvalid, arready, rvalid, rready;
+    logic [31:0] wdata, rdata;
+    logic [3:0] wstrb;
+    logic [1:0] bresp, rresp;
+    logic status_busy, status_done, status_error, run_active;
+    logic [1:0] op_mode;
+
+    sakura_x_bridge u_bridge (
+        .clk(clk), .rst_n(rst_n),
+        .i_addr_valid(addr_valid_q), .i_write_enable(write_enable_q),
+        .i_write_data_valid(write_valid_q), .i_read_data_ready(read_ready_q),
+        .i_common(common_q), .o_read_data(bridge_read_data), .o_addr_ready(bridge_addr_ready),
+        .o_write_data_ready(bridge_write_ready), .o_read_data_valid(bridge_read_valid),
+        .core_busy(status_busy), .core_error(status_error), .run_active(run_active),
+        .m_axi_awaddr(awaddr), .m_axi_awvalid(awvalid), .m_axi_awready(awready),
+        .m_axi_wdata(wdata), .m_axi_wstrb(wstrb), .m_axi_wvalid(wvalid), .m_axi_wready(wready),
+        .m_axi_bresp(bresp), .m_axi_bvalid(bvalid), .m_axi_bready(bready),
+        .m_axi_araddr(araddr), .m_axi_arvalid(arvalid), .m_axi_arready(arready),
+        .m_axi_rdata(rdata), .m_axi_rresp(rresp), .m_axi_rvalid(rvalid), .m_axi_rready(rready)
+    );
+    logic [15:0] c_awaddr, c_araddr;
+    logic        c_awvalid, c_awready, c_wvalid, c_wready, c_bvalid, c_bready;
+    logic        c_arvalid, c_arready, c_rvalid, c_rready;
+    logic [31:0] c_wdata, c_rdata;
+    logic [3:0]  c_wstrb;
+    logic [1:0]  c_bresp, c_rresp;
+
+    axil_cdc #(.ADDR_WIDTH (16)) u_cdc (
+        .s_clk (clk), .s_rst_n (rst_n),
+        .s_axi_awaddr (awaddr), .s_axi_awvalid (awvalid), .s_axi_awready (awready),
+        .s_axi_wdata (wdata), .s_axi_wstrb (wstrb), .s_axi_wvalid (wvalid), .s_axi_wready (wready),
+        .s_axi_bresp (bresp), .s_axi_bvalid (bvalid), .s_axi_bready (bready),
+        .s_axi_araddr (araddr), .s_axi_arvalid (arvalid), .s_axi_arready (arready),
+        .s_axi_rdata (rdata), .s_axi_rresp (rresp), .s_axi_rvalid (rvalid), .s_axi_rready (rready),
+        .m_clk (clk_core), .m_rst_n (core_rst_n),
+        .m_axi_awaddr (c_awaddr), .m_axi_awvalid (c_awvalid), .m_axi_awready (c_awready),
+        .m_axi_wdata (c_wdata), .m_axi_wstrb (c_wstrb), .m_axi_wvalid (c_wvalid), .m_axi_wready (c_wready),
+        .m_axi_bresp (c_bresp), .m_axi_bvalid (c_bvalid), .m_axi_bready (c_bready),
+        .m_axi_araddr (c_araddr), .m_axi_arvalid (c_arvalid), .m_axi_arready (c_arready),
+        .m_axi_rdata (c_rdata), .m_axi_rresp (c_rresp), .m_axi_rvalid (c_rvalid), .m_axi_rready (c_rready)
     );
 
-    assign sys_rxd  = lbus_ser_tx & uart_rxd;
-    assign uart_txd = sys_txd;
-
-    logic [3:0] led_sys;
-    logic [1:0] rgb_r, rgb_g;
-    /* verilator lint_off UNUSEDSIGNAL */   // rgb_b[0]: see below
-    logic [1:0] rgb_b;
-    /* verilator lint_on UNUSEDSIGNAL */
-
-    mlkem_uart_system #(
-        .CLK_FREQ  (CLK_FREQ),
-        .BAUD_RATE (BAUD_RATE),
-        .N_RGB     (2)
-    ) u_sys (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .clk_core   (clk_core),
-        .core_rst_n (core_rst_n),
-        .in_reset   (arst),
-        .uart_rxd   (sys_rxd),
-        .uart_txd   (sys_txd),
-        .trig_out   (trig_out),
-        .led        (led_sys),
-        .rgb_r      (rgb_r),
-        .rgb_g      (rgb_g),
-        .rgb_b      (rgb_b)
+    pqc_mlkem_top #(.AXI_ADDR_WIDTH (16)) u_mlkem (
+        .clk (clk_core), .rst_n (core_rst_n),
+        .s_axi_awaddr (c_awaddr), .s_axi_awvalid (c_awvalid), .s_axi_awready (c_awready),
+        .s_axi_wdata (c_wdata), .s_axi_wstrb (c_wstrb), .s_axi_wvalid (c_wvalid), .s_axi_wready (c_wready),
+        .s_axi_bresp (c_bresp), .s_axi_bvalid (c_bvalid), .s_axi_bready (c_bready),
+        .s_axi_araddr (c_araddr), .s_axi_arvalid (c_arvalid), .s_axi_arready (c_arready),
+        .s_axi_rdata (c_rdata), .s_axi_rresp (c_rresp), .s_axi_rvalid (c_rvalid), .s_axi_rready (c_rready),
+        .irq (),
+        .o_busy (status_busy), .o_done (status_done), .o_error (status_error), .o_op_mode (op_mode)
     );
 
-    // rgb_b[0] (the power indicator's blue channel) is never lit.
-    logic [9:0] led_on;
-    assign led_on = {mmcm_locked, rgb_g[1], rgb_r[1], rgb_b[1], rgb_g[0], rgb_r[0], led_sys};
-    assign led    = LED_ACTIVE_LOW ? ~led_on : led_on;
-
+    assign trig_out = status_busy;
+    // Keep indicator activity outside the complete START / capture window.
+    (* ASYNC_REG = "TRUE" *) logic [1:0] done_sync, error_sync;
+    logic [25:0] heartbeat;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            done_sync <= 0;
+            error_sync <= 0;
+            heartbeat <= 0;
+            led <= 0;
+        end else begin
+            done_sync <= {done_sync[0], status_done};
+            error_sync <= {error_sync[0], status_error};
+            if (!run_active) begin
+                heartbeat <= heartbeat + 1;
+                // LED1 heartbeat, LED2 done, LED3 error, LED10 ready.
+                led <= {1'b1, 6'b0, error_sync[1], done_sync[1], heartbeat[25]};
+            end
+        end
+    end
 endmodule

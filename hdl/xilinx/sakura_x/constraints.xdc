@@ -1,146 +1,224 @@
-## SAKURA-X (SASEBO-GIII) XDC constraints for pqc_mlkem (top = sakura_x_top)
-## Main FPGA: Kintex-7 XC7K160T-1FBG676C (U11).
-##
-## Pin sources: "SASEBO-GIII Specification" v1.1 (AIST, 26 Apr 2013), Section 3.1
-## (Kintex-7 I/O assignments), Tables 13, 17, 19, 20, and Table 7 (CN8 pinout).
-## Every pin's bank / HR-HP type was checked against AMD's package file
-## xc7k160tfbg676pkg.txt. Banks 13-16 (CN8, LEDs, switches) are HR at 2.5 V;
-## bank 34 (oscillators) is HP at 1.5 V.
+# SASEBO-GIII controller (for FPGA cryptographic module)
+#  
+#  File name   : chip_sasebo_giii_ctrl.v
+#  Version     : 1.0
+#  Created     : APR/02/2012
+#  Last update : APR/25/2013
+#  Desgined by : Toshihiro Katashita
+#  
+#  
+#  Copyright (C) 2012, 2013 AIST
+#  
+#  By using this code, you agree to the following terms and conditions.
+#  
+#  This code is copyrighted by AIST ("us").
+#  
+#  Permission is hereby granted to copy, reproduce, redistribute or
+#  otherwise use this code as long as: there is no monetary profit gained
+#  specifically from the use or reproduction of this code, it is not sold,
+#  rented, traded or otherwise marketed, and this copyright notice is
+#  included prominently in any copy made.
+#  
+#  We shall not be liable for any damages, including without limitation
+#  direct, indirect, incidental, special or consequential damages arising
+#  from the use of this code.
+#  
+#  When you publish any results arising from the use of this code, we will
+#  appreciate it if you can cite our webpage.
+#  (http://www.risec.aist.go.jp/project/sasebo/)
 
-## -----------------------------------------------------------------------------
-## Clock: 200 MHz differential oscillator U16 (Table 13: K_CLK_OSC1_HSTL_P/N =
-## AA3/AA2, IO_L12P/N_T1_MRCC_34). U15 (K_CLK_OSC0, AB2/AC2, SRCC) is the other
-## 200 MHz oscillator; either works. LVDS input, no internal termination (the
-## same setting a public SASEBO-GIII design uses on these pins). Both
-## oscillators are enabled by SW3.7 = OFF (factory default, Table 12).
-## -----------------------------------------------------------------------------
-## Bank 34 also holds lbus_do (LVCMOS15), so its VCCO is 1.5 V: an LVDS INPUT is legal in an
-## HP bank at VCCO != 1.8 V only with the internal termination off (UG471) -- keep DIFF_TERM FALSE.
+# Parallel shell pin map derived from AIST / sakura-x-shell.
+# Original notices: third_party/sakura_x_shell/vivado/sakura-x-k7.xdc
+# and third_party/sakura_x_shell/AIST_NOTICE.txt.
+# Controller clock: pinned PLL RTL = 24 MHz * 25 / 12 = 50 MHz.
 set_property -dict {PACKAGE_PIN AA3 IOSTANDARD LVDS DIFF_TERM FALSE} [get_ports clk200_p]
 set_property -dict {PACKAGE_PIN AA2 IOSTANDARD LVDS DIFF_TERM FALSE} [get_ports clk200_n]
 create_clock -period 5.000 -name clk200 [get_ports clk200_p]
-
-## MMCM outputs: CLKOUT0 = 206.25 MHz core clock, CLKOUT1 = 103.125 MHz bridge
-## clock. They are related (2:1) but only meet through axil_cdc, whose
-## crossing values are held stable around toggle handshakes -- timed as
-## asynchronous, exactly like the Arty builds.
-set_clock_groups -asynchronous \
-    -group [get_clocks -of_objects [get_pins u_mmcm/CLKOUT1]] \
-    -group [get_clocks -of_objects [get_pins u_mmcm/CLKOUT0]]
-
-## -----------------------------------------------------------------------------
-## Reset: SW4, K_PUSHSW = L23 (Table 17; schematic p.54).
-## R212 pulls the signal to GND; pressing SW4 connects it to VCC2V5.
-## Active HIGH: sakura_x_top BTN_ACTIVE_LOW must default to 0.
-set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
-
-## -----------------------------------------------------------------------------
-## Local bus to the Spartan-6 control FPGA = host link over the board USB
-## (CN15). Pins copied from AIST's reference design for the factory Spartan-6
-## bitstream (AIST package, not in the repo: sasebo_giii_aes/pin_sasebo_giii_k7.ucf and the
-## matching sasebo_giii_ctrl/pin_sasebo_giii_sp6.ucf); they are the KS_HPIC /
-## KS_HRIC interconnects of spec Table 29. lbus_do is the only direction the
-## Kintex-7 drives. lbus_clkn (AB11, 3 MHz) and lbus_rstn (AA13) are not used:
-## the bridge samples the bus with its own clock.
-## Pull-ups on wrn/rdn keep the bus idle if the Spartan-6 is unconfigured.
-## -----------------------------------------------------------------------------
-set_property -dict {PACKAGE_PIN AD10 IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_wrn]
-set_property -dict {PACKAGE_PIN Y13  IOSTANDARD LVCMOS15 PULLUP TRUE} [get_ports lbus_rdn]
-## One line per pin: XDC is a restricted Tcl subset without loops (for / foreach are
-## rejected with [Designutils 20-1307] and the pins would stay unconstrained).
-## lbus_do: Kintex-7 -> Spartan-6 read data (1.5 V HP banks, KS_HPIC_*_P).
-set_property -dict {PACKAGE_PIN V4   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[0]}]
-set_property -dict {PACKAGE_PIN V2   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[1]}]
-set_property -dict {PACKAGE_PIN W1   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[2]}]
-set_property -dict {PACKAGE_PIN AB1  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[3]}]
-set_property -dict {PACKAGE_PIN Y3   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[4]}]
-set_property -dict {PACKAGE_PIN U7   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[5]}]
-set_property -dict {PACKAGE_PIN V3   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[6]}]
-set_property -dict {PACKAGE_PIN AF10 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[7]}]
-set_property -dict {PACKAGE_PIN AC13 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[8]}]
-set_property -dict {PACKAGE_PIN AE12 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[9]}]
-set_property -dict {PACKAGE_PIN U6   IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[10]}]
-set_property -dict {PACKAGE_PIN AE13 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[11]}]
-set_property -dict {PACKAGE_PIN AA10 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[12]}]
-set_property -dict {PACKAGE_PIN AB12 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[13]}]
-set_property -dict {PACKAGE_PIN AA4  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[14]}]
-set_property -dict {PACKAGE_PIN AE8  IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 4} [get_ports {lbus_do[15]}]
-## lbus_di_a: Spartan-6 -> Kintex-7 address / write data (2.5 V HR banks, KS_HRIC_*_P).
-set_property -dict {PACKAGE_PIN T22  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[0]}]
-set_property -dict {PACKAGE_PIN M24  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[1]}]
-set_property -dict {PACKAGE_PIN K25  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[2]}]
-set_property -dict {PACKAGE_PIN R26  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[3]}]
-set_property -dict {PACKAGE_PIN M25  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[4]}]
-set_property -dict {PACKAGE_PIN U17  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[5]}]
-set_property -dict {PACKAGE_PIN N26  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[6]}]
-set_property -dict {PACKAGE_PIN R16  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[7]}]
-set_property -dict {PACKAGE_PIN T20  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[8]}]
-set_property -dict {PACKAGE_PIN R22  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[9]}]
-set_property -dict {PACKAGE_PIN M21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[10]}]
-set_property -dict {PACKAGE_PIN T24  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[11]}]
-set_property -dict {PACKAGE_PIN P23  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[12]}]
-set_property -dict {PACKAGE_PIN N21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[13]}]
-set_property -dict {PACKAGE_PIN R21  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[14]}]
-set_property -dict {PACKAGE_PIN N18  IOSTANDARD LVCMOS25} [get_ports {lbus_di_a[15]}]
-
-## K_CLK_INH_B (Table 13): driven high = both 200 MHz oscillators enabled,
-## as in AIST's reference design (osc_en_b).
+create_clock -period 20.000 -name shell_bus [get_ports bus_clk]
 set_property -dict {PACKAGE_PIN J8 IOSTANDARD LVCMOS25 DRIVE 4 SLEW SLOW} [get_ports osc_en_b]
-
-## -----------------------------------------------------------------------------
-## Kintex-7 GPIO header CN8 (Table 7 pinout, Table 19 pins), 2.5 V:
-##   CN8.1  K_HEADER_0 = D19  uart_rxd  (optional adapter TXD; pull-up, so it
-##                                       idles high when nothing is connected)
-##   CN8.2  K_HEADER_1 = N17  uart_txd  (optional adapter RXD)
-##   CN8.3  K_HEADER_2 = N16  trig_out  (scope trigger = STATUS.busy)
-##   CN8.11 / CN8.13 GND,  CN8.12 2.5 V (adapter VCCIO),  CN8.14 VIN -- not a logic pin!
-## The adapter must drive 2.5 V logic: 3.3 V on an HR pin at VCCO = 2.5 V is
-## above the absolute maximum (VCCO + 0.55 V).
-## -----------------------------------------------------------------------------
-set_property -dict {PACKAGE_PIN D19 IOSTANDARD LVCMOS25 PULLUP TRUE} [get_ports uart_rxd]
-set_property -dict {PACKAGE_PIN N17 IOSTANDARD LVCMOS25} [get_ports uart_txd]
+set_property -dict {PACKAGE_PIN L23 IOSTANDARD LVCMOS25} [get_ports pushsw]
 set_property -dict {PACKAGE_PIN N16 IOSTANDARD LVCMOS25} [get_ports trig_out]
+set_property PACKAGE_PIN G20 [get_ports {led[0]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[0]}]
+set_property PACKAGE_PIN L19 [get_ports {led[1]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[1]}]
+set_property PACKAGE_PIN K18 [get_ports {led[2]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[2]}]
+set_property PACKAGE_PIN H19 [get_ports {led[3]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[3]}]
+set_property PACKAGE_PIN K15 [get_ports {led[4]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[4]}]
+set_property PACKAGE_PIN P16 [get_ports {led[5]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[5]}]
+set_property PACKAGE_PIN T19 [get_ports {led[6]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[6]}]
+set_property PACKAGE_PIN T18 [get_ports {led[7]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[7]}]
+set_property PACKAGE_PIN H12 [get_ports {led[8]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[8]}]
+set_property PACKAGE_PIN H11 [get_ports {led[9]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {led[9]}]
+set_property PACKAGE_PIN AB11 [get_ports bus_clk ]
+set_property IOSTANDARD LVCMOS15 [get_ports bus_clk ]
+set_property PACKAGE_PIN W4 [get_ports {i_bus_reset_n}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_bus_reset_n}]
+set_property PACKAGE_PIN V4 [get_ports {i_common[0]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[0]}]
+set_property PACKAGE_PIN V1 [get_ports {i_common[1]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[1]}]
+set_property PACKAGE_PIN V2 [get_ports {i_common[2]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[2]}]
+set_property PACKAGE_PIN Y1 [get_ports {i_common[3]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[3]}]
+set_property PACKAGE_PIN W1 [get_ports {i_common[4]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[4]}]
+set_property PACKAGE_PIN AC1 [get_ports {i_common[5]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[5]}]
+set_property PACKAGE_PIN AB1 [get_ports {i_common[6]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[6]}]
+set_property PACKAGE_PIN Y2 [get_ports {i_common[7]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[7]}]
+set_property PACKAGE_PIN Y3 [get_ports {i_common[8]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[8]}]
+set_property PACKAGE_PIN V6 [get_ports {i_common[9]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[9]}]
+set_property PACKAGE_PIN U7 [get_ports {i_common[10]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[10]}]
+set_property PACKAGE_PIN W3 [get_ports {i_common[11]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[11]}]
+set_property PACKAGE_PIN V3 [get_ports {i_common[12]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[12]}]
+set_property PACKAGE_PIN AF9 [get_ports {i_common[13]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[13]}]
+set_property PACKAGE_PIN AF10 [get_ports {i_common[14]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[14]}]
+set_property PACKAGE_PIN AD13 [get_ports {i_common[15]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[15]}]
+set_property PACKAGE_PIN AC13 [get_ports {i_common[16]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[16]}]
+set_property PACKAGE_PIN AF12 [get_ports {i_common[17]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[17]}]
+set_property PACKAGE_PIN AE12 [get_ports {i_common[18]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[18]}]
+set_property PACKAGE_PIN U5 [get_ports {i_common[19]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[19]}]
+set_property PACKAGE_PIN U6 [get_ports {i_common[20]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[20]}]
+set_property PACKAGE_PIN AF13 [get_ports {i_common[21]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[21]}]
+set_property PACKAGE_PIN AE13 [get_ports {i_common[22]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[22]}]
+set_property PACKAGE_PIN AB10 [get_ports {i_common[23]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[23]}]
+set_property PACKAGE_PIN AA10 [get_ports {i_common[24]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[24]}]
+set_property PACKAGE_PIN AC12 [get_ports {i_common[25]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[25]}]
+set_property PACKAGE_PIN AB12 [get_ports {i_common[26]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[26]}]
+set_property PACKAGE_PIN AB4 [get_ports {i_common[27]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[27]}]
+set_property PACKAGE_PIN AA4 [get_ports {i_common[28]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[28]}]
+set_property PACKAGE_PIN AF8 [get_ports {i_common[29]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[29]}]
+set_property PACKAGE_PIN AE8 [get_ports {i_common[30]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[30]}]
+set_property PACKAGE_PIN AE10 [get_ports {i_common[31]}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_common[31]}]
+set_property PACKAGE_PIN AD10 [get_ports {i_addr_valid}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_addr_valid}]
+set_property PACKAGE_PIN Y12 [get_ports {i_write_enable}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_write_enable}]
+set_property PACKAGE_PIN Y13 [get_ports {i_write_data_valid}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_write_data_valid}]
+set_property PACKAGE_PIN AA12 [get_ports {i_read_data_ready}]
+set_property IOSTANDARD LVCMOS15 [get_ports {i_read_data_ready}]
+set_property PACKAGE_PIN T23 [get_ports {o_read_data[0]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[0]}]
+set_property PACKAGE_PIN T22 [get_ports {o_read_data[1]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[1]}]
+set_property PACKAGE_PIN L24 [get_ports {o_read_data[2]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[2]}]
+set_property PACKAGE_PIN M24 [get_ports {o_read_data[3]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[3]}]
+set_property PACKAGE_PIN K26 [get_ports {o_read_data[4]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[4]}]
+set_property PACKAGE_PIN K25 [get_ports {o_read_data[5]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[5]}]
+set_property PACKAGE_PIN P26 [get_ports {o_read_data[6]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[6]}]
+set_property PACKAGE_PIN R26 [get_ports {o_read_data[7]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[7]}]
+set_property PACKAGE_PIN L25 [get_ports {o_read_data[8]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[8]}]
+set_property PACKAGE_PIN M25 [get_ports {o_read_data[9]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[9]}]
+set_property PACKAGE_PIN T17 [get_ports {o_read_data[10]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[10]}]
+set_property PACKAGE_PIN U17 [get_ports {o_read_data[11]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[11]}]
+set_property PACKAGE_PIN M26 [get_ports {o_read_data[12]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[12]}]
+set_property PACKAGE_PIN N26 [get_ports {o_read_data[13]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[13]}]
+set_property PACKAGE_PIN R17 [get_ports {o_read_data[14]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[14]}]
+set_property PACKAGE_PIN R16 [get_ports {o_read_data[15]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[15]}]
+set_property PACKAGE_PIN R20 [get_ports {o_read_data[16]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[16]}]
+set_property PACKAGE_PIN T20 [get_ports {o_read_data[17]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[17]}]
+set_property PACKAGE_PIN R23 [get_ports {o_read_data[18]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[18]}]
+set_property PACKAGE_PIN R22 [get_ports {o_read_data[19]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[19]}]
+set_property PACKAGE_PIN M22 [get_ports {o_read_data[20]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[20]}]
+set_property PACKAGE_PIN M21 [get_ports {o_read_data[21]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[21]}]
+set_property PACKAGE_PIN T25 [get_ports {o_read_data[22]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[22]}]
+set_property PACKAGE_PIN T24 [get_ports {o_read_data[23]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[23]}]
+set_property PACKAGE_PIN N23 [get_ports {o_read_data[24]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[24]}]
+set_property PACKAGE_PIN P23 [get_ports {o_read_data[25]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[25]}]
+set_property PACKAGE_PIN N22 [get_ports {o_read_data[26]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[26]}]
+set_property PACKAGE_PIN N21 [get_ports {o_read_data[27]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[27]}]
+set_property PACKAGE_PIN P21 [get_ports {o_read_data[28]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[28]}]
+set_property PACKAGE_PIN R21 [get_ports {o_read_data[29]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[29]}]
+set_property PACKAGE_PIN M19 [get_ports {o_read_data[30]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[30]}]
+set_property PACKAGE_PIN N18 [get_ports {o_read_data[31]}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data[31]}]
+set_property PACKAGE_PIN P18 [get_ports {o_addr_ready}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_addr_ready}]
+set_property PACKAGE_PIN R18 [get_ports {o_write_data_ready}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_write_data_ready}]
+set_property PACKAGE_PIN U20 [get_ports {o_read_data_valid}]
+set_property IOSTANDARD LVCMOS25 [get_ports {o_read_data_valid}]
 
-## -----------------------------------------------------------------------------
-## User LEDs LED1-LED10 (Table 20: K_LED_0..9), 2.5 V. Meaning: sakura_x_top.sv.
-## -----------------------------------------------------------------------------
-set_property -dict {PACKAGE_PIN G20 IOSTANDARD LVCMOS25} [get_ports {led[0]}]
-set_property -dict {PACKAGE_PIN L19 IOSTANDARD LVCMOS25} [get_ports {led[1]}]
-set_property -dict {PACKAGE_PIN K18 IOSTANDARD LVCMOS25} [get_ports {led[2]}]
-set_property -dict {PACKAGE_PIN H19 IOSTANDARD LVCMOS25} [get_ports {led[3]}]
-set_property -dict {PACKAGE_PIN K15 IOSTANDARD LVCMOS25} [get_ports {led[4]}]
-set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS25} [get_ports {led[5]}]
-set_property -dict {PACKAGE_PIN T19 IOSTANDARD LVCMOS25} [get_ports {led[6]}]
-set_property -dict {PACKAGE_PIN T18 IOSTANDARD LVCMOS25} [get_ports {led[7]}]
-set_property -dict {PACKAGE_PIN H12 IOSTANDARD LVCMOS25} [get_ports {led[8]}]
-set_property -dict {PACKAGE_PIN H11 IOSTANDARD LVCMOS25} [get_ports {led[9]}]
-
-## -----------------------------------------------------------------------------
-## Asynchronous inputs / slow outputs: no meaningful I/O timing relationship.
-## SW4 asserts reset asynchronously (release is synchronised in RTL);
-## uart_rxd goes through a 2-FF synchroniser in uart_rx.
-## -----------------------------------------------------------------------------
-set_false_path -from [get_ports pushsw]
-set_false_path -from [get_ports uart_rxd]
-set_false_path -to   [get_ports uart_txd]
-set_false_path -to   [get_ports {led[*]}]
-set_false_path -to   [get_ports trig_out]
-set_false_path -to   [get_ports osc_en_b]
-## Local bus: 3 MHz, asynchronous, synchronised in sakura_lbus_bridge; every
-## sample is taken >= 60 ns after the bus settled, lbus_do is read ~1 us after
-## it was set.
-set_false_path -from [get_ports {lbus_di_a[*] lbus_wrn lbus_rdn}]
-set_false_path -to   [get_ports {lbus_do[*]}]
-
-## -----------------------------------------------------------------------------
-## Configuration and bitstream
-## -----------------------------------------------------------------------------
-## Configuration pins (bank 0 / K_CONF_*) are 2.5 V on this board (Table 15).
+# S6 ODDR2 forwards an inverted clock: S6 data launch/capture = bus falling edge;
+# K7 I/O FF launch/capture = deskewed bus rising edge. Keep I/O delays referenced
+# to the incoming clock at the pin, not the generated clock after the MMCM.
+# The 10 ns half-cycle checks remain timed; no multicycle/false-path workaround.
+# Board budgets must still be checked against the actual S6 bitstream/board.
+set_input_delay -clock shell_bus -clock_fall -max 6.0 [get_ports {i_common[*] i_addr_valid i_write_enable i_write_data_valid i_read_data_ready}]
+set_input_delay -clock shell_bus -clock_fall -min 0.0 [get_ports {i_common[*] i_addr_valid i_write_enable i_write_data_valid i_read_data_ready}]
+set_output_delay -clock shell_bus -clock_fall -max 4.0 [get_ports {o_read_data[*] o_addr_ready o_write_data_ready o_read_data_valid}]
+set_output_delay -clock shell_bus -clock_fall -min -0.5 [get_ports {o_read_data[*] o_addr_ready o_write_data_ready o_read_data_valid}]
+# Include the deskew MMCM outputs when separating bus and core clock domains.
+set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks shell_bus] -group [get_clocks -include_generated_clocks clk200]
+set_false_path -from [get_ports {pushsw i_bus_reset_n}]
+set_false_path -to [get_ports {led[*] trig_out osc_en_b}]
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 2.5 [current_design]
-## Leave unused pins floating instead of Vivado's default weak pull-down: the
-## board's own resistors define them (the supervisor's watchdog lines,
-## lbus_clkn / lbus_rstn and the rest of the Spartan-6 interconnect, DIP switches).
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullnone [current_design]
-## The 160T bitstream is ~6.7 MB uncompressed; compression shortens JTAG loads.
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]

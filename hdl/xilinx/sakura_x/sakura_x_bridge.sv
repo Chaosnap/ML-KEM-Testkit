@@ -4,7 +4,7 @@
 // One outstanding transaction; a write is acknowledged ONLY after AXI B.
 // Reading START (0x100) launches CTRL.start and delays the read response until
 // completion + a quiet tail. No CSR/status polling takes place while busy.
-module sakura_shell_bridge #(
+module sakura_x_bridge #(
     parameter int BUS_HZ = 50_000_000,
     parameter int PRE_CYCLES = BUS_HZ / 500,       // 2 ms before trigger
     parameter int DEFAULT_TAIL = BUS_HZ / 50,     // 20 ms after busy falls

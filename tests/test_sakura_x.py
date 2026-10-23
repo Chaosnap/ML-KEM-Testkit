@@ -1,4 +1,4 @@
-"""cpa_toolkit/sakura_shell.py: telling the Spartan-6 controllers apart before any Kintex access.
+"""cpa_toolkit/sakura_x.py: telling the Spartan-6 controllers apart before any Kintex access.
 
 Byte-level models of what can sit behind the FT2232H's Channel A:
 
@@ -10,7 +10,7 @@ Byte-level models of what can sit behind the FT2232H's Channel A:
   01 AH AL DH DL -> write, any other command byte -> TRAP for good (RTS is not wired).
 * nothing at all (Spartan unconfigured / Channel A not in FIFO mode).
 
-    uv run python -m unittest tests.test_sakura_shell -v
+    uv run python -m unittest tests.test_sakura_x -v
 """
 
 import struct
@@ -23,7 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cpa_toolkit"))
 
-import sakura_shell as SH  # noqa: E402
+import sakura_x as SH  # noqa: E402
 import uart_target as T  # noqa: E402
 
 
@@ -136,7 +136,7 @@ class ChannelB:
 
 def make_link(ctrl):
     link = SH.ShellLink.__new__(SH.ShellLink)
-    link.port, link.baud, link.lock, link.closed = "sakura-shell:/dev/ttyUSB0", None, threading.RLock(), False
+    link.port, link.baud, link.lock, link.closed = "sakura-x:/dev/ttyUSB0", None, threading.RLock(), False
     link.ser, link.reset_ser = ChannelA(ctrl), ChannelB(ctrl)
     link._serial_exc, link.quiet_ms = (OSError,), 20.0
     link.data_port, link.reset_port = "/dev/ttyUSB0", "/dev/ttyUSB1"
@@ -179,7 +179,7 @@ class TestControllerCheck(unittest.TestCase):
         for ctrl in (AistCtrl(trapped=True), Dead()):
             with self.assertRaises(T.ProtocolError) as cm:
                 make_link(ctrl).check_controller()
-            self.assertIn("Neither", str(cm.exception))
+            self.assertIn("No Spartan-6 controller", str(cm.exception))
             self.assertIn("LED17", str(cm.exception))
 
     def test_shell_whose_rts_reset_does_not_arrive(self):
@@ -206,9 +206,9 @@ class TestConnectFlow(unittest.TestCase):
                 published.append(obj)
 
         link = make_link(ctrl)
-        with mock.patch("sakura_shell.ShellLink", lambda port, report=None: link):
+        with mock.patch("sakura_x.ShellLink", lambda port, report=None: link):
             try:
-                connection.open_board({"port": "sakura-shell:/dev/ttyUSB0", "op_timeout": 5}, publish)
+                connection.open_board({"port": "sakura-x:/dev/ttyUSB0", "op_timeout": 5}, publish)
                 error = None
             except T.ProtocolError as e:
                 error = str(e)

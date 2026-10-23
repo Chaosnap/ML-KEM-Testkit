@@ -41,7 +41,6 @@ class TestVectorSets(unittest.TestCase):
 
     def test_expected_keys_match_software_decaps(self):
         for kw in ({"mode": "cpa", "strategy": "valid"}, {"mode": "cpa", "strategy": "invalid"},
-                   {"mode": "cpa", "strategy": "structured", "poly": 1, "pair": 5},
                    {"mode": "tvla", "invalid_random": True}):
             vs = TV.generate(n=10, seed=SEED, **kw)
             keys, valid = KEM.decaps_batch(vs.dk, vs.ct)
@@ -73,15 +72,6 @@ class TestVectorSets(unittest.TestCase):
         self.assertFalse((vs.cls[:10] == 0).all() and (vs.cls[10:] == 1).all(), "classes not shuffled")
         items = vs.campaign_items()
         self.assertEqual(items[3], (int(vs.cls[3]), vs.ct[3].tobytes()))
-
-    def test_structured_zeroes_the_other_polynomials(self):
-        # Compression at DU=10 is lossy, so within the targeted polynomial the
-        # recomputed u_hat is close to (not exactly) one pair -- see
-        # mlkem_ref.structured_ciphertext. The other polynomials are exactly 0.
-        vs = TV.generate("cpa", 4, SEED, "structured", poly=2, pair=7)
-        u = R.u_hat_from_ct(vs.ct)
-        self.assertTrue((u[:, :2] == 0).all())
-        self.assertTrue((u[:, 2] != 0).any(axis=1).all())
 
     def test_save_load_and_exports(self):
         vs = TV.generate("tvla", 6, SEED, invalid_random=True)

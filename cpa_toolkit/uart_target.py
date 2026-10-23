@@ -32,7 +32,6 @@ import zlib
 from dataclasses import dataclass
 
 import config as C
-import sakura_lbus
 
 CMD_READ_REG, CMD_WRITE_REG, CMD_WRITE_DATA, CMD_READ_DATA = 0x01, 0x02, 0x03, 0x04
 CMD_RUN = 0x05  # write CTRL, reply only when the core is done (status block + result)
@@ -77,8 +76,8 @@ class BitstreamError(ValueError):
     """The bitstream lacks 0x05 Run, the only way operations are started."""
 
 
-NO_RUN = ("this bitstream has no 0x05 Run command (it predates it): rebuild it from "
-          "hdl/core/uart_axi_bridge.sv -- operations are disabled, register and buffer access still work")
+NO_RUN = ("The bitstream has no 0x05 Run command (old bitstream). Build it again. "
+          "Operations are off. Register and buffer access are available.")
 
 
 class ProtocolError(Exception):
@@ -128,12 +127,8 @@ class Link:
         self._serial_exc = (serial.SerialException, OSError, TypeError, AttributeError)
         try:
             # exclusive: a second program (or a second GUI tab) must not share the port
-            if sakura_lbus.is_sakura_port(port):   # SAKURA-X board USB (local bus)
-                self.ser = sakura_lbus.LbusPort(port, baud, timeout=BASE_TIMEOUT,
-                                                write_timeout=2.0, exclusive=True)
-            else:
-                self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
-                                         timeout=BASE_TIMEOUT, write_timeout=2.0, exclusive=True)
+            self.ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
+                                     timeout=BASE_TIMEOUT, write_timeout=2.0, exclusive=True)
         except Exception as e:  # serial.SerialException and OS errors
             msg = str(e)
             if "busy" in msg.lower() or "Errno 16" in msg:
@@ -259,8 +254,9 @@ class Target:
 
     @classmethod
     def open(cls, port: str, baud: int = C.BAUD) -> "Target":
-        if port.startswith("sakura-shell:"):
-            from sakura_shell import ShellLink, ShellTarget
+        import sakura_x
+        if sakura_x.is_port(port):
+            from sakura_x import ShellLink, ShellTarget
             return ShellTarget(ShellLink(port, baud))
         return cls(Link(port, baud))
 
@@ -407,22 +403,22 @@ class Target:
 
         def alg():
             v = link.rd("ALG_ID")
-            return v == 1, "ALG_ID = %d (1 = ML-KEM)" % v
+            return v == 1, "ALG_ID = %d (1 = ML-KEM)." % v
 
         def reset():
             link.wr("CTRL", CTRL_RESET)
             st = link.rd("STATUS")
-            return st & (ST_BUSY | ST_ERROR) == 0, "STATUS = 0x%x after reset" % st
+            return st & (ST_BUSY | ST_ERROR) == 0, "STATUS = 0x%x after reset." % st
 
         def bulk():
             pattern = bytes((i * 7 + 13) & 0xFF for i in range(1024))
             link.write_data(C.IN_BASE, pattern)
-            return link.read_data(C.IN_BASE, 1024) == pattern, "1024-byte loopback via the data buffer"
+            return link.read_data(C.IN_BASE, 1024) == pattern, "1024 bytes written and read back."
 
         def notify():
             if not self.probe_run():
                 return False, NO_RUN
-            return True, "0x05 Run supported: the FPGA reports completion, link silent during the operation"
+            return True, "0x05 Run is available. The link is silent during an operation."
 
         with link.lock:
             step("link identity (ALG_ID)", alg)
@@ -446,9 +442,9 @@ def _port_hint(p) -> tuple[str, int]:
     if "Bluetooth" in p.device or "debug-console" in p.device:
         return "not a board", 9
     if _sakura_iface(p) == 0:
-        return "FT2232H channel A raw -- use sakura-shell: for shell firmware", 7
+        return "FT2232H channel A raw -- use sakura-x: for the SAKURA-X FIFO", 7
     if _sakura_iface(p) == 1:
-        return "FT2232H channel B -- reserved for shell RTS reset, not data", 8
+        return "FT2232H channel B -- reserved for the SAKURA-X RTS reset, not data", 8
     iface = None
     if p.serial_number and p.device.endswith(p.serial_number + "0"):
         iface = 0
@@ -468,9 +464,9 @@ def _port_hint(p) -> tuple[str, int]:
 
 def _sakura_iface(p) -> int | None:
     """FT2232H interface (0 = channel A, 1 = channel B) of a port that belongs to a
-    SAKURA-X board: an FT2232H programmed with AIST's sasebo_giii.xml (no Digilent
-    strings; product "USB <-> Serial Converter"). None for anything else."""
-    from sakura_shell import usb_identity
+    SAKURA-X board: an FT2232H with no Digilent strings (product "SAKURA-X Shell"
+    or the factory "USB <-> Serial Converter"). None for anything else."""
+    from sakura_x import usb_identity
     identity = usb_identity(p)
     desc = " ".join(str(x) for x in (p.description, p.manufacturer, identity["product"]) if x)
     if identity["vid"] != 0x0403 or identity["pid"] != 0x6010 or "Digilent" in desc:
@@ -494,7 +490,7 @@ def list_ports() -> list:
         from serial.tools import list_ports as lp
     except ImportError:
         raise LinkError("pyserial is missing: uv sync (or pip install pyserial)")
-    from sakura_shell import PREFIX as SHELL_PREFIX, is_shell
+    from sakura_x import PREFIX as SHELL_PREFIX, is_shell
     rows = []
     for p in lp.comports():
         if _is_phantom(p):
@@ -505,19 +501,16 @@ def list_ports() -> list:
             rows.append((0 if is_shell(p) else 3, SHELL_PREFIX + p.device, p.description or "",
                          "SAKURA-X shell FIFO, channel A; baud ignored" +
                          (" (recommended)" if is_shell(p) else " (select explicitly for shell firmware)")))
-            if not is_shell(p):
-                rows.append((3, sakura_lbus.PREFIX + p.device, p.description or "",
-                             "Legacy AIST local bus ONLY; incompatible with shell firmware"))
     rows.sort()
     return [(dev, desc, hint, rank == 0) for rank, dev, desc, hint in rows]
 
 
 def port_exists(device: str) -> bool:
     try:
-        from sakura_shell import device_of
+        from sakura_x import device_of
         import os
-        device = os.path.realpath(device_of(sakura_lbus.device_of(device)))
-        return any(os.path.realpath(device_of(sakura_lbus.device_of(dev))) == device
+        device = os.path.realpath(device_of(device))
+        return any(os.path.realpath(device_of(dev)) == device
                    for dev, *_ in list_ports())
     except LinkError:
         return True

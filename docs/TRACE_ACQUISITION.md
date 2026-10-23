@@ -152,15 +152,15 @@ uv run scripts/board/boot_arty_z7_ps.py
 
 它会烧录 PL bitstream、初始化 PS、启动 UART 转发程序。运行前要先关掉占用 JTAG 的程序（`openFPGALoader --xvc`、run_vivado.sh、Vivado Hardware Manager）。如果它报 DAP 锁定，就把板子**完全断电**（拔 USB，按 PROG/SRST 不够）后再试。
 
-**SAKURA-X**：JTAG 线接 Kintex-7 的 CN5（不是 Spartan-6 的 CN10），每次上电后运行 `vivado -mode batch -source scripts/vivado/program_sakura_x.tcl -tclargs <bit>`。串口走 CN8 上外接的 **2.5 V** USB-UART，详见 [SAKURA_X.md](SAKURA_X.md)。
+**SAKURA-X**：每次上电后先烧 Spartan-6（CN10，shell 控制器 bit），再烧 Kintex-7（CN5，`sakura_x_top.bit`）。通信走板载 USB（FT2232H A 通道必须是 245 FIFO），详见 [SAKURA_X.md](SAKURA_X.md)。
 
 **看灯确认**（见 README 的 LED 表）：
 
 | 灯 | Arty A7 | Arty Z7 | SAKURA-X | 应该看到 |
 | -- | ------- | ------- | -------- | -------- |
-| 心跳 | LD7 | LD3 | LED4 | 1 Hz 闪烁：bitstream 已加载，时钟在运行 |
-| 电源 / 复位 | LD0（RGB） | LD4（RGB） | LED6（运行，暗）/ LED5（复位） | 暗绿色；红色（SAKURA-X：LED5）表示按住了复位键或时钟没锁定 |
-| 运算活动 | LD4 | LD0 | LED1 | 每次运算后亮 0.1 s |
+| 心跳 | LD7 | LD3 | LED1 | 闪烁：bitstream 已加载，时钟在运行 |
+| 电源 / 复位 | LD0（RGB） | LD4（RGB） | LED10 | Arty：暗绿色，红色表示按住了复位键或时钟没锁定；SAKURA-X：LED10 亮表示时钟锁定且复位已释放 |
+| 运算活动 | LD4 | LD0 | LED2 / LED3 | Arty：每次运算后亮 0.1 s；SAKURA-X：LED2 上次完成，LED3 出错 |
 
 核心运算期间所有 LED 都保持静止，不会在功耗 trace 里引入翻转。
 
