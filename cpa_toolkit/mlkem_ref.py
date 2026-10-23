@@ -2,7 +2,7 @@
 
 ByteDecode / Decompress, the NTT / INTT, BaseCaseMultiply, parsing of ``dk``
 and ``c`` and K-PKE.Decrypt. The CPA hypotheses built on these are in
-``cpa_attack.py``.
+``cpa.py``.
 
 Everything here is vectorised over a leading "trace" axis so the same code
 serves the test-vector generator (``mlkem768.py`` builds on these

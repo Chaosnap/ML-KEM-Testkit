@@ -6,8 +6,8 @@ Methodology for Side-Channel Resistance Validation*, NIST NIAT 2011), with
 the usual |t| > 4.5 threshold, on traces captured by ``acquire_cpa.py
 tvla-run`` (or the GUI's Trace Acquisition tab in TVLA mode).
 
-TVLA answers a different question from CPA: not "can an attacker recover
-the key" but "does *any* measurable quantity depend on the input at all" --
+TVLA answers a different question from CPA: not "can the key be
+recovered" but "does *any* measurable quantity depend on the input at all" --
 no key hypothesis, no leakage model, just: are the fixed-class and
 random-class trace distributions distinguishable. |t| > 4.5 at a sample
 means yes, with > 99.999% confidence at that one sample (multiple-testing
@@ -27,9 +27,37 @@ import json
 
 import numpy as np
 
+import trace_parse as P
 from hdf5_trace_store import TraceReader
 
 LEAKAGE_THRESHOLD = 4.5  # Goodwill et al.: |t| > 4.5
+
+
+def load_classes(h5_path: str, max_traces: int = 0) -> dict:
+    """The usable traces of a TVLA campaign and their classes.
+
+    Parsed campaign (trace_parse.py): every trace is shifted so its Decaps start sits at
+    the same index ``t0`` (a jittered start would smear a leak over many samples).
+    Not parsed: the raw rows, ``t0`` = None.
+    """
+    with TraceReader(h5_path) as r:
+        if r.mode != "tvla":
+            raise SystemExit("%s is a %r-mode file, not tvla -- generate one with "
+                             "acquire_cpa.py tvla-run" % (h5_path, r.mode))
+        n = min(r.n_completed, max_traces) if max_traces else r.n_completed
+        ok = r.ok[:n]
+        traces = r.traces[:n][ok]
+        cls = r.classes[:n][ok]
+        out = {"n": n, "ok": ok, "simulated": r.simulated, "metadata": r.metadata, "sample_rate": r.sample_rate}
+    parse = P.load(h5_path)
+    out["t0"] = None
+    if parse is not None:
+        rows = np.flatnonzero(ok)
+        aligned, keep, t0 = P.aligned_traces(traces, np.asarray(parse["rise"])[rows], np.asarray(parse["ok"])[rows])
+        if keep.size >= 4:
+            traces, cls, out["t0"] = aligned, cls[keep], int(t0)
+    out.update(traces=traces, cls=cls, parse=P.public(parse))
+    return out
 
 
 def welch_t(fixed: np.ndarray, random: np.ndarray) -> np.ndarray:
@@ -55,7 +83,7 @@ def welch_t(fixed: np.ndarray, random: np.ndarray) -> np.ndarray:
 def default_checkpoints(n_max: int) -> list[int]:
     """A handful of roughly log-spaced trace-count checkpoints, up to ``n_max``.
 
-    Same idea as ``cpa_attack.default_checkpoints`` (kept as a separate, tiny
+    Same idea as ``cpa.default_checkpoints`` (kept as a separate, tiny
     copy rather than a cross-import: TVLA and CPA checkpointing have no
     other reason to be coupled, and this is three lines).
     """
@@ -72,13 +100,8 @@ def detection_curve(h5_path: str, max_traces: int = 0, checkpoints: list[int] | 
     arrays, cheap at TVLA's typical sample counts (no per-coefficient search
     like CPA's --curve, just one t-test per checkpoint).
     """
-    with TraceReader(h5_path) as r:
-        if r.mode != "tvla":
-            raise SystemExit("%s is a %r-mode file, not tvla" % (h5_path, r.mode))
-        n_avail = min(r.n_completed, max_traces) if max_traces else r.n_completed
-        ok = r.ok[:n_avail]
-        traces = r.traces[:n_avail][ok]
-        cls = r.classes[:n_avail][ok]
+    d = load_classes(h5_path, max_traces)
+    traces, cls = d["traces"], d["cls"]
     fixed_all, random_all = traces[cls == 0], traces[cls == 1]
     checkpoints = checkpoints or default_checkpoints(min(len(fixed_all), len(random_all)))
     rows, traces_to_detection = [], None
@@ -126,12 +149,8 @@ def chart_data(h5_path: str, max_traces: int = 0, max_points: int = 2000) -> dic
     """
     result = run_tvla(h5_path, max_traces)
     t_values = result.pop("t_values")
-    with TraceReader(h5_path) as r:
-        n = min(r.n_completed, max_traces) if max_traces else r.n_completed
-        ok = r.ok[:n]
-        traces = r.traces[:n][ok]
-        cls = r.classes[:n][ok]
-        sample_rate = r.sample_rate
+    d = load_classes(h5_path, max_traces)
+    traces, cls, sample_rate = d["traces"], d["cls"], d["sample_rate"]
     fixed_mean = traces[cls == 0].mean(axis=0) if (cls == 0).any() else np.zeros_like(t_values)
     random_mean = traces[cls == 1].mean(axis=0) if (cls == 1).any() else np.zeros_like(t_values)
 
@@ -159,16 +178,8 @@ def chart_data(h5_path: str, max_traces: int = 0, max_points: int = 2000) -> dic
 
 
 def run_tvla(h5_path: str, max_traces: int = 0) -> dict:
-    with TraceReader(h5_path) as r:
-        if r.mode != "tvla":
-            raise SystemExit("%s is a %r-mode file, not tvla -- generate one with "
-                             "acquire_cpa.py tvla-run" % (h5_path, r.mode))
-        n = min(r.n_completed, max_traces) if max_traces else r.n_completed
-        ok = r.ok[:n]
-        traces = r.traces[:n][ok]
-        cls = r.classes[:n][ok]
-        simulated = r.simulated
-        meta = r.metadata
+    d = load_classes(h5_path, max_traces)
+    n, ok, traces, cls, simulated, meta = d["n"], d["ok"], d["traces"], d["cls"], d["simulated"], d["metadata"]
     if not np.all(ok):
         import sys
         print("note: %d/%d traces failed an integrity check and are excluded"
@@ -193,6 +204,7 @@ def run_tvla(h5_path: str, max_traces: int = 0) -> dict:
         "file": h5_path, "simulated": simulated, "n_fixed": len(fixed), "n_random": len(random),
         "n_samples": t.shape[0], "max_abs_t": max_abs_t, "max_abs_t_sample": max_abs_t_idx,
         "leakage_threshold": LEAKAGE_THRESHOLD, "leakage_detected": leakage,
+        "aligned": d["t0"] is not None, "t0_sample": d["t0"], "parse": d["parse"],
         "metadata": meta, "t_values": t,  # t_values kept only in memory for CSV/plot export
     }
 
@@ -218,7 +230,7 @@ def main() -> None:
     if result["leakage_detected"]:
         print("\n=> fixed-class and random-class traces are statistically distinguishable: "
               "the core's power consumption depends on the input. This says *that* it leaks, "
-              "not *what* an attacker could recover from it -- see cpa_attack.py for key recovery.")
+              "not *what* could be recovered from it -- see cpa.py for key recovery.")
     else:
         print("\n=> no leakage detected at this trace count/threshold. This does NOT prove the "
               "core is safe -- more traces, a different window, or a different measurement "

@@ -1,6 +1,6 @@
 """Software twin of the BMUL multiplier pipeline (``mlkem_poly_alu.sv`` + ``mlkem_modmul.sv``).
 
-The CPA hypotheses (``cpa_attack.py``, and the removed ``models/``) name one register; the chip toggles
+The CPA hypotheses (``cpa.py``, and the removed ``models/``) name one register; the chip toggles
 ~1400 flops per cycle. This module reproduces, bit for bit, what the *stage registers of
 the two Barrett multipliers and the registers that copy their output stream* hold, so a
 hypothesis can be built from the transitions that really happen on them.
@@ -150,7 +150,7 @@ def modmul_state(a: np.ndarray, b: np.ndarray) -> dict[str, np.ndarray]:
 
 
 class WordOps:
-    """The operations of the two multipliers around one attacked word ``w`` of one BMUL.
+    """The operations of the two multipliers around one target word ``w`` of one BMUL.
 
     ``u``: ``(N, 256)`` u_hat of the polynomial; ``s``: ``(256,)`` s_hat (the true key, or
     the guesses recovered so far); ``g``: ``(G,)`` candidates for ``s[j]``, or None to use
@@ -249,7 +249,7 @@ def terms_for(j: int, causal: bool) -> list[tuple[int, str, str, int]]:
 
     Only transitions that change with the guess: the others add the same number to every
     candidate and only dilute the correlation. With ``causal`` the transitions that read a
-    value a blind attack does not have yet are dropped: the partner of an even coefficient
+    value a blind analysis does not have yet are dropped: the partner of an even coefficient
     (it is guessed second) and all later words (coefficients are recovered in ascending
     order). The odd coefficient of a pair always has its partner.
     """
@@ -281,7 +281,7 @@ def row_hypotheses(u_poly: np.ndarray, s_poly: np.ndarray, j: int, candidates: n
     ``u_poly``: ``(N, 256)``; ``s_poly``: ``(256,)`` s_hat of this polynomial (the true key, or
     the guesses recovered so far -- only the partner coefficient and neighbouring words are read
     from it); ``candidates``: ``(G,)`` values for ``s_poly[j]``. Returns ``{row: (N, G) int16}``.
-    With ``causal=True`` only what a blind attack that recovers coefficients in ascending order
+    With ``causal=True`` only what a blind analysis that recovers coefficients in ascending order
     has is read (see :func:`terms_for`).
     """
     regs = registers() if regs is None else regs

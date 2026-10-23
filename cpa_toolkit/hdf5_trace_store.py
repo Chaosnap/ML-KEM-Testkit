@@ -2,10 +2,10 @@
 
 Two campaign *modes*, stored in ``/metadata`` as ``mode`` and never mixed in
 one file -- they answer different questions and need different analysis
-(``cpa_attack.py`` vs ``tvla_analysis.py``):
+(``cpa.py`` vs ``tvla_analysis.py``):
 
 - ``"cpa"``: fixed ``dk``, N *different* ciphertexts (one trace each),
-  attacked by correlation against a key-dependent hypothesis.
+  analysed by correlation against a key-dependent hypothesis.
 - ``"tvla"``: fixed ``dk``, ciphertexts drawn from two classes (fixed /
   random, FIPS203 Decaps TVLA methodology), compared by Welch's t-test --
   no key hypothesis involved at all.
@@ -32,6 +32,11 @@ other wrote)::
                                                 when known; ``ok`` includes the check
     /intermediates/ok     (N,)      bool    -- integrity checks passed
     /intermediates/class  (N,)      uint8   -- TVLA mode ONLY: 0=fixed, 1=random
+    /marker        (N, S) int16     -- the trig_out marker channel of every capture
+                                        (only with a scope marker channel)
+    /parse/rise, fall, ok (N,)      -- the Decaps start / end sample found in each
+                                        marker (trace_parse.py); attrs["json"] the
+                                        summary (samples per cycle, clock, jitter)
 
 Written incrementally (resizable datasets, flushed every trace) so a
 multi-hour campaign surviving a crash or Ctrl-C keeps every trace captured
@@ -76,11 +81,12 @@ class TraceWriter:
         a campaign sent.
     :param expected: optional ``(N, 32)`` uint8, the shared secret each row's
         Decaps must return; stored as ``/intermediates/k_expected``.
+    :param marker: also store the marker channel (``/marker``) and its parse (``/parse``).
     """
 
     def __init__(self, path: str | pathlib.Path, n_traces: int, n_samples: int, dk: bytes,
                  meta: dict[str, Any], mode: str = "cpa", items: list | None = None,
-                 expected: np.ndarray | None = None):
+                 expected: np.ndarray | None = None, marker: bool = False):
         if mode not in ("cpa", "tvla"):
             raise ValueError("mode must be 'cpa' or 'tvla', got %r" % mode)
         h5py = _h5py()
@@ -119,6 +125,14 @@ class TraceWriter:
             if expected.shape != (n_traces, 32):
                 raise ValueError("expected must be (%d, 32), got %s" % (n_traces, expected.shape))
             iv.create_dataset("k_expected", data=np.asarray(expected, dtype=np.uint8))
+        self.has_marker = bool(marker)
+        if marker:
+            self.f.create_dataset("marker", (n_traces, n_samples), dtype="int16",
+                                  chunks=(1, n_samples), compression="gzip", compression_opts=4)
+            pg = self.f.create_group("parse")
+            pg.create_dataset("rise", data=np.full(n_traces, -1, dtype=np.int64))
+            pg.create_dataset("fall", data=np.full(n_traces, -1, dtype=np.int64))
+            pg.create_dataset("ok", data=np.zeros(n_traces, dtype=bool))
         self._n_written = 0
 
     def ct_at(self, index: int) -> bytes:
@@ -139,10 +153,17 @@ class TraceWriter:
         return int(self.f["intermediates/class"][index])
 
     def append(self, index: int, trace: np.ndarray, ct: bytes, cycles: int, output: bytes, ok: bool,
-               cls: int | None = None) -> None:
+               cls: int | None = None, marker: np.ndarray | None = None, parse: dict | None = None) -> None:
+        """One capture. ``marker`` / ``parse`` (``{rise, fall, ok}``): the marker channel
+        and where trace_parse found the Decaps in it (campaigns opened with ``marker=True``)."""
         if self.mode == "tvla" and cls is None:
             raise ValueError("tvla-mode campaign: append() needs cls=0 (fixed) or cls=1 (random)")
         self.f["traces"][index] = trace.astype(np.float32)
+        if self.has_marker and marker is not None:
+            self.f["marker"][index] = np.clip(np.asarray(marker), -32768, 32767).astype(np.int16)
+        if self.has_marker and parse is not None:
+            g = self.f["parse"]
+            g["rise"][index], g["fall"][index], g["ok"][index] = parse["rise"], parse["fall"], bool(parse["ok"])
         self.f["intermediates/ct"][index] = np.frombuffer(ct.ljust(1088, b"\0")[:1088], dtype="uint8")
         self.f["intermediates/cycles"][index] = cycles
         out32 = (output + b"\0" * 32)[:32]
@@ -177,6 +198,7 @@ class TraceWriter:
         self.n_traces = int(self.f["traces"].shape[0])
         self.n_samples = int(self.f["traces"].shape[1])
         self._n_written = int(self.f["metadata"].attrs.get("n_completed", 0))
+        self.has_marker = "marker" in self.f and "parse" in self.f and "rise" in self.f["parse"]
         return self
 
     @property
@@ -196,6 +218,21 @@ class TraceWriter:
             start = float(self.f["metadata"].attrs.get("record_start_s", 0.0))
             self.f["samples"][:] = start + np.arange(self.n_samples, dtype=np.float64) / hz
             self.f["metadata"].attrs["sample_rate"] = hz
+
+    def finalize_parse(self, rate: float) -> dict | None:
+        """Summary of the per-trace marker parse (samples per cycle, clock, jitter) into
+        ``/parse`` attrs, in the layout trace_parse.load reads."""
+        if not self.has_marker:
+            return None
+        import json
+        import trace_parse as P
+        n, g = self._n_written, self.f["parse"]
+        summary = P.summarise(g["rise"][:n], g["fall"][:n], g["ok"][:n], self.f["intermediates/cycles"][:n], rate)
+        summary.update(method="marker", smooth=P.DEFAULT_SMOOTH, threshold=None, sample_rate_hz=float(rate),
+                       created_unix=time.time(), live=True,
+                       failures={"no Decaps edge": int(n - summary["n_ok"])} if n > summary["n_ok"] else {})
+        g.attrs["json"] = json.dumps(summary, default=float)
+        return summary
 
     def close(self) -> None:
         self.f.close()
@@ -249,6 +286,15 @@ class TraceReader:
         if "k_expected" not in self.f["intermediates"]:
             return None
         return self.f["intermediates/k_expected"][: self.n_completed]
+
+    @property
+    def has_marker(self) -> bool:
+        return "marker" in self.f
+
+    @property
+    def marker(self):
+        """The ``/marker`` dataset (h5py, not loaded), or None."""
+        return self.f["marker"] if "marker" in self.f else None
 
     @property
     def outputs(self) -> np.ndarray:
@@ -311,6 +357,8 @@ def summarize(path: str | pathlib.Path) -> dict:
             "sample_rate_hz": r.sample_rate,
             "record_start_s": r.record_start_s,
             "dk_hash": r.dk_hash.hex()[:16] + "...",
+            "has_marker": r.has_marker,
+            "parsed": "parse" in r.f and "json" in r.f["parse"].attrs,
             "ok_fraction": float(np.mean(r.ok)) if r.n_completed else 0.0,
             "metadata": r.metadata,
         }

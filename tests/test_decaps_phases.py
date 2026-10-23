@@ -46,12 +46,22 @@ class TestConfigTimeline(unittest.TestCase):
             self.assertLessEqual(b - a, (m1 - m0) + 10)      # not much wider than the activity itself
 
 
+def parsed(rate):
+    """A parse with the Decaps start at sample 0, nominal clock (what trace_parse gives when the
+    trigger point is the first sample)."""
+    spc = rate / (C.CORE_MHZ * 1e6) if rate else 1.0
+    return {"rise_median": 0, "samples_per_cycle": spc, "spc_source": "nominal", "clock_mhz": C.CORE_MHZ}
+
+
 class TestAxisPhases(unittest.TestCase):
     RATE = 2.5e9
 
+    def test_no_phases_without_a_parse(self):
+        self.assertEqual(W._axis(self.RATE, 125000)["phases"], [])
+
     def test_phases_follow_the_record(self):
         n = int(50e-6 * self.RATE)                  # a 50 us record, as on the bench
-        axis = W._axis(self.RATE, n)
+        axis = W._axis(self.RATE, n, None, parsed(self.RATE))
         labels = [p["label"] for p in axis["phases"]]
         self.assertIn("J(z‖c)", labels)
         for p in axis["phases"]:
@@ -62,20 +72,20 @@ class TestAxisPhases(unittest.TestCase):
         self.assertNotIn("compare/select", labels)
 
     def test_phase_boundaries_are_in_microseconds_on_a_timed_axis(self):
-        axis = W._axis(self.RATE, int(200e-6 * self.RATE))
+        axis = W._axis(self.RATE, int(200e-6 * self.RATE), None, parsed(self.RATE))
         j = next(p for p in axis["phases"] if p["label"].startswith("J("))
         self.assertAlmostEqual(j["x"][0], 6623 / C.CORE_MHZ, places=2)
         self.assertAlmostEqual(j["x"][1], 7375 / C.CORE_MHZ, places=2)
 
     def test_untimed_axis_uses_samples_at_one_per_core_cycle(self):
-        axis = W._axis(0.0, 30000)
+        axis = W._axis(0.0, 30000, None, parsed(0.0))
         self.assertEqual(axis["unit"], "sample")
         j = next(p for p in axis["phases"] if p["label"].startswith("J("))
         self.assertEqual(j["x"], [6623, 7375])
 
     def test_the_tvla_peak_of_the_bench_run_falls_in_the_ciphertext_hash(self):
         # sample 83485 at 2.5 GS/s: the TVLA peak of the 2026-10-17 bench campaign
-        axis = W._axis(self.RATE, 125002)
+        axis = W._axis(self.RATE, 125002, None, parsed(self.RATE))
         s = 83485
         hit = [p["label"] for p in axis["phases"] if p["samples"][0] <= s <= p["samples"][1]]
         self.assertEqual(hit, ["J(z‖c)"])

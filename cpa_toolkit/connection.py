@@ -226,7 +226,7 @@ def open_scope(params: dict, publish):
     try:
         sc = S.open_scope(params["ip"], channel=params["channel"], dialect=params["dialect"],
                           points=int(params.get("points", 0)), timeout_ms=int(params["timeout_ms"]),
-                          transport=params.get("transport", ""))
+                          transport=params.get("transport", ""), marker=params.get("marker", ""))
     except SystemExit as e:  # scope.py's command-line errors: here they must become the "error" state
         raise RuntimeError(str(e)) from None
     publish(sc)

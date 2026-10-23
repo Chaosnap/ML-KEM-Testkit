@@ -1,8 +1,8 @@
-# CPA 攻击模型设计文档 — 打的是哪里、怎么打
+# CPA 模型设计文档 — 打的是哪里、怎么打
 
-> **2026-10-20：本文第 5 节描述的泄漏模型目录（`models/`：hw / hd / `pipe_*`）和逐周期对齐的攻击（`aligned_cpa.py`、`cycle_features.py`）已经从代码里移除**，换成更简单的逐系数 CPA（`cpa_attack.py`，说明见 [`LEAKAGE_MODELS.md`](LEAKAGE_MODELS.md)）。第 1–4 节（原理、攻击目标、BMUL 在硬件里的时序、窗口位置）仍然有效；第 5 节及之后涉及 `models/`、`R_prev`、`pipe_*`、`--curve` 的内容只作为设计记录保留，对应旧代码在 git 历史里。
+> **2026-10-20：本文第 5 节描述的泄漏模型目录（`models/`：hw / hd / `pipe_*`）和逐周期对齐的（`aligned_cpa.py`、`cycle_features.py`）已经从代码里移除**，换成更简单的逐系数 CPA（`cpa.py`，说明见 [`LEAKAGE_MODELS.md`](LEAKAGE_MODELS.md)）。第 1–4 节（原理、目标、BMUL 在硬件里的时序、窗口位置）仍然有效；第 5 节及之后涉及 `models/`、`R_prev`、`pipe_*`、`--curve` 的内容只作为设计记录保留，对应旧代码在 git 历史里。
 
-这份文档只回答一个问题：**这套 CPA 工具的攻击假设模型具体是怎么设计的，物理上对应
+这份文档只回答一个问题：**这套 CPA 工具的假设模型具体是怎么设计的，物理上对应
 硬件里的哪个信号、哪一拍、哪一行代码**。用法（怎么跑、怎么连示波器）见
 [`README.md`](../cpa_toolkit/README.md)；这里只讲设计本身，带着源码行号和 RTL 行号，方便你答辩时
 被问到细节能一条条指出来。
@@ -11,14 +11,14 @@
 
 ## 0. 一句话总结
 
-对 ML-KEM-768 的 Decaps 做选择密文 CPA（攻击者可以控制并知道每条 trace 的密文 `c`），
-目标是解密运算 `K-PKE.Decrypt` 里的那一次 **ŝᵀ∘û 基乘（BaseMul）**，攻击假设是：
+对 ML-KEM-768 的 Decaps 做选择密文 CPA（者可以控制并知道每条 trace 的密文 `c`），
+目标是解密运算 `K-PKE.Decrypt` 里的那一次 **ŝᵀ∘û 基乘（BaseMul）**，假设是：
 
 ```
 HD( R_prev,  BaseMul(û, ŝ_guess) mod q )
 ```
 
-其中 `û` 是攻击者从密文算出来的已知量，`ŝ_guess` 是私钥系数的候选猜测（0..3328 共
+其中 `û` 是者从密文算出来的已知量，`ŝ_guess` 是私钥系数的候选猜测（0..3328 共
 3329 个候选），`R_prev` 是硬件寄存器在这次写入之前保存的旧值——建了三种物理上不同
 的 `R_prev` 假设（寄存器清零 / 流水线连续覆写 / RAM 读-改-写累加），因为 CMOS 电路
 翻转功耗天然对应汉明**距离**（旧值与新值的比特差异数），不是汉明权重。
@@ -30,7 +30,7 @@ HD( R_prev,  BaseMul(û, ŝ_guess) mod q )
 Correlation Power Analysis（Brier, Clavier, Olivier, *Correlation Power Analysis with
 a Leakage Model*, CHES 2004）的标准流程：
 
-1. 采集 N 条功耗 trace，每条对应一个攻击者已知的输入（这里是密文 `c`，因为 Decaps
+1. 采集 N 条功耗 trace，每条对应一个者已知的输入（这里是密文 `c`，因为 Decaps
    是个公开可调用的操作——任何人发一个密文过去都能触发一次解密）。
 2. 对每个密钥候选 `k`，构造一个**假设功耗模型** `H(c_i, k)`：如果 `k` 是真的密钥，
    这个假设值应该和真实功耗线性相关；如果 `k` 是错的，假设值和真实功耗应该统计无关。
@@ -38,7 +38,7 @@ a Leakage Model*, CHES 2004）的标准流程：
 4. 真密钥对应的 `k` 应该在某个 `t` 上有明显突出的 `|ρ|`；取 `max_t |ρ(k, t)|` 给
    256（或这里是 3329）个候选排名，真密钥应该排第一。
 
-这套流程本身和算法无关（AES、RSA、ML-KEM 都能套），**真正决定攻击成不成的是第 2
+这套流程本身和算法无关（AES、RSA、ML-KEM 都能套），**真正决定成不成的是第 2
 步的假设模型**——模型是否对应硬件里真实存在、真实翻转、真实携带密钥信息的寄存器。
 下面整篇文档都在讲这一步怎么设计的。
 
@@ -65,14 +65,14 @@ ML-KEM 完全是另一套结构，这个模型在三个地方都套不上：
 
 ---
 
-## 3. 攻击目标定位：Decrypt 的哪一步、为什么是它
+## 3. 目标定位：Decrypt 的哪一步、为什么是它
 
 ### 3.1 K-PKE.Decrypt 整体流程（FIPS 203 Algorithm 14）
 
 ```
 输入：解密密钥 dk_PKE = ByteEncode₁₂(ŝ)，密文 c = c₁ ‖ c₂
-  û  = NTT(Decompress₁₀(ByteDecode₁₀(c₁)))      ← 密文部分，攻击者已知
-  v  = Decompress₄(ByteDecode₄(c₂))              ← 密文部分，攻击者已知
+  û  = NTT(Decompress₁₀(ByteDecode₁₀(c₁)))      ← 密文部分，者已知
+  v  = Decompress₄(ByteDecode₄(c₂))              ← 密文部分，者已知
   w  = v − INTT(ŝᵀ∘û) mod q                      ← 唯一用到私钥 ŝ 的地方
   m′ = ByteEncode₁(Compress₁(w))
 ```
@@ -93,10 +93,10 @@ NTT——也就是说 `mlkem_ref.py: s_hat_from_dk()` 里 `byte_decode(dk[:1152]
 
 ### 3.3 为什么用 Decaps 而不是 Encaps/KeyGen
 
-- **Decaps 是解密方需要暴露给外界的操作**（KEM 的 decapsulation oracle），攻击者天
+- **Decaps 是解密方需要暴露给外界的操作**（KEM 的 decapsulation oracle），者天
   然能发任意密文过去触发它，私钥固定不变——这是选择密文功耗分析的标准场景。
-- KeyGen 只在产生密钥对时跑一次，攻击者通常拿不到大量 trace。
-- Encaps 不用私钥，没有可攻击的点。
+- KeyGen 只在产生密钥对时跑一次，者通常拿不到大量 trace。
+- Encaps 不用私钥，没有可的点。
 
 ---
 
@@ -161,7 +161,7 @@ c1 = a0·b1 + a1·b0 = (a0+a1)(b0+b1) − a0·b0 − a1·b1
 模型文件（`models/hd_basemul_c0.py` / `hd_basemul_c1.py`），方便和 `word` 对比谁的
 信号更强。
 
-### 4.3 三条攻击窗口在核心周期里的具体位置
+### 4.3 三条窗口在核心周期里的具体位置
 
 每条 BMUL 处理 128 个字（256 个系数两两一对），每 2 个周期发一个字的读请求，再加上流水线排空，数据通路连续活动 276 个周期。这三条窗口不是猜的，是跑一次 Decaps 的周期精确 Verilator 仿真（`testbench/core_sim`，`+trace=` 指令时间线和 `+bmul=` 数据通路转储）量出来的，用 `scripts/sim/bmul_timing.py` 解析，两次不同 Decaps 的结果逐周期一致（核心是常数时间）：
 
@@ -256,10 +256,10 @@ BaseMul 的 Karatsuba 分解里，一次乘法同时涉及**一对**系数（`b0
 - **搭档系数**（没在猜的那一个）和**累加值 `C_old`**，在"已知密钥评估"模式下直接
   用真实密钥的值（`--dk-ref` 给的那个 `dk`）——这是标准的"已知密钥"CPA 评估方法：
   衡量的是"泄漏距离破解有多近"，不是"搜索算法有多聪明"；
-- 在**真正不知道密钥**的模式（`cpa_attack.py` 不给 `--dk-ref`）下，`recovered`
+- 在**真正不知道密钥**的模式（`cpa.py` 不给 `--dk-ref`）下，`recovered`
   数组会被原地修改（不是拷贝），所以同一对里**后猜的那个系数能用上先猜的那个的
-  结果**（见 `cpa_attack.py: run_attack` 里的注释）——但同一对里**先猜的那个**，
-  它的搭档系数永远只能按 0 处理，这是"逐系数攻击"相对"联合枚举一对系数"的固有
+  结果**（见 `cpa.py: run_cpa` 里的注释）——但同一对里**先猜的那个**，
+  它的搭档系数永远只能按 0 处理，这是"逐系数"相对"联合枚举一对系数"的固有
   弱点，`README.md` 第 6 节第 4 条和本文档第 9 节都提到了，这里不重复展开。
 
 ### 5.5 按发射时序建模（`pipe_*`）
@@ -286,7 +286,7 @@ mul1:  ... A1(w−1) , G(w−4) , A1(w) , G(w−3) , A1(w+1) ...   A1 = s1·u1 ,
 三次解密 BMUL × 每一拍；把任一延迟改错一拍即报错）。由此得到 `models/pipe_{all,dsp,barrett,output}.py`：
 一个系数在流水线里停留约 15–17 拍，每一拍都是一条独立证据，求和后等效相关系数约提升 √K。
 
-攻击侧在 `cpa_toolkit/aligned_cpa.py`：trace 先按核心时钟折成每周期一个值
+侧在 `cpa_toolkit/aligned_cpa.py`：trace 先按核心时钟折成每周期一个值
 （`cycle_features.py`：从跨 trace 方差估时钟相位，再用 PCA / energy / abs 压缩周期内的采样点），
 每个假设只和**它自己那一拍**做相关；trigger 到采样点 0 之间的整数周期偏移用一次小范围搜索定出来
 （`config.BMUL_READ_CYCLES` 给出每条 BMUL 第一个字的读周期）。用法和局限见
@@ -294,7 +294,7 @@ mul1:  ... A1(w−1) , G(w−4) , A1(w) , G(w−3) , A1(w+1) ...   A1 = s1·u1 ,
 
 ---
 
-## 6. CPA 引擎：Pearson 相关系数（`cpa_attack.py: pearson_matrix`）
+## 6. CPA 引擎：Pearson 相关系数（`cpa.py: pearson_matrix`）
 
 标准化后做一次矩阵乘法，是唯一在 3329 候选 × 几千采样点规模下能接受的算法复杂度：
 
@@ -306,12 +306,12 @@ def pearson_matrix(hyp, traces):      # hyp: (N, 3329)   traces: (N, T)
 ```
 
 每个候选对每个采样点的相关系数一次算完；候选的最终得分是 `max_t |ρ(k,t)|`，768
-个系数各自独立重复这个流程（见 `run_attack` 里对 `poly in range(3)` × `j in
+个系数各自独立重复这个流程（见 `run_cpa` 里对 `poly in range(3)` × `j in
 range(256)` 的双重循环）。
 
 ---
 
-## 7. 攻击规模
+## 7. 规模
 
 - 候选空间：每个系数 3329（`Q`，不是寄存器位宽对应的 `2^12` 或 `2^24`——寄存器位
   宽只决定 Hamming 距离怎么算，猜测空间永远是系数的合法取值范围）。
@@ -324,7 +324,7 @@ range(256)` 的双重循环）。
 
 > 2026-10-23：这个策略已从 `testvectors` 删除（原因见 9.6 节）。本节保留原始思路作记录。
 
-CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace——经典的"模板攻击"思路：
+CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace——经典的"模板"思路：
 让除了目标 BaseMul 对以外的一切都不贡献能量。`mlkem_ref.py: structured_ciphertext
 (poly, pair, rng)` 构造一个密文，使得它的 `û` 只在 `poly` 多项式的第 `pair` 对
 （系数 `2*pair`、`2*pair+1`）非零，其余 767 个系数全部为 0：
@@ -350,8 +350,8 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
   会接近；真正进假设模型的 `û`，永远是从返回的真实密文字节重新算一遍
   `u_hat_from_ct()`，不是构造时的"意图值"。
 
-这是一个合法的研究策略：KEM 的解封装预言机本来就允许攻击者发任意密文（这正是
-"选择密文攻击"场景本身），只是这里构造的密文**不追求被接受**，只追求让目标点的
+这是一个合法的研究策略：KEM 的解封装预言机本来就允许者发任意密文（这正是
+"选择密文"场景本身），只是这里构造的密文**不追求被接受**，只追求让目标点的
 信号尽量干净。
 
 ---
@@ -368,9 +368,9 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
   一种（`word`/`prev-word`）打穿，其余保持低位——已过。
 - **真实硬件上是否真的这样泄漏**：未知，需要示波器——这正是这份模型设计要去验证
   的东西，不是已经验证过的东西。
-- **Unknown-key（真实攻击）和 oracle-assisted（事后评估）的边界**：`--dk-ref`/
+- **Unknown-key（真实）和 oracle-assisted（事后评估）的边界**：`--dk-ref`/
   GUI 的 dk-ref 字段只用来给已经算出来的猜测打分，从不参与假设构造（第 5.4 节）；
-  `cpa_attack.py` 的 JSON/CLI 输出会明确标注 `oracle_assisted: true` 并打印警告
+  `cpa.py` 的 JSON/CLI 输出会明确标注 `oracle_assisted: true` 并打印警告
   横幅，不会把两种模式的结果混着呈现——见 `README.md` 第 8 节。
 
 ---
@@ -384,7 +384,7 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
    **没有**覆盖 Karatsuba 的两次减法（`s1`、`h1`、`h1d`）、累加器读回（`cd[0..13]`）和写回
    （`wb`、`wbd`、`rb_din`）。这些寄存器携带同一批数据，只是晚几拍，所以现有模型给出的仍然是
    泄漏强度的下界，不是精确预测。
-2. **逐系数攻击的"先鸡后蛋"问题。** 见第 5.4 节，一对系数里先猜的那个搭档永远未知。
+2. **逐系数的"先鸡后蛋"问题。** 见第 5.4 节，一对系数里先猜的那个搭档永远未知。
 3. **只覆盖了 Decrypt 的 BaseMul（P1/P2），没覆盖 P3（减法）、KeyGen 的 CBD/NTT、
    Encaps 重加密路径。** 早期仿真级 TVLA 的结果显示 P2 泄漏最强，
    但那是未加防护核心的结论，加了防护之后哪个点最强需要重新定位。
@@ -399,7 +399,7 @@ CPA 的信噪比可以靠**选择密文**本身提升，不只靠多采 trace—
 CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 个翻转里把它找出来。
 如果 TVLA 最强峰落在 J(z‖c) / 重加密（本仓库实测 \|t\|=9，见 [TRACE_ACQUISITION.md](TRACE_ACQUISITION.md) 1.3 节），
 说明**消息 m′ 的泄漏又强又好测**。那就不绕 BaseMul，直接利用它。代码在
-[`pc_oracle.py`](../cpa_toolkit/pc_oracle.py)，这是公开的攻击类别（Ravi 等，TCHES 2020；Ueno 等，TCHES 2022）。
+[`pc_oracle.py`](../cpa_toolkit/pc_oracle.py)，这是公开的类别（Ravi 等，TCHES 2020；Ueno 等，TCHES 2022）。
 
 **构造。** Decaps 接受任意字节当密文。令 `u` 只在某个多项式槽是常数 `k`、其余为 0，则
 `INTT(ŝᵀ∘û) = k·s_poly`，于是 `m′[t] = Compress₁( v[t] − k·s_poly[t] )`。把 `v` 只在位置 `t` 非零、
@@ -425,12 +425,12 @@ CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 
 ## 9.6 已修正：`--strategy structured` 不隔离，且会废掉 2/3 密钥
 
 `mlkem_ref.structured_ciphertext` 想让 `û` 只在一对系数非零，做法是对时域多项式做 10 位压缩。问题是
-压缩的 ±2 舍入误差经过核心的 NTT 后变成**全域 O(q) 的误差**（乘以单位根再 mod q，小量荡然无存），于是被攻击
+压缩的 ±2 舍入误差经过核心的 NTT 后变成**全域 O(q) 的误差**（乘以单位根再 mod q，小量荡然无存），于是被
 多项式的其余 254 个系数回来都近似随机；更要命的是另外两个多项式的 `û` **精确为 0**。结果：512/768 个系数对
 **任何**模型都没有可利用的泄漏，rank-1 上限 33%。现在：
 
-- `cpa_attack.py` 会检测"这个系数的假设根本不随猜测/trace 变化"（`informative`），把它们单独计数并从统计里剔除，
-  CLI/报告明确写出"本次采集有 N 个系数不含密钥信息——是密文的问题，不是攻击"（而不是打印一个看起来像失败的随机 rank）；
+- `cpa.py` 会检测"这个系数的假设根本不随猜测/trace 变化"（`informative`），把它们单独计数并从统计里剔除，
+  CLI/报告明确写出"本次采集有 N 个系数不含密钥信息——是密文的问题，不是"（而不是打印一个看起来像失败的随机 rank）；
 - `pipe_*` 的周期偏移搜索窗口放宽到 `−12..12`，并在最优偏移落在边界时告警（你那次 `−6` 正好railed 在旧窗口边缘）；
 - `testvectors` 的 `structured` 已于 2026-10-23 删除（旧文件仍能读取）。CPA 请用 `valid`（覆盖整条密钥），密钥恢复用 `pc-oracle`。
 
@@ -447,7 +447,7 @@ CPA 把问题设成"一个 NTT 域系数的 3329 选 1"，还要在每拍 ~1400 
 | BMUL 流水线 RTL（第 4.2 节表格的全部行号出处） | [`../hdl/core/mlkem_poly_alu.sv`](../hdl/core/mlkem_poly_alu.sv) |
 | Decaps 微码（第 4.1 节的 ROM 地址） | [`../hdl/core/mlkem_ucode_rom.sv`](../hdl/core/mlkem_ucode_rom.sv) |
 | 微码生成器（slot/操作码定义） | [`../scripts/gen/gen_mlkem_ucode.py`](../scripts/gen/gen_mlkem_ucode.py) |
-| 简单逐系数 CPA：两个假设、相关系数、top-10 与稳定性、oracle-assisted 排名 | [`cpa_attack.py`](../cpa_toolkit/cpa_attack.py) |
+| 简单逐系数 CPA：两个假设、相关系数、top-10 与稳定性、oracle-assisted 排名 | [`cpa.py`](../cpa_toolkit/cpa.py) |
 | TVLA 实测分析引擎（Welch's t） | [`tvla_analysis.py`](../cpa_toolkit/tvla_analysis.py) |
 | CPA/TVLA 采集、三种密文策略、结构化密文生成调用方 | [`acquire_cpa.py`](../cpa_toolkit/acquire_cpa.py) |
 | 用法、正负对照、TVLA 流程、泄漏模型与新增模型、常见问题 | [`README.md`](../cpa_toolkit/README.md) |

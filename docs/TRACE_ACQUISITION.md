@@ -2,7 +2,7 @@
 
 这份文档按实验室里的实际顺序写：出发前准备 → 接线 → 设置示波器 → 在 GUI 中连接和自检 → 调触发与时基 → 正式采集 → 采集后的整理与第一次分析。第 0 节是一页速查表，熟悉之后只看它就够了。
 
-相关文档：通信协议 [UART_PROTOCOL.md](UART_PROTOCOL.md)，攻击模型 [ATTACK_MODEL.md](ATTACK_MODEL.md)，工具说明 [cpa_toolkit/README.md](../cpa_toolkit/README.md)，SAKURA-X 移植与 LeCroy HDO6104 设置 [SAKURA_X.md](SAKURA_X.md)。
+相关文档：通信协议 [UART_PROTOCOL.md](UART_PROTOCOL.md)，CPA 模型 [MODEL.md](MODEL.md)，工具说明 [cpa_toolkit/README.md](../cpa_toolkit/README.md)，SAKURA-X 移植与 LeCroy HDO6104 设置 [SAKURA_X.md](SAKURA_X.md)。
 
 ---
 
@@ -13,12 +13,12 @@
   （Z7 PS 版：每次上电先运行 uv run scripts/board/boot_arty_z7_ps.py）
 □ 触发探头：A7 → Pmod JA 第 1 脚；Z7 → Pmod JA 第 3 脚（不是 JB）；地夹接 JA 第 5 或 11 脚（GND），别碰 6、12 脚（3.3 V）
   SAKURA-X → CN8 第 3 脚，地夹接 CN8 第 11 或 13 脚，别碰 12 脚（2.5 V）和 14 脚（VIN）
-□ 测量探头接测量通道（例如 CH1 / LeCroy 的 C2），触发探头接另一个通道（例如 CH2 / C4）
+□ 测量探头接测量通道（例如 LeCroy 的 C2），trig_out 探头接标记通道（例如 C4）：它也是触发源
 □ 示波器：触发源 = 触发通道，上升沿，电平 ≈ 1.6 V（Arty，3.3 V）/ ≈ 1.25 V（SAKURA-X，2.5 V），模式 NORMAL（不是 AUTO）
-□ 示波器：触发点放在记录的最左端（预触发 0），记录长度 ≥ 25 µs，采样率建议 ≥ 1 GSa/s
+□ 示波器：触发点放在记录左侧约 1 格（记录在 Decaps 之前开始），触发后 ≥ 23 µs，采样率建议 2.5 GSa/s（详见 OSCILLOSCOPE_GUIDE.md）
 □ 示波器：采集模式 Normal/Sample（不要 Average），存储深度固定（不要 Auto）
 □ make gui → Connection：选 …1 串口 → Connect → Run link self-test（4 项全部 OK）
-□ Connection：示波器 IP、Driver、Transport、Channel = 测量通道（CHANnel1 / LeCroy 写 C2）→ Connect
+□ Connection：示波器 IP、Driver、Transport、Signal channel = C2、Marker channel = C4 → Connect
 □ Acquisition → Check trigger（全部 PASS）→ Capture 调垂直档位（不削顶），采样率和点数与示波器屏幕一致
 □ Test Vectors → 生成向量集 → Run on board 前 20 条全部 ✓
 □ Acquisition → 选向量集 → Start acquisition；采集中不要动示波器
@@ -288,7 +288,7 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 | 触发类型 | 边沿触发，上升沿 | `trig_out` 在 Decaps 开始时上升 |
 | 触发电平 | ≈ 1.6 V（Arty，3.3 V 的一半）；≈ 1.25 V（SAKURA-X，2.5 V 的一半） | 避开噪声；SAKURA-X 上设成 2.5 V 正好卡在高电平上，会漏触发 |
 | 触发模式 | **NORMAL**（不是 AUTO） | AUTO 在没有触发时也会自己采一次，Check trigger 会报错 |
-| 触发位置 | **记录的最左端**（预触发 / 水平延迟为 0） | 软件认为第 0 个采样点就是 Decaps 开始 |
+| 触发位置 | 记录左侧约 1 格（短预触发） | 有标记通道时 GUI 在每条 trace 中找 Decaps 起点；标记在第 0 个采样点必须是低电平 |
 | 记录长度 | **≥ 25 µs**（CPA）；想看完整 Decaps 用 ≥ 130 µs | BMUL 窗口到 22.8 µs 结束 |
 | 采样率 | 建议 ≥ 1 GSa/s，至少 500 MSa/s | 1 GSa/s 时每个核心周期约 5 个采样点 |
 | 存储深度 | 固定值，不要 Auto | 一次采集中每条 trace 的长度必须相同 |
@@ -297,18 +297,17 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 | 垂直偏移 | 把信号移到屏幕中间 | |
 | 耦合 | 交流信号（电磁探头等）可用 AC 耦合 | 去掉直流偏置，档位可以调得更细 |
 
-### 4.2 触发位置为什么重要
+### 4.2 触发位置和标记通道
 
-采集时会把示波器报告的“第一个采样点相对触发的时间”（LeCroy 的 `HORIZ_OFFSET`）存进 campaign（`record_start_s`），GUI 和 CPA 按**触发后的时间**放 BMUL 窗口，所以触发点在屏幕中间（有预触发数据）时位置也是对的；但驱动不报告这个值的示波器（Keysight / Rigol / Siglent / Tektronix 的通用驱动）、以及旧 campaign，仍按“第 0 个采样点 = Decaps 开始”处理，这时预触发数据会让窗口错位。无论如何，**触发点放在屏幕最左边**仍然最稳妥，也是 *Check trigger* 检查的内容。记录必须覆盖触发后 0 … 约 23 µs（预触发部分不需要）。
+GUI 不按触发时间直接放 BMUL 窗口。示波器同时记录 trig_out（标记通道），GUI 在每条 trace 的标记中找到上升沿，
+这就是这条 trace 的 Decaps 起点（解析，`cpa_toolkit/trace_parse.py`）；BMUL 窗口从这个起点放置，CPA 也按每条
+trace 自己的起点切窗口。所以：
 
-不同品牌的叫法不同，目标都是让**触发点出现在屏幕最左边**：
+- 记录必须在 Decaps 开始之前开始：把触发点放在记录左侧约 1 格；
+- 记录必须在 Decaps 开始后至少持续 23 µs；
+- 没有标记通道时，GUI 把触发点当作 Decaps 起点，不显示 BMUL 窗口，CPA 报告标注 “not parsed”。
 
-- Keysight InfiniiVision：Horizontal 菜单中 Time Ref 选 Left，延迟设为 0；
-- Rigol / Siglent：调水平位移（Horizontal Position / Delay），把屏幕上方的触发位置标记移到最左边；
-- Tektronix：Horizontal Position 设为 0%（或关闭 Delay 后把位置设为 0%）；
-- Teledyne LeCroy（HDO / WaveRunner / WavePro）：用 Horizontal 区的 *Delay* 旋钮把触发位置移到网格最左边：屏幕下方的时间轴应从 0 开始（默认是触发在正中，时间轴从 −5 格开始）。LeCroy 驱动会读回第一个采样点相对触发的时间，*Check trigger* 的第 4 项和 *Capture* 的 “trigger position” 直接告诉你是否对齐。
-
-具体菜单以你用的示波器为准。4.4 节有一个用软件验证触发位置的方法。
+各品牌的具体菜单见 [OSCILLOSCOPE_GUIDE.md](OSCILLOSCOPE_GUIDE.md)。
 
 ### 4.3 采样率、记录长度、文件大小
 
@@ -323,13 +322,12 @@ Pmod 是 2×6 的排母：1 到 6 是一排，7 到 12 是另一排，1 和 7 �
 
 采样点越多，网络传输越慢、分析越吃内存。**CPA 的第一次实验建议用 25–30 µs、1 GSa/s 左右**；想探索整个 Decaps 的泄漏，可以另做一个小的 TVLA，用长记录。
 
-### 4.4 用软件验证触发位置（推荐做一次）
+### 4.4 用软件验证标记
 
-1. 在 GUI 的 Connection 页把示波器的 *Channel* 临时改成**触发通道**（例如 `CHANnel2`），断开后重新 Connect；
-2. 到 Acquisition 页点 *Capture*；
-3. 看到的应该是一个从 x = 0 就开始的高电平（≈ 3.3 V），一直持续到约 127.5 µs（或者持续到记录结束）；
-4. 如果高电平是从中间某处才开始的，说明触发点不在最左端，回到 4.2 节调整；
-5. 把 *Channel* 改回测量通道，重新 Connect。
+1. 在 Acquisition 页点 *Capture*；
+2. 图中黄色曲线（右侧纵轴）是标记：它应该在记录左侧变高，并一直保持到 Decaps 结束（约 128 µs）或记录结束；
+3. 图上方的 *Decaps start* 必须显示 “found at … µs”；
+4. 在 Parse & View 页可以逐条查看每条 trace 的标记和解析结果。
 
 ### 4.5 采集中不要动示波器
 
@@ -475,7 +473,7 @@ Acquisition 页左边 *Campaign* 卡片：
 Analysis 页顶部选 campaign，点 *New analysis*：
 
 - **TVLA**：直接 *Run analysis*。看 \|t\| 曲线：超过 ±4.5 的峰说明检测到泄漏。峰会标出它落在哪个阶段（KPI 里的 *peak at*、点击读数）；整条 Decaps 的最强峰在 J(z‖c) 或重加密里是预期的（见 1.3 节），要看 BMUL 有没有泄漏，用工具栏缩放到 *BMUL 0/1/2* 看窗口内的 \|t\|。
-- **CPA**：*Hypothesis* 先用 `hw_product_mod`（默认），*What to attack* 先用前 8 个系数、*Whole BMUL window*（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md)）；*Scoring* 选 *Blind attack*（真实攻击，不使用真实密钥）或 *Rank the campaign key*（用真实密钥给猜测排名，结果会标注 oracle-assisted，**不能当作真实攻击结果展示**）。结果在 *Overview* 里是一行一个系数的表（峰值、是噪声底的几倍、峰值位置和 RTL 预测的差、稳定性），*Coefficient* 里是单个系数的五张图（相关系数随时间、候选排名、随 trace 数的收敛、top-10、热图）；换另一个假设再跑一次，在 *Compare* 标签里对比。
+- **CPA**：*Hypothesis* 先用 `hw_product_mod`（默认），*Coefficients* 先用前 8 个系数、*Whole BMUL window*（[LEAKAGE_MODELS.md](LEAKAGE_MODELS.md)）；*Scoring* 选 *Blind*（不使用真实密钥）或 *Rank the campaign key*（用真实密钥给猜测排名，结果会标注 oracle-assisted，**不能当作不用密钥的分析结果展示**）。结果在 *Overview* 里是一行一个系数的表（峰值、是噪声底的几倍、峰值位置和 RTL 预测的差、稳定性），*Coefficient* 里是单个系数的五张图（相关系数随时间、候选排名、随 trace 数的收敛、top-10、热图）；换另一个假设再跑一次，在 *Compare* 标签里对比。
 
 结果怎么解读，见 [cpa_toolkit/README.md](../cpa_toolkit/README.md) 第 7、8 节。
 

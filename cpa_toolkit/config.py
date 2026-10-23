@@ -41,6 +41,13 @@ SCOPE_RESOURCES = {
 #: trace and C4 the trigger source). Keysight/Rigol/Siglent: "CHANnel1"; Tektronix: "CH1".
 SCOPE_CHANNEL = "C2"
 
+#: <<< EDIT: the channel that probes trig_out (the Decaps marker, also the trigger
+#: source). Read after every capture and stored with the trace, so every trace can
+#: be parsed: its own Decaps start is found from this marker (trace_parse.py), and
+#: the BMUL windows are placed from there. "" = no marker channel (then the traces
+#: are not parsed and the GUI does not draw BMUL windows).
+SCOPE_MARKER_CHANNEL = "C4"
+
 #: Driver, a name in scope.DIALECT_NAMES: "lecroy" (Teledyne LeCroy MAUI:
 #: HDO / WaveRunner / WavePro / WaveSurfer), "default" (Keysight
 #: InfiniiVision, Rigol DS/MSO and close relatives) or "tektronix".
@@ -68,7 +75,7 @@ CORE_MHZ = 206.25
 #: ``BMUL s7 * s6 -> s3`` (acc for 1 and 2) of K-PKE.Decrypt, i.e. the three
 #: products s_hat_i o u_hat_i. Measured in a cycle-accurate RTL simulation of
 #: Decaps (each is 281 cycles: 128 words, one per 2 cycles, plus the 21-cycle
-#: pipeline); see docs/ATTACK_MODEL.md section 4.3. After an RTL/microcode
+#: pipeline); see docs/MODEL.md section 4.3. After an RTL/microcode
 #: change, re-measure with ``scripts/sim/bmul_timing.py`` (which drives
 #: testbench/core_sim) and paste its "config.py" block in here.
 #: The datapath is active cycles 1289-1564 etc.; the ends are kept a few
@@ -77,13 +84,13 @@ BMUL_WINDOWS = [(1289, 1570), (2855, 3136), (4421, 4702)]
 
 #: The cycle in which the RAM read address of the first word of each decryption BMUL is issued
 #: (``T`` of word 0 in ``mlkem_poly_alu.sv``; word ``w`` is read at ``T + 2 w``): the datapath's
-#: first active cycle plus one. ``cpa_attack.py`` predicts the cycle of every coefficient from
+#: first active cycle plus one. ``cpa.py`` predicts the cycle of every coefficient from
 #: these (``T + 2 * (j // 2)``) and compares it with where the correlation peak actually is. Measured by ``scripts/sim/bmul_timing.py`` (the
 #: ALU start event of each BMUL, plus 2), same run as BMUL_WINDOWS.
 BMUL_READ_CYCLES = [1290, 2856, 4422]
 
 #: NTT (one per BMUL, computing u_hat_i before it) and the single INTT (after
-#: the third BMUL, see docs/ATTACK_MODEL.md section 4.1's microcode listing --
+#: the third BMUL, see docs/MODEL.md section 4.1's microcode listing --
 #: ADDR 235/239/243 = NTT, ADDR 247 = INTT) cycle ranges, same units as
 #: BMUL_WINDOWS. Measured cycle-exactly (identical across two Decaps jobs) in
 #: scripts/sim/bmul_timing.py, same run that re-confirms BMUL_WINDOWS. These
@@ -130,7 +137,7 @@ OUT_BASE = 0x0E00
 # =============================================================================
 # CPA hypothesis default (set from the GUI's Analysis page, or by hand)
 # =============================================================================
-#: The hypothesis cpa_attack.py uses without --model: a key of cpa_attack.MODELS
-#: (`cpa_attack.py --list-models`). hw_product_mod = HW(u * g mod q), the multiplier's
+#: The hypothesis cpa.py uses without --model: a key of cpa.MODELS
+#: (`cpa.py --list-models`). hw_product_mod = HW(u * g mod q), the multiplier's
 #: reduced output; hw_product_raw = HW(u * g), the DSP product register.
 CPA_MODEL = "hw_product_mod"

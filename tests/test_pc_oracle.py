@@ -52,7 +52,7 @@ class TestOracle(unittest.TestCase):
             m = R.decrypt(self.dk, PCO.chosen_ciphertext(poly, t, z))
             bits = np.unpackbits(np.frombuffer(m, np.uint8), bitorder="little")
             self.assertEqual(int(bits[t]), PCO.message_bit(z, int(self.truth[poly, t])))
-            self.assertEqual(int(bits[np.arange(256) != t].sum()), 0)   # only the attacked bit can be set
+            self.assertEqual(int(bits[np.arange(256) != t].sum()), 0)   # only the target bit can be set
 
     def test_references_are_key_independent(self):
         self.assertEqual({PCO.message_bit(PCO.REF_ZERO, s) for s in PCO.SECRET_VALUES}, {0})

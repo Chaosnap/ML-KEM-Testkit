@@ -2,7 +2,7 @@
 """Trace acquisition for the ML-KEM-768 core (Decaps / BaseMul), two modes.
 
 Drives the board and the scope and writes one HDF5 file per campaign; it does
-not run an attack or a t-test -- run ``cpa_attack.py`` or ``tvla_analysis.py``
+not run a CPA or a t-test -- run ``cpa.py`` or ``tvla_analysis.py``
 on the output file for that. Both modes keep ``dk`` fixed for the whole
 campaign (a decapsulation oracle: the standard setup for both CPA and TVLA
 against a KEM, Lee FDTC 2020 / Ravi et al. ToSC 2020).
@@ -14,7 +14,7 @@ a wrong key shows up on the very trace it happens.
 
 CPA mode: N different ciphertexts (``valid`` / ``invalid`` / ``pc-oracle``),
 one trace each, for correlation against the leakage model in ``mlkem_ref.py``
-(``docs/ATTACK_MODEL.md``). TVLA mode: fixed-vs-random (FIPS 203 Decaps TVLA
+(``docs/MODEL.md``). TVLA mode: fixed-vs-random (FIPS 203 Decaps TVLA
 methodology), for Welch's t-test.
 
     python acquire_cpa.py ports                               # find the board
@@ -46,6 +46,7 @@ import config as C
 import mlkem768 as KEM
 import scope as S
 import testvectors as TV
+import trace_parse as P
 import uart_target as T
 from hdf5_trace_store import TraceReader, TraceWriter, summarize
 
@@ -152,8 +153,8 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
     SHA3-256 must match the file's ``dk_hash``).
 
     Callbacks: ``progress_cb(done, total, message)`` after every trace;
-    ``trace_cb(index, trace, cls, ok)`` with every captured trace (live
-    preview); ``stop_cb()`` polled after every trace -- True stops early and
+    ``trace_cb(index, trace, cls, ok, rise)`` with every captured trace (live
+    preview; ``rise`` = the Decaps start found in the marker, or -1); ``stop_cb()`` polled after every trace -- True stops early and
     leaves a valid, resumable partial file.
 
     Integrity checks on every trace: the output must equal the expected
@@ -161,6 +162,10 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
     identical (the core is supposed to be constant-time; a change is itself a
     timing-leak finding). A link that is gone (port closed, USB unplugged)
     ends the campaign at once; it can be resumed.
+
+    With a scope marker channel (``sc.marker``, the trig_out probe) every capture
+    also stores the marker and where its Decaps edge is (``/marker``, ``/parse``):
+    the traces are then parsed while they are captured (trace_parse.py).
     """
     target.require_run()  # a bitstream without 0x05 Run cannot run operations: fail before any file
     if resume:
@@ -175,6 +180,11 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
             raise ValueError("rebuilt dk does not match the file's dk_hash -- refusing to resume")
         mode, n = writer.mode, writer.n_traces
         start_index = writer.n_completed
+        stored = json.loads(str(writer.f["metadata"].attrs.get("scope", "{}"))).get("marker", "")
+        if writer.has_marker and not getattr(sc, "marker", ""):
+            writer.close()
+            raise ValueError("this campaign stores the marker channel %s: set it on the scope connection to resume"
+                             % (stored or "?"))
         if start_index >= n:
             writer.close()
             return summarize(out_path)
@@ -189,12 +199,14 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
             "scope": json.dumps(sc.info()), "board": json.dumps(target.info()),
             "simulated": False, "created_unix": time.time(),
             "recipe": json.dumps(vectors.meta), "vector_set": vector_set_path or vectors.meta["id"],
+            "marker_channel": getattr(sc, "marker", "") or "",
         }
         writer = TraceWriter(out_path, n, n_samples, dk, meta, mode=mode,
-                             items=vectors.campaign_items(), expected=vectors.k)
+                             items=vectors.campaign_items(), expected=vectors.k,
+                             marker=bool(getattr(sc, "marker", "")))
         start_index = 0
 
-    errors = k_mismatches = cycle_changes = 0
+    errors = k_mismatches = cycle_changes = marker_failures = 0
     first_cycles: int | None = None
     t_start = time.time()
     stopped_early = link_lost = False
@@ -237,6 +249,18 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
                                    "timebase or memory depth changed -- set it back and resume (%d traces kept)"
                                    % (trace.shape[0], n_samples, i))
 
+            marker, parse = None, None
+            if writer.has_marker:
+                marker = np.asarray(sc.read_marker())
+                if marker.shape[0] != n_samples:
+                    raise RuntimeError("the marker channel returned %d samples, the power channel %d: use the same "
+                                       "timebase for both (%d traces kept)" % (marker.shape[0], n_samples, i))
+                parse = P.parse_marker(marker)
+                if not parse["ok"]:
+                    marker_failures += 1
+                    if not quiet:
+                        print("  [%d/%d] WARNING: no Decaps edge in the marker: %s" % (i + 1, n, parse["reason"]))
+
             ok = True
             if expected is not None and out.output != expected:
                 ok = False
@@ -252,9 +276,9 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
                 if not quiet:
                     print("  [%d/%d] WARNING: CYCLE_COUNT varied (%d vs first %d) -- the core is not "
                           "constant-time for this input" % (i + 1, n, out.cycles, first_cycles))
-            writer.append(i, trace, ct, out.cycles, out.output, ok=ok, cls=cls)
+            writer.append(i, trace, ct, out.cycles, out.output, ok=ok, cls=cls, marker=marker, parse=parse)
             if trace_cb:
-                trace_cb(i, trace, cls, ok)
+                trace_cb(i, trace, cls, ok, parse["rise"] if parse and parse["ok"] else -1)
             if progress_cb:
                 progress_cb(i + 1, n, out.describe() + ("" if ok else "  [K MISMATCH]"))
 
@@ -270,10 +294,11 @@ def run_campaign(target, sc, out_path: str, n_samples: int, vectors: TV.VectorSe
     finally:
         query = getattr(sc, "record_start_s", None)
         writer.set_sample_rate(sc.sample_rate(), query() if callable(query) else None)
+        writer.finalize_parse(sc.sample_rate())
         writer.close()
     summary = summarize(out_path)
     summary.update(stopped_early=stopped_early, link_lost=link_lost, k_mismatches=k_mismatches,
-                   cycle_changes=cycle_changes)
+                   cycle_changes=cycle_changes, marker_failures=marker_failures)
     return summary
 
 
@@ -318,7 +343,7 @@ def _open_board_and_scope(args):
         print("WARNING: SCOPE_IP is still the config.py placeholder (%s) -- edit config.py or "
               "pass --ip <real address>." % ip, file=sys.stderr)
     print("connecting to scope at", S.resource_for(ip, args.transport), "...")
-    sc = S.open_scope(ip, channel=args.channel, dialect=args.dialect, points=args.samples,
+    sc = S.open_scope(ip, channel=args.channel, dialect=args.dialect, points=args.samples, marker=args.marker,
                       transport=args.transport)
     sc.configure()
     print("scope:", sc.info())
@@ -389,6 +414,8 @@ def main() -> None:
         sp.add_argument("-p", "--port", required=True)
         sp.add_argument("--ip", default="", help="scope IP; default is SCOPE_IP in config.py")
         sp.add_argument("--channel", default="", help="default is SCOPE_CHANNEL in config.py (LeCroy: C1..C4)")
+        sp.add_argument("--marker", default=None, help="trig_out marker channel, '' for none "
+                                                       "(default SCOPE_MARKER_CHANNEL in config.py)")
         sp.add_argument("--dialect", default="", choices=("",) + S.DIALECT_NAMES)
         sp.add_argument("--transport", default="", choices=[""] + list(C.SCOPE_RESOURCES),
                         help="default is SCOPE_TRANSPORT in config.py (vicp / vxi11 / socket)")

@@ -73,17 +73,23 @@ def resource_for(ip: str, transport: str = "") -> str:
 
 
 def open_scope(ip: str, channel: str = "", dialect: str = "", points: int = 0,
-               timeout_ms: int = 0, transport: str = "") -> "Scope":
-    """Open the scope at ``ip`` with the driver for ``dialect`` (defaults from config.py)."""
+               timeout_ms: int = 0, transport: str = "", marker: str | None = None) -> "Scope":
+    """Open the scope at ``ip`` with the driver for ``dialect`` (defaults from config.py).
+
+    ``marker``: the channel that probes trig_out (e.g. "C4"), read after every capture so
+    the traces can be parsed (trace_parse.py); "" = none, None = config.SCOPE_MARKER_CHANNEL.
+    """
     dialect = dialect or C.SCOPE_DIALECT
     if dialect not in DIALECT_NAMES:
         raise ValueError("unknown scope dialect %r (one of: %s)" % (dialect, ", ".join(DIALECT_NAMES)))
     resource = resource_for(ip, transport)
     timeout_ms = int(timeout_ms or C.SCOPE_TIMEOUT_MS)
+    marker = (getattr(C, "SCOPE_MARKER_CHANNEL", "") if marker is None else marker).strip()
     if dialect == "lecroy":
-        return LeCroyScope(resource, channel=channel or C.SCOPE_CHANNEL, points=points, timeout_ms=timeout_ms)
+        return LeCroyScope(resource, channel=channel or C.SCOPE_CHANNEL, points=points, timeout_ms=timeout_ms,
+                           marker=marker)
     return VisaScope(resource, channel=channel or C.SCOPE_CHANNEL, points=points, dialect=dialect,
-                     timeout_ms=timeout_ms)
+                     timeout_ms=timeout_ms, marker=marker)
 
 
 def _open_visa(resource: str, timeout_ms: int):
@@ -121,6 +127,8 @@ def parse_sample_rate(preamble: str) -> float:
 
 class Scope(ABC):
     samples: int = 0
+    #: The channel that probes trig_out ("" = none): read with read_marker() after read().
+    marker: str = ""
 
     @abstractmethod
     def arm(self) -> None: ...
@@ -138,6 +146,10 @@ class Scope(ABC):
     def sample_rate(self) -> float:
         return 0.0
 
+    def read_marker(self) -> np.ndarray | None:
+        """The marker channel of the capture read() just returned, or None without one."""
+        return None
+
     def record_start_s(self) -> float | None:
         """Time of the first sample relative to the trigger, from the last capture
         (negative = pre-trigger data). None: this driver cannot tell."""
@@ -151,7 +163,8 @@ class VisaScope(Scope):
     """A VISA/SCPI oscilloscope on the LAN (or USB)."""
 
     def __init__(self, resource: str, channel: str = C.SCOPE_CHANNEL, points: int = 0,
-                 dialect: str = C.SCOPE_DIALECT, timeout_ms: int = C.SCOPE_TIMEOUT_MS):
+                 dialect: str = C.SCOPE_DIALECT, timeout_ms: int = C.SCOPE_TIMEOUT_MS, marker: str = ""):
+        self.marker = marker
         self.rm, self.dev = _open_visa(resource, timeout_ms)
         if "SOCKET" in resource.upper():
             self.dev.read_termination = "\n"
@@ -206,8 +219,19 @@ class VisaScope(Scope):
     def sample_rate(self) -> float:
         return parse_sample_rate(self.preamble)
 
+    def read_marker(self) -> np.ndarray | None:
+        if not self.marker:
+            return None
+        d = self.d
+        self.dev.write(d["source"].format(channel=self.marker))
+        try:
+            raw = self.dev.query_binary_values(d["data"], datatype=d["datatype"], container=np.array)
+        finally:
+            self.dev.write(d["source"].format(channel=self.channel))
+        return np.asarray(raw)
+
     def info(self) -> dict:
-        return {"id": self._idn, "resource": self.resource, "channel": self.channel,
+        return {"id": self._idn, "resource": self.resource, "channel": self.channel, "marker": self.marker,
                 "dialect": self.dialect, "samples": self.samples, "preamble": self.preamble}
 
     def close(self) -> None:
@@ -280,10 +304,14 @@ class LeCroyScope(Scope):
     CHANNEL_RE = re.compile(r"^(C[1-8]|F[1-9]|F1[0-2]|M[1-4]|Z[1-8])$")
 
     def __init__(self, resource: str, channel: str = "C1", points: int = 0,
-                 timeout_ms: int = C.SCOPE_TIMEOUT_MS, dev=None):
+                 timeout_ms: int = C.SCOPE_TIMEOUT_MS, dev=None, marker: str = ""):
         channel = channel.strip().upper()
+        marker = (marker or "").strip().upper()
         if not self.CHANNEL_RE.match(channel):
             raise ValueError("LeCroy channel %r: use C1..C4 (math traces F1.., memories M1..)" % channel)
+        if marker and (not self.CHANNEL_RE.match(marker) or marker == channel):
+            raise ValueError("LeCroy marker channel %r: use another channel C1..C4 (the trig_out probe)" % marker)
+        self.marker = marker
         if dev is None:
             self.rm, self.dev = _open_visa(resource, timeout_ms)
         else:  # tests: a stand-in instrument
@@ -316,8 +344,11 @@ class LeCroyScope(Scope):
         self._w("CORD LO")                  # COMM_ORDER: little-endian
         self._w("WFSU SP,0,NP,%d,FP,0,SN,0" % int(self.samples))  # every point (or the first NP)
         self.settings = {}
-        for key, cmd in (("trigger", "TRSE?"), ("trigger_mode", "TRMD?"), ("timebase_s_div", "TDIV?"),
-                         ("volts_div", "%s:VDIV?" % self.channel), ("coupling", "%s:CPL?" % self.channel)):
+        queries = [("trigger", "TRSE?"), ("trigger_mode", "TRMD?"), ("timebase_s_div", "TDIV?"),
+                   ("volts_div", "%s:VDIV?" % self.channel), ("coupling", "%s:CPL?" % self.channel)]
+        if self.marker:
+            queries += [("marker_volts_div", "%s:VDIV?" % self.marker), ("marker_coupling", "%s:CPL?" % self.marker)]
+        for key, cmd in queries:
             try:
                 self.settings[key] = self._q(cmd)
             except Exception:  # noqa: BLE001 - informational only
@@ -362,12 +393,21 @@ class LeCroyScope(Scope):
         dt = float(self.desc.get("horiz_interval") or 0.0)
         return 1.0 / dt if dt > 0 else 0.0
 
+    def read_marker(self) -> np.ndarray | None:
+        if not self.marker:
+            return None
+        raw = self.dev.query_binary_values("%s:WF? ALL" % self.marker, datatype="B", container=bytes)
+        d = parse_wavedesc(bytes(raw))
+        if d["samples"] is None:
+            raise RuntimeError("marker channel %s returned no samples: switch the channel on" % self.marker)
+        return d["samples"]
+
     def record_start_s(self) -> float | None:
         return float(self.desc["horiz_offset"]) if "horiz_offset" in self.desc else None
 
     def info(self) -> dict:
-        out = {"id": self._idn, "resource": self.resource, "channel": self.channel, "dialect": self.dialect,
-               "samples": self.samples}
+        out = {"id": self._idn, "resource": self.resource, "channel": self.channel, "marker": self.marker,
+               "dialect": self.dialect, "samples": self.samples}
         out.update(self.settings)
         for k in ("nominal_bits", "vertical_gain", "vertical_offset", "wave_array_count"):
             if k in self.desc:

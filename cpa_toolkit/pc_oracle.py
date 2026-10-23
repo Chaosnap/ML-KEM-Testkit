@@ -1,7 +1,7 @@
 """Plaintext-checking (PC) oracle key recovery for the ML-KEM-768 Decaps evaluation.
 
-A published class of attack on FO-transform KEMs (Ravi et al., TCHES 2020; Ueno et al.,
-TCHES 2022). It is complementary to the coefficient CPA of ``cpa_attack.py``: instead of correlating a
+A published key-recovery method for FO-transform KEMs (Ravi et al., TCHES 2020; Ueno et al.,
+TCHES 2022). It is complementary to the coefficient CPA of ``cpa.py``: instead of correlating a
 3329-candidate hypothesis of one NTT-domain coefficient against the BaseMul window, it recovers
 one *time-domain* secret coefficient per group of queries with a single binary measurement, read
 from the loud part of the trace (the FO re-encryption, where a fixed-vs-random TVLA already shows
@@ -48,7 +48,7 @@ def decompress(code: int, d: int) -> int:
 
 
 def message_bit(v_code: int, s_value: int) -> int:
-    """Compress_1( Decompress_4(v_code) - k*s ) at the attacked position, k = Decompress_10(U_CODE)."""
+    """Compress_1( Decompress_4(v_code) - k*s ) at the target position, k = Decompress_10(U_CODE)."""
     k = decompress(U_CODE, 10)
     w = (decompress(v_code, 4) - k * s_value) % Q
     return int(R.compress(np.array([w]), 1)[0])
@@ -77,7 +77,7 @@ def _thermometer_levels() -> list[int]:
 
 #: One v-code per secret boundary (-2|-1, -1|0, 0|1, 1|2): the thermometer sweep.
 THERMO_LEVELS = _thermometer_levels()
-#: Reference v-codes, both with a nonzero v at the attacked position so the ciphertext still names
+#: Reference v-codes, both with a nonzero v at the target position so the ciphertext still names
 #: the coefficient (unlike v=0): REF_ZERO forces m' = 0 and REF_ONE forces m' weight-one, for every
 #: possible secret. Checked key-independent in :func:`_reference_codes` at import.
 REF_ZERO, REF_ONE = 1, 7
@@ -380,7 +380,7 @@ def _main() -> None:
         print("whole key: %d coefficients" % n)
         print("  sweep queries:     %d (%d per coefficient)" % (n * len(THERMO_LEVELS), len(THERMO_LEVELS)))
         print("  reference queries: %d (2 per coefficient, key-independent)" % (n * 2))
-        print("  each captured R times and averaged; R sets the trace budget (see docs/ATTACK_MODEL.md)")
+        print("  each captured R times and averaged; R sets the trace budget (see docs/MODEL.md)")
     else:
         res = decode_campaign(args.file, max_traces=args.max_traces)
         print("file:                 %s" % res["file"])

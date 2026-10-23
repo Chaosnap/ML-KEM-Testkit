@@ -42,3 +42,6 @@ Thumbs.db
 # are a pinned, ordinary-directory snapshot in third_party/sakura_x_shell/.
 /.history/
 /sakura-x-shell/
+
+# Bench reference scripts and captures (large; kept local)
+/sakura_trace_example/

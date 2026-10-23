@@ -19,7 +19,7 @@ This is the **noise-free, equal-weight Hamming-distance ceiling**: no probe, no
 transfer function, no measurement noise. It ranks where to look; it does not
 predict a measured correlation. Pipeline depth is deliberately not reported
 here (words issue every 2 cycles, so a cycle offset is ambiguous for a deep
-register); ``cpa_attack.py`` predicts the cycle of its hypothesis from the same schedule.
+register); ``cpa.py`` predicts the cycle of its hypothesis from the same schedule.
 
     python scripts/sim/register_leakage.py                 # 200 ciphertexts
     python scripts/sim/register_leakage.py -n 400 --csv regs.csv
@@ -48,7 +48,7 @@ SIM_BINARY = os.path.join(SIM_DIR, "obj_dir", "Vtb_core")
 
 #: Rows of a BMUL (0 = the cycle before the first read T) examined: steady state, away from the edges.
 ROWS = (2 * 10 + 1, 2 * 100 + 1)
-#: Decryption BMULs end before this busy cycle (docs/ATTACK_MODEL.md 4.3).
+#: Decryption BMULs end before this busy cycle (docs/MODEL.md 4.3).
 DECRYPT_UNTIL = 4800
 #: Rows kept per BMUL in a parsed run (128 words x 2 cycles + pipeline drain).
 SPAN = 128 * 2 + 28

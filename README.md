@@ -40,7 +40,7 @@ scripts/test/           ACVP 测试（板上 / Verilator）
 scripts/gen/            微码与 zeta ROM 生成器
 testbench/              Icarus / Verilator / cocotb 测试平台
 tests/                  Python 单元测试；tests/acvp/ 为 NIST ACVP 向量
-docs/                   GUI 指南、协议、ACVP、攻击模型文档；datasheets/ SASEBO-GIII 手册；diagrams/ 框图；results/ 实现报告
+docs/                   GUI 指南、协议、ACVP、CPA 模型文档；datasheets/ SASEBO-GIII 手册；diagrams/ 框图；results/ 实现报告
 build/                  生成物（Vivado 工程、仿真），不入库
 data/                   运行时输出（测试向量、trace、分析报告、ACVP 结果），不入库
 ```
@@ -55,7 +55,8 @@ make test                    # Python 单元测试
 make gui                     # Web GUI：http://127.0.0.1:8765
 ```
 
-GUI 左侧导航按实验顺序排列：**Connection** → **Test Vectors** → **Acquisition** → **Trace Library** → **Analysis**。
+GUI 左侧导航按实验顺序排列：**Connection** → **Test Vectors** → **Acquisition** → **Trace Library** → **Parse & View** → **Analysis**。
+示波器同时记录 trig_out 标记通道；GUI 在每条 trace 中找到 Decaps 起点（解析），BMUL 窗口和 CPA 都从这个起点对齐。
 操作步骤、多选和批量删除/恢复、快捷键和故障排除见 [docs/GUI_GUIDE.md](docs/GUI_GUIDE.md)。
 
 命令行用法与实验方法见 [cpa_toolkit/README.md](cpa_toolkit/README.md)。
@@ -130,11 +131,12 @@ SAKURA-X 使用上游 shell 的 FIFO 帧和 START 命令，见 [docs/SAKURA_X.md
 ## 文档
 
 - [docs/GUI_GUIDE.md](docs/GUI_GUIDE.md)：GUI 使用指南（按 ASD-STE100 编写）
+- [docs/OSCILLOSCOPE_GUIDE.md](docs/OSCILLOSCOPE_GUIDE.md)：示波器操作指南（信号通道、trig_out 标记通道、时基、触发）
 - [docs/SAKURA_X.md](docs/SAKURA_X.md)：SAKURA-X 构建、烧录、EEPROM、接口
 - [docs/TRACE_ACQUISITION.md](docs/TRACE_ACQUISITION.md)：实验室采集 trace 的上手指南（接线、示波器设置、GUI 操作、排错）
 - [docs/UART_PROTOCOL.md](docs/UART_PROTOCOL.md)：主机 ↔ FPGA 通信协议、寄存器表、采集流程、吞吐量
 - [docs/ACVP_TEST.md](docs/ACVP_TEST.md)：ACVP 功能测试（上板 / 仿真）
-- [docs/ATTACK_MODEL.md](docs/ATTACK_MODEL.md)：CPA 攻击模型（目标寄存器、时钟拍、RTL 行号）
+- [docs/MODEL.md](docs/MODEL.md)：CPA 模型（目标寄存器、时钟拍、RTL 行号）
 - [cpa_toolkit/README.md](cpa_toolkit/README.md)：采集与 CPA/TVLA 的用法和实验方法
 - [docs/diagrams/](docs/diagrams/)：系统框图与数据通路
 

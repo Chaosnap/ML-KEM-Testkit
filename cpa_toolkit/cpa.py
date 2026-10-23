@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Simple coefficient-level CPA against the ML-KEM-768 BaseMul of K-PKE.Decrypt.
 
-This replaces the earlier model catalogue (``models/``, row-aligned pipeline attacks) with the
+This replaces the earlier model catalogue (``models/``, row-aligned pipeline analyses) with the
 plain recipe the public ML-KEM CPA code bases share:
 
 * for a public NTT-domain coefficient ``u`` (from the known ciphertext) and every secret
@@ -25,7 +25,7 @@ issued, ``T = BMUL_READ_CYCLES[poly] + 2 * (coeff // 2)``, the operands reach th
 
 Both coefficients of a pair (``2w``, ``2w + 1``) are multiplied in the same cycle by the two
 multipliers, so the partner coefficient is algorithmic noise for the other one. Hypotheses depend
-only on ``u`` and ``g``: no partner and no earlier recovery enter, so the attack is blind by
+only on ``u`` and ``g``: no partner and no earlier recovery enter, so the analysis is blind by
 construction; the true key (``--dk-ref``) is used only to *rank* the guesses afterwards.
 
 The predicted cycle of every coefficient is printed next to where its correlation peak actually
@@ -34,12 +34,12 @@ the leakage is real; peaks scattered over the window show noise.
 
 Usage::
 
-    python cpa_attack.py --list-models
-    python cpa_attack.py FILE.hdf5                              # blind, first 8 coefficients of each polynomial
-    python cpa_attack.py FILE.hdf5 --coeffs 0-15 --polys 0
-    python cpa_attack.py FILE.hdf5 --dk-ref dk.bin              # + rank of the true key
-    python cpa_attack.py FILE.hdf5 --search gate --margin 10    # only around the predicted cycle
-    python cpa_attack.py FILE.hdf5 --out report.json --csv results.csv
+    python cpa.py --list-models
+    python cpa.py FILE.hdf5                              # blind, first 8 coefficients of each polynomial
+    python cpa.py FILE.hdf5 --coeffs 0-15 --polys 0
+    python cpa.py FILE.hdf5 --dk-ref dk.bin              # + rank of the true key
+    python cpa.py FILE.hdf5 --search gate --margin 10    # only around the predicted cycle
+    python cpa.py FILE.hdf5 --out report.json --csv results.csv
 """
 
 from __future__ import annotations
@@ -52,9 +52,9 @@ import sys
 
 import numpy as np
 
-import acquire_cpa as A
 import config as C
 import mlkem_ref as R
+import trace_parse as P
 from hdf5_trace_store import TraceReader
 
 Q, K = R.Q, R.K
@@ -139,10 +139,43 @@ def correlate(hyp: np.ndarray, tz: np.ndarray) -> np.ndarray:
     return np.nan_to_num(rho, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def sample_to_cycle(sample: int, rate: float, start_s: float) -> float:
-    """Core clock cycle after the trigger that sample ``sample`` falls in."""
-    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
-    return (sample / sr + (start_s if rate > 0 else 0.0)) * C.CORE_MHZ * 1e6
+class Timing:
+    """Where the core cycles are in the traces.
+
+    Parsed campaign (trace_parse.py): every trace has its own Decaps start ``rise`` (from the
+    trig_out marker) and the samples per core cycle are measured. Not parsed: the trigger is
+    taken as the Decaps start of every trace at the nominal clock (``source = "nominal"``).
+    Either way a span of core cycles is cut out of each trace at its own start, so positions
+    are given as core cycles / microseconds after the Decaps start.
+    """
+
+    def __init__(self, rate: float, start_s: float | None, n: int, parse: dict | None = None,
+                 rows: np.ndarray | None = None):
+        if parse is not None:
+            sel = np.arange(n) if rows is None else rows
+            self.rise = np.asarray(parse["rise"])[sel].astype(np.int64)
+            self.ok = np.asarray(parse["ok"])[sel].astype(bool)
+            self.spc = float(parse["samples_per_cycle"])
+            self.source = "parsed (%s, clock %s)" % (parse.get("method", "marker"), parse.get("spc_source", "nominal"))
+            self.parsed = True
+        else:
+            self.spc = rate / (C.CORE_MHZ * 1e6) if rate > 0 else 1.0
+            t0 = int(round(-(start_s or 0.0) * rate)) if rate > 0 else 0
+            self.rise, self.ok = np.full(n, t0, dtype=np.int64), np.ones(n, dtype=bool)
+            self.source, self.parsed = "nominal (not parsed: trigger = Decaps start)", False
+        self.rate = rate
+        self.clock_mhz = rate / self.spc / 1e6 if rate > 0 else C.CORE_MHZ
+
+    def cut(self, traces: np.ndarray, c0: float, c1: float):
+        """``(matrix, rows)``: core cycles ``c0 .. c1`` of every usable trace."""
+        return P.aligned_window(traces, self.rise, self.ok, self.spc, c0, c1)
+
+    def cycle(self, c_start: float, offset: int) -> float:
+        """Core cycle of sample ``offset`` of a cut that starts at cycle ``c_start``."""
+        return c_start + offset / self.spc
+
+    def us(self, cycle: float) -> float:
+        return round(cycle / self.clock_mhz, 4)
 
 
 def predicted_cycles(model: Model, poly: int, coeff: int) -> tuple[int, int]:
@@ -151,22 +184,18 @@ def predicted_cycles(model: Model, poly: int, coeff: int) -> tuple[int, int]:
     return t0 + model.cycles[0], t0 + model.cycles[-1]
 
 
-def search_range(model: Model, poly: int, coeff: int, search: str, margin: int, delay: float,
-                 rate: float, start_s: float, n_samples: int) -> tuple[int, int]:
-    """Samples ``[s0, s1)`` of the trace the attack looks at for one coefficient: the whole BMUL
-    window of its polynomial (``full``) or the predicted cycle +- ``margin`` (``gate``)."""
+def search_cycles(model: Model, poly: int, coeff: int, search: str, margin: int, delay: float) -> tuple[float, float]:
+    """Core cycles ``[c0, c1)`` the analysis looks at for one coefficient: the whole BMUL window of its
+    polynomial with slack (``full``), or the predicted cycle +- ``margin`` (``gate``)."""
     if search == "full":
-        return A.window_sample_ranges(rate, n_samples, start_s if rate > 0 else 0.0)[poly]
-    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
-    st = start_s if rate > 0 else 0.0
-    c0, c1 = predicted_cycles(model, poly, coeff)
-    s0 = max(0, A.cycle_to_sample(c0 + delay - margin, sr, st))
-    s1 = min(n_samples, A.cycle_to_sample(c1 + delay + margin, sr, st) + 1)
-    return s0, max(s0, s1)
+        c0, c1 = C.BMUL_WINDOWS[poly]
+        return c0 - C.TRIGGER_SLACK_CYCLES, c1 + C.TRIGGER_SLACK_CYCLES
+    p0, p1 = predicted_cycles(model, poly, coeff)
+    return p0 + delay - margin, p1 + delay + margin + 1
 
 
 # --------------------------------------------------------------------------- one coefficient
-def attack_coefficient(model: Model, u: np.ndarray, tz: np.ndarray, true_value: int | None = None,
+def analyse_coefficient(model: Model, u: np.ndarray, tz: np.ndarray, true_value: int | None = None,
                        want_full: bool = False) -> dict:
     """CPA over one secret coefficient.
 
@@ -247,7 +276,7 @@ def parse_range(text, upper: int) -> list[int]:
 
 
 def parse_polys(text) -> list[int]:
-    """Polynomials to attack: ``"0-2"``, ``"0,2"`` or ``"1"`` (a list, not a count); empty = all three."""
+    """Polynomials to analyse: ``"0-2"``, ``"0,2"`` or ``"1"`` (a list, not a count); empty = all three."""
     if text in (None, "", ()):
         return list(range(K))
     if isinstance(text, (list, tuple)):
@@ -279,6 +308,10 @@ def load_campaign(h5_path: str, max_traces: int = 0) -> dict:
         info = {"rate": r.sample_rate, "start": r.record_start_s, "dk_hash": r.dk_hash, "n_failed": int((~ok).sum())}
     if traces.shape[0] < 20:
         raise SystemExit("only %d usable traces; capture more" % traces.shape[0])
+    parse = P.load(h5_path)
+    info["timing"] = Timing(info["rate"], info["start"], traces.shape[0], parse,
+                            np.flatnonzero(ok) if parse is not None else None)
+    info["parse"] = P.public(parse)
     info["u_hat"] = R.u_hat_from_ct(cts)
     info["traces"] = traces
     return info
@@ -292,7 +325,7 @@ def true_key(dk_ref: bytes | None, dk_hash: bytes) -> np.ndarray | None:
     return R.s_hat_from_dk(dk_ref)
 
 
-def run_attack(h5_path: str, model: str = DEFAULT_MODEL, max_traces: int = 0, dk_ref: bytes | None = None,
+def run_cpa(h5_path: str, model: str = DEFAULT_MODEL, max_traces: int = 0, dk_ref: bytes | None = None,
                polys="0-2", coeffs="8", search: str = "full", margin: int = 10, delay: float = 0.0,
                progress_cb=None) -> dict:
     """CPA over the chosen coefficients; returns the report dict (JSON-serialisable)."""
@@ -300,50 +333,55 @@ def run_attack(h5_path: str, model: str = DEFAULT_MODEL, max_traces: int = 0, dk
     if search not in ("full", "gate"):
         raise ValueError("search must be 'full' or 'gate'")
     d = load_campaign(h5_path, max_traces)
-    rate, start = d["rate"], d["start"]
-    start_s = start or 0.0
+    rate, start, tm = d["rate"], d["start"], d["timing"]
     traces, u_hat = d["traces"], d["u_hat"]
     n, n_samp = traces.shape
     s_hat = true_key(dk_ref, d["dk_hash"])
     poly_list = parse_polys(polys)
     coeff_list = parse_range(coeffs, 256)
-    results, total, searched = [], len(poly_list) * len(coeff_list), []
+    results, total, searched, used = [], len(poly_list) * len(coeff_list), [], []
     for poly in poly_list:
-        w0, w1 = A.window_sample_ranges(rate, n_samp, start_s if rate > 0 else 0.0)[poly]
-        if w1 <= w0:
-            raise SystemExit("BMUL %d is outside the record (%.2f .. %.2f us after the trigger) -- see Acquisition > "
-                             "Check trigger" % (poly, start_s * 1e6, (start_s + n_samp / max(rate, 1)) * 1e6))
-        tzw = standardize(traces[:, w0:w1])      # the BMUL window of this polynomial, standardised once
+        wc0, wc1 = search_cycles(m, poly, 0, "full", margin, delay)
+        tw, rows_w = tm.cut(traces, wc0, wc1)
+        if rows_w.size < 20:
+            raise SystemExit("BMUL %d is outside the record in %d of %d traces -- parse the traces (Traces page) "
+                             "or check the trigger (Acquisition > Check trigger)" % (poly, n - rows_w.size, n))
+        tzw = standardize(tw)          # the BMUL window of this polynomial, standardised once
+        used.append(int(rows_w.size))
         for j in coeff_list:
             if search == "full":
-                s0, s1, tz = w0, w1, tzw
+                c0, c1, tz, rows = wc0, wc1, tzw, rows_w
             else:
-                s0, s1 = search_range(m, poly, j, search, margin, delay, rate, start_s, n_samp)
-                tz = standardize(traces[:, s0:s1])
-            res = attack_coefficient(m, u_hat[:, poly, j], tz, int(s_hat[poly][j]) if s_hat is not None else None)
+                c0, c1 = search_cycles(m, poly, j, search, margin, delay)
+                tg, rows = tm.cut(traces, c0, c1)
+                tz = standardize(tg)
+            res = analyse_coefficient(m, u_hat[rows, poly, j], tz, int(s_hat[poly][j]) if s_hat is not None else None)
             pc = predicted_cycles(m, poly, j)
-            res.update(poly=poly, coeff=j, search_samples=[int(s0), int(s1)], predicted_cycle=pc[0] + delay,
-                       n_search_samples=int(s1 - s0))
+            res.update(poly=poly, coeff=j, search_cycles=[round(c0, 2), round(c1, 2)], predicted_cycle=pc[0] + delay,
+                       n_search_samples=int(tz.shape[1]))
             if res["best_sample"] is not None:
-                bs = s0 + res["best_sample"]
-                res["best_sample"] = int(bs)
-                res["best_time_us"] = round(((bs / rate) + start_s) * 1e6, 4) if rate else None
-                res["best_cycle"] = round(sample_to_cycle(bs, rate, start_s), 2)
-                res["offset_cycles"] = round(res["best_cycle"] - (pc[0] + delay), 2)
+                bc = tm.cycle(c0, res["best_sample"])
+                res["best_sample"] = None if tm.parsed else int(tm.rise[0] + round(bc * tm.spc))
+                res["best_cycle"] = round(bc, 2)
+                res["best_time_us"] = tm.us(bc) if rate else None
+                res["offset_cycles"] = round(bc - (pc[0] + delay), 2)
                 for t_ in res["top"]:
-                    t_["sample"] = int(s0 + t_["sample"])
+                    t_["cycle"] = round(tm.cycle(c0, t_.pop("sample")), 2)
                 if res["true_sample"] is not None:
-                    res["true_sample"] = int(s0 + res["true_sample"])
-            searched.append(s1 - s0)
+                    res["true_cycle"] = round(tm.cycle(c0, res.pop("true_sample")), 2)
+            searched.append(tz.shape[1])
             results.append(res)
             if progress_cb:
                 progress_cb(len(results), total)
     summary = {"file": str(h5_path), "model": m.name, "model_info": m.describe(), "search": search, "margin_cycles": margin,
                "delay_cycles": delay, "polys": poly_list, "coeff_indices": coeff_list,
-               "n_traces_used": n, "n_traces_failed_check": d["n_failed"], "n_samples": n_samp,
+               "n_traces_used": min(used) if used else n, "n_traces_failed_check": d["n_failed"], "n_samples": n_samp,
                "sample_rate_hz": rate, "record_start_s": start, "oracle_assisted": s_hat is not None,
+               "alignment_source": tm.source, "parsed": tm.parsed, "samples_per_cycle": tm.spc,
+               "clock_mhz": round(tm.clock_mhz, 4), "parse": d["parse"],
                "n_candidates": Q, "results": results,
-               "noise_floor_corr": noise_floor_corr(n, int(Q * max(float(np.mean(searched)) if searched else 1, 1)))}
+               "noise_floor_corr": noise_floor_corr(min(used) if used else n,
+                                                    int(Q * max(float(np.mean(searched)) if searched else 1, 1)))}
     _summarise(summary)
     return summary
 
@@ -380,19 +418,23 @@ def coefficient_detail(h5_path: str, model: str, poly: int, coeff: int, max_trac
     every candidate's peak, a heat map of the top candidates, and the convergence with the trace count."""
     m = get_model(model)
     d = load_campaign(h5_path, max_traces)
-    rate, start_s = d["rate"], d["start"] or 0.0
-    traces, u = d["traces"], d["u_hat"][:, poly, coeff]
-    n, n_samp = traces.shape
+    rate, tm = d["rate"], d["timing"]
+    traces = d["traces"]
     s_hat = true_key(dk_ref, d["dk_hash"])
     tv = int(s_hat[poly][coeff]) if s_hat is not None else None
-    s0, s1 = search_range(m, poly, coeff, search, margin, delay, rate, start_s, n_samp)
-    tz = standardize(traces[:, s0:s1])
-    res = attack_coefficient(m, u, tz, tv, want_full=True)
-    xs = [round(((s0 + i) / rate + start_s) * 1e6, 5) if rate else s0 + i for i in range(tz.shape[1])]
+    c0, c1 = search_cycles(m, poly, coeff, search, margin, delay)
+    tw, rows = tm.cut(traces, c0, c1)
+    if rows.size < 20:
+        raise ValueError("this window is outside the record in most traces -- parse the traces first")
+    u = d["u_hat"][rows, poly, coeff]
+    n = int(rows.size)
+    tz = standardize(tw)
+    res = analyse_coefficient(m, u, tz, tv, want_full=True)
+    xs = [tm.us(tm.cycle(c0, i)) if rate else round(tm.cycle(c0, i), 2) for i in range(tz.shape[1])]
     pc = predicted_cycles(m, poly, coeff)
-    det = {"poly": poly, "coeff": coeff, "model": m.name, "n_traces": n, "x": xs, "x_unit": "us" if rate else "sample",
-           "sample_offset": int(s0),
-           "predicted_us": [round((pc[0] + delay) / C.CORE_MHZ, 4), round((pc[1] + delay) / C.CORE_MHZ, 4)],
+    det = {"poly": poly, "coeff": coeff, "model": m.name, "n_traces": n, "x": xs, "x_unit": "us" if rate else "cycle",
+           "alignment_source": tm.source, "parsed": tm.parsed,
+           "predicted_us": [tm.us(pc[0] + delay), tm.us(pc[1] + delay)],
            "predicted_cycle": [pc[0] + delay, pc[1] + delay], "true_value": tv, "informative": res["informative"],
            "noise_floor_corr": noise_floor_corr(n, Q * max(tz.shape[1], 1)), "best_guess": res["best_guess"],
            "best_corr": res["best_corr"], "top": res["top"], "true_rank": res["true_rank"],
@@ -400,7 +442,7 @@ def coefficient_detail(h5_path: str, model: str, poly: int, coeff: int, max_trac
     if not res["informative"]:
         return det
     for t_ in det["top"]:
-        t_["time_us"] = round(((s0 + t_["sample"]) / rate + start_s) * 1e6, 4) if rate else None
+        t_["time_us"] = tm.us(tm.cycle(c0, t_["sample"])) if rate else None
     det["curve"] = np.round(res["curve"], 4).tolist()
     if tv is not None:
         det["true_curve"] = np.round(res["true_curve"], 4).tolist()
@@ -490,14 +532,14 @@ def main() -> None:
     p.add_argument("file", nargs="?", help="CPA campaign (.hdf5)")
     p.add_argument("--list-models", action="store_true")
     p.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS))
-    p.add_argument("--polys", default="0-2", help="polynomials to attack, e.g. 0-2 or 0,2 (default all three)")
+    p.add_argument("--polys", default="0-2", help="polynomials to analyse, e.g. 0-2 or 0,2 (default all three)")
     p.add_argument("--coeffs", default="8", help="coefficients per polynomial: N = the first N, 0 = all 256, or 0-15 / 3,7")
     p.add_argument("--max-traces", type=int, default=0, help="0 = all")
     p.add_argument("--search", choices=("full", "gate"), default="full",
                    help="full = the whole BMUL window (finds the peak wherever it is), gate = only around the predicted cycle")
     p.add_argument("--margin", type=int, default=10, help="gate half-width in core cycles")
     p.add_argument("--delay", type=float, default=0.0, help="shift the predicted cycle (probe / amplifier delay), core cycles")
-    p.add_argument("--dk-ref", help="2400-byte dk file: ranks the true key (evaluation only, never used by the attack)")
+    p.add_argument("--dk-ref", help="2400-byte dk file: ranks the true key (evaluation only, never used by the analysis)")
     p.add_argument("--out", help="write the report as JSON")
     p.add_argument("--csv", help="write the per-coefficient table as CSV")
     a = p.parse_args()
@@ -511,7 +553,7 @@ def main() -> None:
 
     def progress(done, total):
         print("\r  coefficient %d / %d" % (done, total), end="", file=sys.stderr, flush=True)
-    s = run_attack(a.file, a.model, a.max_traces, dk, a.polys, a.coeffs, a.search, a.margin, a.delay, progress)
+    s = run_cpa(a.file, a.model, a.max_traces, dk, a.polys, a.coeffs, a.search, a.margin, a.delay, progress)
     print(file=sys.stderr)
     print_report(s)
     if a.out:

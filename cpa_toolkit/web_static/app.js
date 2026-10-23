@@ -313,23 +313,23 @@ $("drawer-bar").addEventListener("click", () => { $("drawer").classList.toggle("
 // =====================================================================================
 // navigation
 // =====================================================================================
-const PAGES = ["connect", "vectors", "acquire", "library", "analysis", "advanced"];
+const PAGES = ["connect", "vectors", "acquire", "library", "traces", "analysis", "advanced"];
 let currentPage = "connect";
 function showPage(name, push = true) {
   if (!PAGES.includes(name)) name = "connect";
-  if (name !== "library" && tvPlay && tvPlay.running) tvPause();   // the player only runs while visible
+  if (name !== "traces" && typeof tvPause === "function" && tvPlay && tvPlay.running) tvPause();   // the player only runs while visible
   currentPage = name;
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === "page-" + name));
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === name));
   const page = $("page-" + name);
   $("page-title").textContent = page.dataset.title;
-  $("page-desc").textContent = page.dataset.desc;
   $("mobile-nav").value = name;
   if (push && location.hash !== "#" + name) history.pushState(null, "", "#" + name);
   $("content").scrollTop = 0;
   if (name === "library") libRefresh();
   if (name === "analysis") anRefreshDatasets();
   if (name === "acquire") acqRefreshResume();
+  if (name === "traces") trEnter();
   window.dispatchEvent(new Event("resize"));
 }
 document.querySelectorAll("#nav a").forEach((a) => a.addEventListener("click", () => showPage(a.dataset.page)));
@@ -437,19 +437,19 @@ function phaseAt(phases, sample) {
   const p = (phases || []).find((q) => sample >= q.samples[0] && sample <= q.samples[1]);
   return p ? p.label : "";
 }
-const xTitle = (axis) => (axis && axis.unit === "us" ? "time after trigger (µs)" : "sample");
+const xTitle = (axis) => `${axis && axis.unit === "us" ? "time" : "samples"} after the ${axis?.origin || "trigger"}${axis && axis.unit === "us" ? " (µs)" : ""}`;
 // First sample relative to the trigger (seconds) -> "+0.0 ns" / "−1.000 µs".
 function startTxt(s) {
   const a = Math.abs(s), sign = s < 0 ? "−" : "+";
   return a < 1e-6 ? `${sign}${(a * 1e9).toFixed(1)} ns` : `${sign}${(a * 1e6).toFixed(3)} µs`;
 }
 function coverageKpi(axis) {
-  if (!axis || !axis.duration_us) return ["trace length", axis ? `${axis.n_samples} samples` : "—", "sample rate unknown"];
+  if (!axis) return ["record", "—", ""];
+  if (!axis.parsed) return ["BMUL windows", "not parsed", "Parse the traces to place the windows", "warn"];
+  if (!axis.duration_us) return ["record", `${axis.n_samples} samples`, "sample rate unknown"];
   const missing = axis.bmul_outside + (axis.bmul_cut || 0);
-  const span = axis.record_start_known ? `${(axis.record_start_s * 1e6).toFixed(2)} … ${axis.end_us} µs after the trigger`
-                                       : `${axis.duration_us.toFixed(1)} µs (trigger position not recorded: sample 0 taken as the trigger)`;
-  return ["record", span, missing ? `${missing} BMUL window(s) missing or cut — the record must reach 0 … ${axis.needed_us} µs after the trigger`
-                                  : `covers all BMULs (≥ ${axis.needed_us} µs)`, missing ? "bad" : "good"];
+  return ["record", `${axis.start_us} … ${axis.end_us} µs`, missing ? `${missing} BMUL window(s) missing or cut: record to ${axis.needed_us} µs after the Decaps start`
+    : `all BMUL windows inside (≥ ${axis.needed_us} µs)`, missing ? "bad" : "good"];
 }
 
 // =====================================================================================
@@ -474,21 +474,39 @@ function renderConn(prefix, snap, describe) {
   $(prefix + "-error").classList.toggle("hidden", !snap.error);
 }
 
+// The Acquisition checklist ("Before you start"): drawn first in applyState, so nothing else can blank it.
+function renderChecklist(b, sc) {
+  const marker = sc.state === "connected" ? String(sc.info?.marker || "") : "";
+  const items = [
+    ["Board connected", b.state === "connected", "connect"], ["Oscilloscope connected", sc.state === "connected", "connect"],
+    ["Marker channel set" + (marker ? ` (${marker})` : sc.state === "connected" ? " (recommended: traces cannot be parsed)" : ""), !!marker, "connect", true],
+    ["Test-vector set chosen", !!$("acq-vector-set").value || !!$("acq-resume").value, "vectors"],
+  ];
+  $("acq-checklist").innerHTML = items.map(([t, ok, page, opt]) =>
+    `<li class="${ok ? "done" : opt ? "opt" : ""}"><span class="ic">${ok ? "✓" : ""}</span>${esc(t)}${ok ? "" : `<a data-goto="${page}">set up →</a>`}</li>`).join("") +
+    `<li class="${trigOk === true ? "done" : trigOk === false ? "fail" : "opt"}"><span class="ic">${trigOk === true ? "✓" : trigOk === false ? "✗" : ""}</span>` +
+    `Trigger checked${trigOk === true ? "" : trigOk === false ? " — failed" : " (recommended)"}${trigOk === true ? "" : '<a id="acq-trig-link">check →</a>'}</li>`;
+  $("acq-checklist").querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", () => showPage(a.dataset.goto)));
+  if ($("acq-trig-link")) $("acq-trig-link").addEventListener("click", trigCheck);
+}
+
 function applyState(s) {
   const prev = S;
   S = s;
   const b = s.board, sc = s.scope;
+  try { renderChecklist(b, sc); } catch (e) { console.error(e); }
   renderConn("board", b, (x) => x.state === "connected" ? `Connected · ${x.params.port.split("/").pop()} · ${transportText(x.info || x.params)}`
     : x.state === "connecting" ? `Connecting to ${x.params.port.split("/").pop()}…` : STATE_TXT[x.state]);
   renderConn("scope", sc, (x) => x.state === "connected" ? `Connected · ${x.params.ip}` : x.state === "connecting" ? `Connecting to ${x.params.ip}…` : STATE_TXT[x.state]);
   ["board-port", "board-baud", "board-transport", "board-refresh-ports"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(b.state)));
-  updateBoardInterface();
+  try { updateBoardInterface(); } catch (e) { console.error(e); }
   renderConnectionChecks(b);
-  ["scope-ip", "scope-channel", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
+  ["scope-ip", "scope-channel", "scope-marker", "scope-dialect", "scope-transport", "scope-points", "scope-timeout"].forEach((id) => ($(id).disabled = ["connected", "connecting"].includes(sc.state)));
   kv("board-info", b.info ? [["Algorithm", b.info.alg_id === 1 ? "ML-KEM (ALG_ID 1)" : b.info.alg_id], ["Core version", b.info.version],
     ["Core clock", b.info.core_mhz + " MHz"], [b.info.run_command || "0x05 Run", b.info.has_run ? "supported" : "MISSING. Build the bitstream again. Operations are off."], ["Device", b.info.port], ["Transport", transportText(b.info)]] : [["Status", "Connect the board to read the core."]]);
   const si = sc.info;
   kv("scope-info", si ? [["Instrument", si.id || si.idn], ["Resource", si.resource], ["Channel", si.channel],
+    ["Marker", si.marker ? si.marker + " (trig_out)" : "none: traces are not parsed"],
     ["Samples", si.samples || (si.wave_array_count ? `${si.wave_array_count} (last record)` : si.samples)], ["Sample rate", si.sample_rate],
     ...(si.trigger ? [["Trigger", si.trigger + (si.trigger_level_v ? " @ " + si.trigger_level_v : "")]] : []),
     ...(si.timebase_s_div ? [["Timebase", si.timebase_s_div + " s/div"]] : []),
@@ -502,14 +520,6 @@ function applyState(s) {
   $("mini-scope").className = dotCls(sc.state); $("mini-scope-txt").textContent = sc.state;
 
   const ready = b.state === "connected" && sc.state === "connected", busyJob = !!s.busy;
-  $("acq-checklist").innerHTML = [
-    ["Board connected", b.state === "connected", "connect"], ["Oscilloscope connected", sc.state === "connected", "connect"],
-    ["Test-vector set chosen", !!$("acq-vector-set").value || !!$("acq-resume").value, "vectors"],
-  ].map(([t, ok, page]) => `<li class="${ok ? "done" : ""}"><span class="ic">${ok ? "✓" : ""}</span>${t}${ok ? "" : `<a data-goto="${page}">set up →</a>`}</li>`).join("") +
-    `<li class="${trigOk === true ? "done" : trigOk === false ? "fail" : ""}"><span class="ic">${trigOk === true ? "✓" : trigOk === false ? "✗" : ""}</span>` +
-    `Trigger checked${trigOk === true ? "" : trigOk === false ? " — failed" : " (recommended)"}${trigOk === true ? "" : '<a id="acq-trig-link">check →</a>'}</li>`;
-  $("acq-checklist").querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", () => showPage(a.dataset.goto)));
-  if ($("acq-trig-link")) $("acq-trig-link").addEventListener("click", trigCheck);
   $("acq-start").disabled = !ready || busyJob || !($("acq-vector-set").value || $("acq-resume").value);
   $("cap-one").disabled = !ready || busyJob;
   $("trig-check").disabled = !ready || busyJob;
@@ -725,7 +735,7 @@ async function scopeConnBtn() {
   const st = $("scope-conn-btn").dataset.state || "disconnected";
   try {
     if (st === "connected" || st === "connecting") await api("POST", "/api/scope/disconnect", {});
-    else await api("POST", "/api/scope/connect", { ip: $("scope-ip").value, channel: $("scope-channel").value,
+    else await api("POST", "/api/scope/connect", { ip: $("scope-ip").value, channel: $("scope-channel").value, marker: $("scope-marker").value.trim(),
       dialect: $("scope-dialect").value, transport: $("scope-transport").value, points: $("scope-points").value,
       timeout_ms: $("scope-timeout").value });
     applyState(await api("GET", "/api/state"));
@@ -752,7 +762,7 @@ async function scopeFind() {
   });
 }
 async function scopeSave() {
-  try { await api("POST", "/api/scope/save_config", { ip: $("scope-ip").value, channel: $("scope-channel").value,
+  try { await api("POST", "/api/scope/save_config", { ip: $("scope-ip").value, channel: $("scope-channel").value, marker: $("scope-marker").value.trim(),
                                                        dialect: $("scope-dialect").value, transport: $("scope-transport").value });
         toast("Scope settings saved as default (config.py)", "ok"); } catch (e) { err(e); }
 }
@@ -1126,18 +1136,25 @@ async function capOne() {
   });
 }
 function capDraw() {
-  if (!captures.length) { $("cap-kpis").innerHTML = ""; return chartEmpty("cap-chart", "No capture yet. The chart shows the last 5 captures."); }
+  if (!captures.length) { $("cap-kpis").innerHTML = ""; $("cap-parse").innerHTML = ""; return chartEmpty("cap-chart", "No capture yet. The chart shows the last 5 captures."); }
   const last = captures[captures.length - 1];
   const tr = captures.map((c, i) => line(`capture ${i + 1} · ${new Date(c.captured_unix * 1000).toLocaleTimeString()}`, C.s[(i + 4) % 8],
     c.trace.x, c.trace.y, { width: c === last ? 1.5 : 1, opacity: c === last ? 1 : 0.5 }));
+  if (last.marker) tr.push(line(`marker ${last.marker_channel || ""}`, "#fbbf24", last.marker.x, last.marker.y, { yaxis: "y2", width: 1, opacity: 0.8 }));
   const wb = axisBands(last.axis);
-  chart("cap-chart", tr, { height: vh(0.34, 260, 440), xTitle: xTitle(last.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations, uirevision: "cap" });
+  chart("cap-chart", tr, { height: vh(0.34, 260, 440), xTitle: xTitle(last.axis), yTitle: "amplitude", y2: !!last.marker, y2Title: "marker",
+    shapes: wb.shapes, annotations: wb.annotations, uirevision: "cap" });
+  const p = last.parse;
+  kv("cap-parse", [["Decaps start", !p ? "no marker channel: windows not shown" : p.ok
+    ? `found at ${last.axis.sample_rate_hz ? (p.rise / last.axis.sample_rate_hz * 1e6).toFixed(3) + " µs after the record start" : "sample " + p.rise}`
+    : "not found: " + p.reason],
+    ...(p && p.ok ? [["Core clock", `${p.clock_mhz.toFixed(3)} MHz (${p.spc_source})`]] : [])]);
 }
 
 // =====================================================================================
 // Trace Library page
 // =====================================================================================
-let libFiles = [], libSel = null, libTrash = false, libChecks = new Set(), libTable, libMode, libDetail = null, tvData = null;
+let libFiles = [], libSel = null, libTrash = false, libChecks = new Set(), libTable, libMode, libDetail = null;
 const statusBadge = (st) => ({ complete: '<span class="badge ok">complete</span>', resumable: '<span class="badge warn">resumable</span>',
   recording: '<span class="badge info">● recording</span>', partial: '<span class="badge warn">partial</span>', unreadable: '<span class="badge bad">unreadable</span>' }[st] || esc(st));
 const modeBadge = (m) => `<span class="badge ${m === "cpa" ? "cpa" : m === "tvla" ? "tvla" : ""}">${esc((m || "?").toUpperCase())}</span>`;
@@ -1239,10 +1256,8 @@ async function libEmptyTrash() {
 }
 function libDetailEmpty() {
   $("lib-detail").innerHTML = `<div class="empty"><div class="t">No campaign selected</div>Click a campaign to see its data.</div>`;
-  libViewer(false);
 }
 async function libShow(path) {
-  if (tvPlay && tvPlay.file !== path) tvPlayReset();
   libSel = path;
   libTable.select(path);
   const f = libFiles.find((x) => x.path === path);
@@ -1255,7 +1270,6 @@ async function libShow(path) {
       `<div class="btn-row"><button class="btn primary" id="lib-restore">Restore to library</button><span class="grow"></span><button class="btn danger sm" id="lib-purge">Delete permanently</button></div>`;
     $("lib-restore").addEventListener("click", () => libRestore([f]));
     $("lib-purge").addEventListener("click", () => libPurge([f]));
-    libViewer(false);
     return;
   }
   if (f.status === "recording" || f.status === "unreadable") {
@@ -1298,7 +1312,8 @@ async function libShow(path) {
       ["Board", bd.version ? `core ${bd.version} · ${bd.port} · ${transportText(bd)}` : "—"], ["Scope", sc.id ? `${sc.id}${sc.channel ? " · " + sc.channel : ""}` : "—"],
       ["Sample rate", rateTxt(d.sample_rate_hz)], ["Core clock", d.core_mhz ? d.core_mhz + " MHz" : "—"], ["dk hash", d.dk_hash]]);
     $("ld-analyse").addEventListener("click", () => { showPage("analysis"); anSelectDataset(path); });
-    $("ld-view").addEventListener("click", () => tvOpen());
+    $("ld-view").addEventListener("click", () => trOpenFile(path));
+    if ($("ld-parse")) $("ld-parse").addEventListener("click", () => trOpenFile(path));
     if ($("ld-resume")) $("ld-resume").addEventListener("click", () => { showPage("acquire"); acqRefreshResume().then(() => { $("acq-resume").value = path; $("acq-resume").closest("details").open = true; applyState(S); }); });
     $("ld-dl").addEventListener("click", (e) => { e.stopPropagation(); $("ld-dl").parentElement.classList.toggle("open"); });
     $("ld-dl-h5").addEventListener("click", () => download("/api/traces/download", { path }));
@@ -1321,7 +1336,6 @@ async function libShow(path) {
         await api("POST", "/api/traces/update", { path, label: $("ld-label").value, notes: $("ld-notes").value });
         d.label = $("ld-label").value.trim(); d.notes = $("ld-notes").value;
         $("lib-detail").querySelector(".detail-head .title").textContent = d.label || d.filename;
-        $("tv-sub").textContent = d.label || d.filename;
         toast("Saved", "ok"); libRefresh(true);
       } catch (e) { err(e); }
     });
@@ -1329,7 +1343,6 @@ async function libShow(path) {
       showPage("analysis"); anSelectDataset(path, d.reports[+el.dataset.i].path);
     }));
     libPreview(path);
-    if (!$("lib-viewer").classList.contains("hidden")) tvOpen();
   } catch (e) { err(e); }
 }
 async function libPreview(path) {
@@ -1342,179 +1355,6 @@ async function libPreview(path) {
     chart("ld-preview", tr, { height: 220, xTitle: xTitle(r.axis), shapes: wb.shapes, annotations: wb.annotations, margin: { l: 48, r: 10, t: 6, b: 38 } });
   } catch (e) { chartEmpty("ld-preview", e.message); }
 }
-// The viewer takes the place of the campaign list (left column) while it is open; the detail card stays on the right.
-const tvH = () => vh(0.56, 320, 680);
-function libViewer(show) {
-  $("lib-viewer").classList.toggle("hidden", !show);
-  $("lib-list").classList.toggle("hidden", show);
-  if (show) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
-}
-function tvClose() {
-  if (tvPlay) tvPlayReset();
-  libViewer(false);
-}
-function tvOpen() {
-  if (!libDetail) return;
-  libViewer(true);
-  $("tv-sub").textContent = libDetail.label || libDetail.filename;
-  $("tv-cls").disabled = libDetail.mode !== "tvla";
-  tvLoad();
-}
-async function tvLoad() {
-  if (!libSel) return;
-  if (tvPlay) tvPlayReset();
-  const idx = $("tv-indices").value.trim();
-  const body = { file: libSel, max_points: 4000, stats: $("tv-stats").checked, stats_n: 500 };
-  if (idx) body.indices = idx.split(/[ ,]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
-  else Object.assign(body, { start: $("tv-start").value, count: $("tv-count").value, cls: $("tv-cls").value });
-  await busy($("tv-load"), async () => {
-    try { tvData = await api("POST", "/api/analysis/raw_traces", body); tvDraw(); } catch (e) { chartEmpty("tv-chart", e.message); }
-  });
-}
-function tvDraw() {
-  const r = tvData;
-  if (!r) return;
-  const tr = [], col = { all: ["#38bdf826", C.s[0]], fixed: ["#4ade8026", C.s[1]], random: ["#f8717126", C.s[2]] };
-  Object.entries(r.stats || {}).forEach(([n, s]) => { const [f, c] = col[n] || col.all; tr.push(...band(`${n} ±σ (n=${s.n})`, f, s.x, s.lo, s.hi), line(`${n} mean`, c, s.x, s.mean, { width: 1.8 })); });
-  r.traces.forEach((t, i) => tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[(i + 3) % 8], t.x, t.y, { width: 1, opacity: 0.85 })));
-  const wb = $("tv-bands").checked ? axisBands(r.axis) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: tvH(), xTitle: xTitle(r.axis), yTitle: "amplitude", shapes: wb.shapes, annotations: wb.annotations });
-  $("tv-note").textContent = `${r.traces.length} of ${r.n_completed} traces · ${rateTxt(r.axis.sample_rate_hz)} · min/max envelope · ` +
-    r.traces.map((t) => `#${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"}`).join(", ");
-}
-function tvStep(d) {
-  const n = Math.max(1, parseInt($("tv-count").value, 10) || 4);
-  $("tv-indices").value = "";
-  $("tv-start").value = Math.max(0, (parseInt($("tv-start").value, 10) || 0) + d * n);
-  tvLoad();
-}
-function tvCsv() {
-  if (!tvData) return toast("Plot traces first", "warn");
-  const r = tvData, n = r.traces[0].x.length;
-  const rows = [["x_" + r.axis.unit].concat(r.traces.map((t) => "trace_" + t.index)).join(",")];
-  for (let j = 0; j < n; j++) rows.push([r.traces[0].x[j]].concat(r.traces.map((t) => t.y[j])).join(","));
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
-  a.download = "traces_envelope.csv"; document.body.appendChild(a); a.click(); a.remove();
-}
-
-// --- Trace player: one trace per frame, in capture order --------------------------------
-// The x axis is time after the trigger, the same for every trace (each trace is a triggered
-// snapshot of the same window), so it stays put; only the waveform changes from frame to
-// frame. Traces are fetched in batches ahead of the play position; the y range only ever
-// grows, so the plot does not jump between frames. Positions count within the class filter.
-const TV_BATCH = 20;
-let tvPlay = null;   // {file, cls, pos, end, buf: Map pos -> trace, stats, axis, n, yr, running, timer, pending}
-function tvPlayReset() {
-  if (tvPlay) clearTimeout(tvPlay.timer);
-  tvPlay = null;
-  $("tv-play").textContent = "▶ Play";
-  $("tv-scrub").classList.add("hidden");
-}
-function tvPlayState() {
-  const cls = $("tv-cls").value;
-  if (!tvPlay || tvPlay.file !== libSel || tvPlay.cls !== cls) {
-    tvPlayReset();
-    tvPlay = { file: libSel, cls, pos: Math.max(0, parseInt($("tv-start").value, 10) || 0), end: null,
-               buf: new Map(), stats: null, axis: null, n: libDetail?.n_completed || 0, yr: null, running: false, pending: new Set() };
-  }
-  return tvPlay;
-}
-async function tvFetch(p, start) {
-  if (p.pending.has(start) || (p.end !== null && start >= p.end)) return;
-  p.pending.add(start);
-  try {
-    const wantStats = !p.stats && $("tv-stats").checked;
-    const r = await api("POST", "/api/analysis/raw_traces", { file: p.file, start, count: TV_BATCH, cls: p.cls,
-      max_points: 4000, stats: wantStats, stats_n: 500 });
-    if (tvPlay !== p) return;
-    p.axis = r.axis;
-    if (wantStats) p.stats = r.stats || {};
-    r.traces.forEach((tr, k) => { p.buf.set(start + k, tr); tvGrowRange(p, tr.y); });
-    if (p.stats) Object.values(p.stats).forEach((s) => { tvGrowRange(p, s.lo); tvGrowRange(p, s.hi); });
-    if (r.traces.length < TV_BATCH) p.end = start + r.traces.length;
-    if (!p.cls) p.n = r.n_completed;
-  } catch (e) {
-    if (/no traces match/.test(e.message)) p.end = start; else throw e;
-  } finally { p.pending.delete(start); }
-}
-function tvGrowRange(p, ys) {
-  let lo = Infinity, hi = -Infinity;
-  for (const v of ys) { if (v < lo) lo = v; if (v > hi) hi = v; }
-  if (!isFinite(lo)) return;
-  const pad = 0.04 * Math.max(hi - lo, 1e-9);
-  p.yr = p.yr ? [Math.min(p.yr[0], lo - pad), Math.max(p.yr[1], hi + pad)] : [lo - pad, hi + pad];
-}
-function tvFrame(p) {
-  const t = p.buf.get(p.pos);
-  if (!t) return;
-  const tr = [], col = { all: ["#38bdf826", C.s[1]], fixed: ["#4ade8026", C.s[1]], random: ["#f8717126", C.s[2]] };
-  if ($("tv-stats").checked && p.stats) Object.entries(p.stats).forEach(([n, s]) => { const [f, c] = col[n] || col.all;
-    tr.push(...band(`${n} ±σ (n=${s.n})`, f, s.x, s.lo, s.hi), line(`${n} mean`, c, s.x, s.mean, { width: 1.4, opacity: 0.8 })); });
-  const prev = p.buf.get(p.pos - 1);   // the previous frame, faint: a little persistence, like a scope
-  if (prev) tr.push(line(`#${prev.index}`, C.s[0], prev.x, prev.y, { width: 1, opacity: 0.18 }));
-  tr.push(line(`#${t.index}${t.class === null ? "" : t.class ? " random" : " fixed"}${t.ok ? "" : " ✗"}`, C.s[0], t.x, t.y, { width: 1.1 }));
-  const wb = $("tv-bands").checked ? axisBands(p.axis) : { shapes: [], annotations: [] };
-  chart("tv-chart", tr, { height: tvH(), xTitle: xTitle(p.axis), yTitle: "amplitude", yRange: p.yr, shapes: wb.shapes,
-    annotations: wb.annotations, uirevision: "tv-play:" + p.file });
-  const n = p.end !== null ? p.end : p.n;
-  $("tv-pos").max = Math.max(0, n - 1); $("tv-pos").value = p.pos;
-  $("tv-pos-txt").textContent = `#${t.index} · ${p.pos + 1} / ${n || "?"}`;
-  $("tv-note").textContent = `trace #${t.index}: ${t.cycles} cycles${t.ok ? "" : " (failed check)"} · ct ${t.ct_preview} · ` +
-    `${rateTxt(p.axis.sample_rate_hz)}${p.running ? ` · playing ${$("tv-speed").value} traces/s` : ""}`;
-}
-async function tvShowPos(p, pos) {
-  p.pos = Math.max(0, pos);
-  if (!p.buf.has(p.pos)) await tvFetch(p, p.pos);
-  if (tvPlay !== p) return false;
-  if (p.end !== null && p.pos >= p.end) return false;
-  tvFrame(p);
-  for (const k of p.buf.keys()) if (k < p.pos - 5 || k > p.pos + 3 * TV_BATCH) p.buf.delete(k);   // bounded memory
-  return true;
-}
-async function tvTick() {
-  const p = tvPlay;
-  if (!p || !p.running) return;
-  const t0 = performance.now();
-  try {
-    if (!(await tvShowPos(p, p.pos))) {
-      tvPause();
-      if (tvPlay === p) toast("End of the campaign. Click Play to start again.");
-      if (tvPlay === p) p.pos = 0;
-      return;
-    }
-    let ahead = p.pos + 1;                                  // keep half a batch buffered ahead
-    while (ahead < p.pos + TV_BATCH / 2 && p.buf.has(ahead)) ahead++;
-    if (ahead < p.pos + TV_BATCH / 2) tvFetch(p, ahead).catch(() => {});
-    p.pos += 1;
-  } catch (e) { tvPause(); err(e); return; }
-  if (!p.running) return;
-  const period = 1000 / (parseFloat($("tv-speed").value) || 5);
-  p.timer = setTimeout(tvTick, Math.max(0, period - (performance.now() - t0)));
-}
-function tvPlayToggle() {
-  if (!libSel) return toast("Select a campaign first", "warn");
-  const p = tvPlayState();
-  if (p.running) return tvPause();
-  p.running = true;
-  $("tv-indices").value = "";
-  $("tv-play").textContent = "⏸ Pause";
-  $("tv-scrub").classList.remove("hidden");
-  tvTick();
-}
-function tvPause() {
-  if (!tvPlay) return;
-  tvPlay.running = false;
-  clearTimeout(tvPlay.timer);
-  $("tv-play").textContent = "▶ Play";
-  tvShowPos(tvPlay, Math.max(0, tvPlay.pos - 1)).catch(() => {});   // the frame on screen, with the note updated
-}
-async function tvScrub() {
-  const p = tvPlayState();
-  p.pos = parseInt($("tv-pos").value, 10) || 0;
-  if (!p.running) await tvShowPos(p, p.pos).catch((e) => err(e));
-}
-
 // =====================================================================================
 // Analysis page
 // =====================================================================================
@@ -1635,10 +1475,10 @@ async function anReportAction(act) {
     } catch (e) { err(e); }
   }
 }
-// A plain-text summary of an open report, worded like cpa_attack.py / tvla_analysis.py's own CLI
+// A plain-text summary of an open report, worded like cpa.py / tvla_analysis.py's own CLI
 // verdict (README.md section 7's prescribed phrasing: state the model, the trace count and the
 // measured number -- never a bare "secure"/"insecure") -- ready to paste into a slide or a report.
-// The 3-way verdict below mirrors cpa_attack.py: main()'s oracle-assisted block; keep them in sync.
+// The 3-way verdict below mirrors cpa.py: main()'s oracle-assisted block; keep them in sync.
 function summaryText(r) {
   const file = String(r.file || r.dataset?.path || "").split("/").pop();
   const lines = [];
@@ -1647,7 +1487,7 @@ function summaryText(r) {
     if (!cpaOk(r)) return `CPA report from the removed model catalogue (${r.model || "?"}) -- run a new analysis.`;
     lines.push(`CPA key recovery -- ${file}`);
     lines.push(`Hypothesis: ${r.model}${m ? " -- " + m.equation + " (" + m.register + ")" : ""}`);
-    lines.push(`Traces used: ${r.n_traces_used}  --  coefficients attacked: ${rows.length} (polynomials ${(r.polys || []).join(",")})  --  search: ${cpaSearchTxt(r)}`);
+    lines.push(`Traces used: ${r.n_traces_used}  --  coefficients analysed: ${rows.length} (polynomials ${(r.polys || []).join(",")})  --  search: ${cpaSearchTxt(r)}`);
     lines.push(`Noise floor |rho| ~ ${r.noise_floor_corr.toFixed(3)}  --  peaks above it: ${r.n_above_floor} of ${rows.length - r.n_uninformative}  --  stable in 4/4 windows: ${r.n_stable}`);
     if (r.alignment && r.alignment.n) lines.push(`Alignment: confident peaks ${r.alignment.median_offset_cycles >= 0 ? "+" : ""}${r.alignment.median_offset_cycles.toFixed(1)} core cycles from the RTL prediction (spread ${r.alignment.spread_cycles.toFixed(1)})`);
     lines.push(oracle ? "Scoring: the true key ranks the guesses only; it never builds the hypotheses" : "Scoring: blind");
@@ -1684,7 +1524,7 @@ function anPrefill(r) {
   anOracle.set(v); anOracleChanged(v);
 }
 
-// the hypotheses of cpa_attack.py
+// the hypotheses of cpa.py
 async function anLoadModels(quiet) {
   try {
     const r = await api("GET", "/api/model/list"), keep = $("an-model").value;
@@ -1710,8 +1550,8 @@ function anSearchChanged(v) {
 }
 function anOracleChanged(v) {
   $("an-dkref").classList.toggle("hidden", v !== "file");
-  $("an-oracle-warn").textContent = v ? "The true key only ranks the guesses after the attack. The hypotheses use only the public ciphertext."
-    : "Blind: the result of a real attacker. You get the best guess, its correlation and its stability for each coefficient.";
+  $("an-oracle-warn").textContent = v ? "The true key only ranks the guesses after the analysis. The hypotheses use only the public ciphertext."
+    : "Blind: no key is used. You get the best guess, its correlation and its stability for each coefficient.";
 }
 const anDkRef = () => (anOracle.get() === "file" ? $("an-dkref").value.trim() : anOracle.get());
 
@@ -1772,9 +1612,11 @@ function reportHead(r) {
       ? [chip("hypothesis", r.model), chip("traces", r.n_traces_used), chip("coefficients", (r.results || []).length),
          chip("search", r.search === "gate" ? `±${r.margin_cycles} cycles` : "whole BMUL window"),
          chip("scoring", r.oracle_assisted ? "true key ranks the guesses" : "blind", r.oracle_assisted ? "warn" : ""),
+         chip("timing", r.parsed ? "parsed (each trace from its Decaps start)" : "not parsed: trigger = Decaps start", r.parsed ? "" : "warn"),
          ...(r.n_uninformative ? [chip("no key info", `${r.n_uninformative} coefficients`, "bad")] : [])]
       : [chip("format", "made with the removed model catalogue", "warn")])
-    : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold)];
+    : [chip("traces", `${r.n_fixed} fixed + ${r.n_random} random`), chip("threshold", "|t| > " + r.leakage_threshold),
+       chip("timing", r.aligned ? "aligned on the Decaps start" : "not parsed", r.aligned ? "" : "warn")];
   chips.push(chip("analysed", fmtDate(r.analysis_timestamp_unix)));
   return `<div class="report-head">${modeBadge(r.kind)}<span class="title">${r.kind === "cpa" ? "CPA key recovery" : "TVLA leakage assessment"}</span><div class="chips">${chips.join("")}</div></div>`;
 }
@@ -1788,10 +1630,11 @@ function detailsKv(r) {
   const specific = r.kind === "cpa" && cpaOk(r)
     ? [["Hypothesis", r.model], ["Equation", m ? m.equation : (r.model_info?.equation || "—")], ["Register", r.model_info?.register || "—"],
        ["Search", cpaSearchTxt(r)], ["Scoring", r.oracle_assisted ? "the true key only ranks the guesses (it never builds them)" : "blind"],
+       ["Timing", r.alignment_source || "nominal"], ["Core clock", r.clock_mhz ? `${r.clock_mhz} MHz (${r.samples_per_cycle?.toFixed(3)} samples / cycle)` : "—"],
        ["Traces used", `${r.n_traces_used} (${r.n_traces_failed_check || 0} failed their integrity check and were left out)`],
        ["Noise floor |ρ|", r.noise_floor_corr?.toFixed(4)], ["Candidates", r.n_candidates],
        ["Model version", r.model_version]]
-    : r.kind === "cpa" ? [["Model", r.model || "?"], ["Note", "this report predates cpa_toolkit/cpa_attack.py's simple CPA; run a new analysis"]]
+    : r.kind === "cpa" ? [["Model", r.model || "?"], ["Note", "this report predates cpa_toolkit/cpa.py's simple CPA; run a new analysis"]]
     : [["Fixed / random", `${r.n_fixed} / ${r.n_random}`], ["Threshold", "|t| > " + r.leakage_threshold], ["max |t|", r.max_abs_t?.toFixed(3)]];
   return common.concat(specific, [["Analysed", fmtDate(r.analysis_timestamp_unix)], ["Job", r.job_id], ["Report file", String(r.report_path || "").split("/").pop()],
     ["Results CSV", r.results_csv ? String(r.results_csv).split("/").pop() : "—"]]);
@@ -1957,7 +1800,7 @@ function drawCoef(d) {
     hLine(floor, C.s[3]), hLine(-floor, C.s[3])];
   const tr = [line(`best candidate ${d.best_guess}`, C.s[0], x, d.curve), peak("best", C.s[0], x, d.curve)];
   if (oracle && d.true_value !== d.best_guess) tr.push(line(`true key ${d.true_value}`, C.s[1], x, d.true_curve), peak("true", C.s[1], x, d.true_curve));
-  chart("in-time", tr, { height: vh(0.30, 240, 360), yTitle: "ρ", xTitle: d.x_unit === "us" ? "time after the trigger (µs)" : "sample", shapes,
+  chart("in-time", tr, { height: vh(0.30, 240, 360), yTitle: "ρ", xTitle: d.x_unit === "us" ? "time after the Decaps start (µs)" : "core cycle", shapes,
     annotations: [{ x: d.predicted_us[0], y: 1, yref: "paper", text: "predicted", showarrow: false, yanchor: "top", xanchor: "left", font: { size: 9, color: C.s[3] } }] });
   $("in-time-note").textContent = `ρ for each sample. Yellow band: the RTL prediction ` +
     `(cycle ${d.predicted_cycle[0]}${d.predicted_cycle[1] !== d.predicted_cycle[0] ? "–" + d.predicted_cycle[1] : ""}). Dashed lines: noise floor ±${floor.toFixed(3)}. ` +
@@ -1989,7 +1832,7 @@ function drawCoef(d) {
   const hm = d.heat, labels = hm.guesses.map((g) => (g === d.best_guess ? "★ " : g === d.true_value ? "✓ " : "") + g);
   chart("in-heat", [{ type: "heatmap", x: hm.x, y: labels, z: hm.z, colorscale: "Viridis", zmin: 0, colorbar: { thickness: 8, len: 0.9, tickfont: { size: 9 }, title: "|ρ|" },
     hovertemplate: "candidate %{y}<br>%{x} µs<br>|ρ| %{z}<extra></extra>" }],
-    { height: 270, hovermode: "closest", showlegend: false, xTitle: d.x_unit === "us" ? "time after the trigger (µs)" : "sample", margin: { l: 64, r: 10, t: 6, b: 38 }, yaxis: { type: "category", autorange: "reversed" } });
+    { height: 270, hovermode: "closest", showlegend: false, xTitle: d.x_unit === "us" ? "time after the Decaps start (µs)" : "core cycle", margin: { l: 64, r: 10, t: 6, b: 38 }, yaxis: { type: "category", autorange: "reversed" } });
 }
 document.addEventListener("keydown", (e) => {
   if (currentPage !== "analysis" || !insp || e.target.closest("input,textarea,select")) return;
@@ -2020,6 +1863,14 @@ function drawModelCompare() {
 }
 
 // ---- TVLA results ----
+// A parsed TVLA campaign is computed on traces aligned on the Decaps start (sample r.t0_sample);
+// the axis of the raw records puts that start at r._axis.t0_sample, so its windows are shifted.
+const tvlaShift = (r) => (r.aligned && r._axis ? r.t0_sample - r._axis.t0_sample : 0);
+function tvlaUs(r, s) {
+  if (!r.sample_rate_hz || !r._axis) return null;
+  return (s - (r.aligned ? r.t0_sample : r._axis.t0_sample)) / r.sample_rate_hz * 1e6;
+}
+const tvlaXTitle = (r) => (r.aligned ? "sample (aligned on the Decaps start)" : "sample");
 async function renderTVLA(r) {
   cur = r; insp = null; anDrawn = new Set();
   const t = tabsHtml("tvla", [["t", "|t| over time"], ["means", "Class means"], ["det", "Detection"], ["details", "Details"]]);
@@ -2032,10 +1883,10 @@ async function renderTVLA(r) {
     pan("det", `<div class="card"><div class="card-head"><h2>Detection vs trace count</h2><span class="sub">max |t| as traces accumulate</span></div><div class="chart" id="tvla-det"></div></div>`) +
     pan("details", `<div class="card"><div class="kv" id="an-details-kv"></div></div>`);
   const th = r.leakage_threshold, leak = r.leakage_detected;
-  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz + ((r._axis && r._axis.record_start_s) || 0)) * 1e6 : null);
+  const toUs = (s) => tvlaUs(r, s);
   try { r._axis = (await api("POST", "/api/analysis/raw_traces", { file: r.file, count: 1, max_points: 500 })).axis; } catch (e) { r._axis = null; }
   if (cur !== r) return;   // another report was opened meanwhile
-  r._peakPhase = r._axis ? phaseAt(r._axis.phases, r.max_abs_t_sample) : "";
+  r._peakPhase = r._axis ? phaseAt(r._axis.phases, r.max_abs_t_sample - tvlaShift(r)) : "";
   kpis("tv-kpis", [["max |t|", r.max_abs_t.toFixed(2), `threshold ${th}`, leak ? "bad" : "good"],
     ["leakage", leak ? "detected" : "not detected", leak ? "first-order leakage present" : "at this trace count", leak ? "bad" : "good"],
     ["peak at", `sample ${r.max_abs_t_sample}`, (toUs(r.max_abs_t_sample) !== null ? toUs(r.max_abs_t_sample).toFixed(3) + " µs" : "") + (r._peakPhase ? " · " + r._peakPhase : "")],
@@ -2045,11 +1896,12 @@ async function renderTVLA(r) {
 }
 function drawTVLATab(t) {
   const r = cur, th = r.leakage_threshold;
-  const wins = r._axis ? r._axis.bmul_windows_samples || [] : [];
-  const phases = r._axis ? r._axis.phases || [] : [];
+  const sh = tvlaShift(r);
+  const wins = r._axis ? (r._axis.bmul_windows_samples || []).map((w) => [w[0] + sh, w[1] + sh]) : [];
+  const phases = r._axis ? (r._axis.phases || []).map((p) => ({ ...p, samples: [p.samples[0] + sh, p.samples[1] + sh] })) : [];
   const winIdx = r._axis ? r._axis.bmul_index : null;
   const wb = mergeBands(windowBands(wins, winIdx), phaseBands(phases, "samples"));
-  const toUs = (s) => (r.sample_rate_hz ? (s / r.sample_rate_hz + ((r._axis && r._axis.record_start_s) || 0)) * 1e6 : null);
+  const toUs = (s) => tvlaUs(r, s);
   if (t === "t") {
     const tEl = $("tvla-t"), absT = r.t_curve.map(Math.abs);
     // zoom targets: the whole record, each BMUL window (the CPA target), or a Decaps phase
@@ -2060,7 +1912,7 @@ function drawTVLATab(t) {
     $("tvla-zoom").innerHTML = zooms.map(([v, l], i) => `<button data-v="${v}" class="${i === 0 ? "active" : ""}">${esc(l)}</button>`).join("");
     seg("tvla-zoom", (v) => Plotly.relayout(plotDiv(tEl), zr[v] ? { "xaxis.range": zr[v] } : { "xaxis.autorange": true }));
     chart(tEl, [line("|t|", C.s[0], r.sample_indices, absT), peak("|t|", C.s[2], r.sample_indices, absT)],
-      { height: vh(0.44, 300, 600), xTitle: "sample", yTitle: "|t|", showlegend: false, hovermode: "x",
+      { height: vh(0.44, 300, 600), xTitle: tvlaXTitle(r), yTitle: "|t|", showlegend: false, hovermode: "x",
         shapes: wb.shapes.concat([hLine(th, C.s[3])]), annotations: wb.annotations.concat([hLabel(th, C.s[3], "|t| = " + th)]) })
       .then((gd) => gd.on("plotly_click", (e) => {
         const pt = e.points.find((p) => p.curveNumber === 0);
@@ -2076,7 +1928,7 @@ function drawTVLATab(t) {
     const diff = r.fixed_mean_curve.map((v, i) => v - r.random_mean_curve[i]);
     chart("tvla-means", [line("fixed", C.s[1], r.sample_indices, r.fixed_mean_curve), line("random", C.s[2], r.sample_indices, r.random_mean_curve),
       line("fixed − random", C.s[3], r.sample_indices, diff, { yaxis: "y2" })],
-      { height: vh(0.44, 300, 600), xTitle: "sample", y2: true, y2Title: "difference", shapes: wb.shapes, annotations: wb.annotations });
+      { height: vh(0.44, 300, 600), xTitle: tvlaXTitle(r), y2: true, y2Title: "difference", shapes: wb.shapes, annotations: wb.annotations });
   } else if (t === "det") {
     const det = r.detection_curve || [];
     chart("tvla-det", [line("max |t|", C.s[0], det.map((c) => c.n_traces), det.map((c) => c.max_abs_t))],
@@ -2263,6 +2115,7 @@ async function init() {
     const s = await api("GET", "/api/state");
     $("board-baud").value = s.defaults.baud;
     $("scope-ip").value = s.defaults.scope_ip; $("scope-channel").value = s.defaults.scope_channel;
+    $("scope-marker").value = s.defaults.scope_marker || "";
     $("scope-dialect").value = s.defaults.scope_dialect; $("scope-timeout").value = s.defaults.scope_timeout_ms;
     if (s.defaults.scope_transport) $("scope-transport").value = s.defaults.scope_transport;
     $("reg-name").innerHTML = s.registers.map((r) => `<option ${r === "STATUS" ? "selected" : ""}>${r}</option>`).join("");
@@ -2377,33 +2230,18 @@ async function init() {
   $("lib-status").addEventListener("change", libFilter);
   $("lib-refresh").addEventListener("click", () => libRefresh());
   $("lib-trash-toggle").addEventListener("click", () => { libTrash = !libTrash; libChecks.clear(); libSel = null; libDetailEmpty(); libRefresh(); });
-  $("tv-load").addEventListener("click", tvLoad);
-  $("tv-prev").addEventListener("click", () => tvStep(-1));
-  $("tv-next").addEventListener("click", () => tvStep(1));
-  $("tv-play").addEventListener("click", tvPlayToggle);
-  $("tv-back").addEventListener("click", tvClose);
-  $("tv-close").addEventListener("click", tvClose);
-  $("tv-pos").addEventListener("input", tvScrub);
-  $("tv-cls").addEventListener("change", () => { if (tvPlay) tvPlayReset(); });
-  document.addEventListener("keydown", (e) => {   // space: play / pause while the viewer is on screen
-    if (e.code !== "Space" || currentPage !== "library" || $("lib-viewer").classList.contains("hidden")) return;
-    if (/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(document.activeElement?.tagName || "")) return;
-    e.preventDefault(); tvPlayToggle();
-  });
   // Lists: Del (or Backspace) moves the ticked rows, else the open item, to the trash; in the trash it
   // deletes them permanently (asks first). Esc clears the ticks. Ctrl/Cmd+A ticks every row shown.
   document.addEventListener("keydown", (e) => {
     if (e.target.closest?.("input,textarea,select") || $("modal-back").classList.contains("open")) return;
     const L = currentPage === "vectors" ? { trash: vsTrash, table: vsTable, targets: vsTargets, del: vsDelete, purge: vsPurge, clear: vsClearChecks, n: vsChecks.size }
-      : currentPage === "library" && !$("lib-list").classList.contains("hidden")
+      : currentPage === "library"
         ? { trash: libTrash, table: libTable, targets: libTargets, del: libDelete, purge: libPurge, clear: libClearChecks, n: libChecks.size } : null;
     if (!L) return;
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); (L.trash ? L.purge : L.del)(L.targets()); }
     else if (e.key === "Escape" && L.n) { e.preventDefault(); L.clear(); }
     else if (e.key.toLowerCase() === "a" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); L.table.checkAll(); }
   });
-  $("tv-bands").addEventListener("change", tvDraw);
-  $("tv-export-csv").addEventListener("click", tvCsv);
 
   // analysis
   anOracle = seg("an-oracle", anOracleChanged);

@@ -26,6 +26,8 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 | 移到回收站 | 把文件移到 `.trash` 目录。可以恢复。 |
 | 永久删除 | 从磁盘删除文件。不能恢复。 |
 | 撤销 | 点击提示框中的 **Undo**，取消上一次"移到回收站"。 |
+| 标记通道 | 示波器上接 trig_out 的通道（例如 C4）。trig_out 在 Decaps 运行时为高电平。 |
+| 解析（parse） | 在每条 trace 的标记通道中找到 Decaps 的起点。解析后 GUI 才显示 BMUL 窗口。 |
 
 ## 2. 启动 GUI
 
@@ -38,7 +40,7 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 2. 浏览器打开 `http://127.0.0.1:8765`。
 3. 如果页面没有更新，按 Ctrl+Shift+R（macOS：⌘+Shift+R）刷新页面。
 
-左侧导航按实验顺序排列：**Connection** → **Test Vectors** → **Acquisition** → **Trace Library** → **Analysis**。**Advanced** 用于单步调试。
+左侧导航按实验顺序排列：**Connection** → **Test Vectors** → **Acquisition** → **Trace Library** → **Parse & View** → **Analysis**。**Advanced** 用于单步调试。
 
 顶栏的指示灯显示板子、示波器和后台任务的状态。点击指示灯打开 **Connection** 页面。
 
@@ -50,7 +52,7 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 
 开始前，做以下准备（详细步骤见 [SAKURA_X.md](SAKURA_X.md)）：
 
-- FT2232H 的 EEPROM 设置正确：A 通道 = 245 FIFO，B 通道 = UART（见第 10 节）。
+- FT2232H 的 EEPROM 设置正确：A 通道 = 245 FIFO，B 通道 = UART（见第 11 节）。
 - Spartan-6（CN10）已烧录 `sakura-x-shell-ctrl.bit`。
 - Kintex-7（CN5）已烧录 `sakura_x_top.bit`。
 
@@ -76,7 +78,7 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 | Kintex shell identity | Kintex-7 回应，两片 FPGA 之间的总线正常 |
 | ML-KEM core | ML-KEM 核心回应，可以运行 Decaps |
 
-6. 如果有一步 FAIL，读这一行的 **detail**，然后按第 9 节处理。
+6. 如果有一步 FAIL，读这一行的 **detail**，然后按第 10 节处理。
 7. 如果要请别人帮忙，点击 **Copy report**，把内容粘贴给对方。报告只有 USB 设备和检查结果，不包含密钥和 trace。
 
 每次点击 **Connect**，GUI 先通过 B 通道复位 Spartan-6 控制器。复位后板上的 DK/CT 无效。采集程序自动重新加载 DK/CT。
@@ -102,10 +104,14 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 1. 在 **IP address** 中输入示波器的 IP 地址。
 2. 选择 **Driver**：Teledyne LeCroy 选第一项。其他品牌选对应的一项。
 3. 选择 **Transport**。它必须与示波器的远程控制设置相同（LeCroy：Utilities › Remote）。
-4. 在 **Channel** 中输入测量信号的通道，例如 `C1`。不要输入触发通道。
-5. 点击 **Connect**。
-6. 如果不知道 IP 地址，点击 **Find instruments**，然后点击列表中的一行。GUI 自动填入 IP 地址。
-7. 如果要保存这些设置，点击 **Save as default**。
+4. 在 **Signal channel** 中输入功耗或 EM 信号的通道，例如 `C2`。
+5. 在 **Marker channel (trig_out)** 中输入接 trig_out 的通道，例如 `C4`。这个通道也是触发源。
+6. 点击 **Connect**。
+
+**注意：** 如果 **Marker channel** 为空，GUI 不能解析 trace，也不显示 BMUL 窗口。示波器的设置方法见 [OSCILLOSCOPE_GUIDE.md](OSCILLOSCOPE_GUIDE.md)。
+
+7. 如果不知道 IP 地址，点击 **Find instruments**，然后点击列表中的一行。GUI 自动填入 IP 地址。
+8. 如果要保存这些设置，点击 **Save as default**。
 
 ## 4. Test Vectors：测试向量
 
@@ -149,10 +155,13 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 ### 5.1 设置示波器
 
 1. 连接板子和示波器。
-2. 在 **Setup capture** 中点击 **Capture**。GUI 用一个新向量运行一次 Decaps，并显示波形。
-3. 调整示波器的垂直刻度和时基。
-4. 点击 **Check trigger**。确认每一行都是 PASS。
-5. 如果要看接线和触发设置，展开 **Trigger wiring and scope settings**。
+2. 在 **Setup capture** 中点击 **Capture**。GUI 用一个新向量运行一次 Decaps，并显示波形和标记通道（黄色，右侧纵轴）。
+3. 查看图上方的 **Decaps start**。它必须显示 "found at … µs"。
+4. 调整示波器的垂直刻度和时基。
+5. 点击 **Check trigger**。确认每一行都是 PASS，包括 "marker: Decaps start found"。
+6. 如果要看接线和触发设置，展开 **Trigger wiring and scope settings**。
+
+BMUL 窗口只在 GUI 找到 Decaps 起点后显示。GUI 不按触发时间直接画窗口。
 
 触发信号 `trig_out` 在 Decaps 运行时为高电平：
 
@@ -164,13 +173,15 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 
 ### 5.2 开始采集
 
-1. 查看 **Campaign** 中的检查项。每一项必须有 ✓。如果某一项没有 ✓，点击它右侧的链接。
+1. 查看 **Before you start** 中的检查项：Board、Oscilloscope、Marker channel、Test-vector set、Trigger。如果某一项没有 ✓，点击它右侧的 **set up →**。虚线圆圈表示推荐项。
 2. 在 **Test-vector set** 中选择向量集。
 3. 保持 **Samples per trace** 为 0。GUI 使用示波器的记录长度。
 4. 点击 **Start acquisition**。
 5. 在 **Live preview** 中查看最新 trace 和均值。
 
 每条 trace 都检查 K 和 CYCLE_COUNT。如果 K 不正确，这条 trace 被标记。
+
+如果设置了标记通道，GUI 同时保存每条 trace 的标记波形，并在采集时解析它（找到 Decaps 起点）。采集完成后不需要再解析。
 
 **注意：** 采集时不要改变示波器的时基和触发设置。如果改变了设置，停止采集，重新连接示波器。
 
@@ -183,11 +194,9 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 
 ### 6.1 查看 Campaign
 
-1. 在表格中选中一个 Campaign。右侧显示 K 正确率、CYCLE_COUNT、BMUL 窗口覆盖、来源信息。
-2. 点击 **View traces** 打开波形查看器。查看器替换左侧的列表。
-3. 在查看器中设置 **from #** 和 **count**，然后点击 **Plot**。
-4. 如果要逐条播放，点击 **▶ Play**，或按空格键。
-5. 点击 **‹ Campaigns** 回到列表。
+1. 在表格中选中一个 Campaign。右侧显示 K 正确率、CYCLE_COUNT、BMUL 窗口覆盖、来源信息和解析状态（**parsed** / **not parsed**）。
+2. 点击 **View traces** 打开 **Parse & View** 页面（第 7 节）。
+3. 如果显示 **not parsed**，点击 **Parse**。
 
 ### 6.2 导出
 
@@ -241,19 +250,65 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 
 确认框中，Enter 不确认危险操作。按 Esc 或点击确认框外部取消操作。
 
-## 7. Analysis：分析
+## 7. Parse & View：解析和查看 trace
 
-### 7.1 CPA
+这个页面打开任何 trace 的 H5 文件：
+
+- 本工具采集的 Campaign（`data/traces/*.hdf5`，标记波形在同一个文件中）。
+- 每个通道一个文件的采集文件夹，例如 `C2_traces.h5`（功耗）和 `C4_traces.h5`（标记），数据集为 `trace_data_set`。
+
+### 7.1 打开文件
+
+1. 在 **Folder** 中输入文件夹，然后点击 **Scan**（或按 Enter）。
+2. 在列表中点击一个文件。
+3. 在 **Power traces** 中选择功耗数据集。
+4. 在 **Marker (trig_out)** 中选择标记数据。GUI 自动选择 Campaign 的 `marker` 数据集，或同一文件夹中的 C4 文件。
+
+### 7.2 解析
+
+1. 在 **Parse** 中选择方法：
+   - **Marker edge**：在每条 trace 的标记中找上升沿。上升沿就是这条 trace 的 Decaps 起点。推荐使用。
+   - **Pattern match**：没有标记时使用。GUI 用相关运算把每条 trace 对齐到参考 trace。时间原点仍然是触发点。
+2. 保持 **Smoothing** 为 9，**Threshold** 为 auto。
+3. 点击 **Parse**。
+
+**Parse result** 显示：
+
+| 项目 | 意思 |
+| ---- | ---- |
+| parsed | 找到起点的 trace 数。所有 trace 都必须找到。 |
+| Decaps start | 起点在记录中的位置（中位数）。 |
+| spread | 起点位置的最大差。差值大说明触发抖动大，解析后的对齐更重要。 |
+| core clock | 如果标记的下降沿在记录内，GUI 用脉宽和 CYCLE_COUNT 测量实际时钟；否则使用标称值 206.25 MHz。 |
+
+直方图显示所有 trace 的起点分布。
+
+结果保存在 Campaign 文件的 `/parse` 中。其他 H5 文件的结果保存为旁边的 `<文件名>.parse.npz`。Analysis 自动使用解析结果。
+
+**注意：** 如果有 trace 没有找到起点，看 **Not parsed** 一行的原因。常见原因：标记探头没有连接；记录在 Decaps 开始后才开始（把触发点放到记录左侧）。
+
+### 7.3 查看
+
+1. 设置 **from #** 和 **count**，然后点击 **Plot**。
+2. 勾选 **aligned**：每条 trace 从自己的 Decaps 起点开始画。
+3. 勾选 **marker**：同时显示标记波形（黄色，右侧纵轴）。
+4. 勾选 **BMUL windows**：显示 BMUL 窗口。只有已解析的 Campaign 才有这个选项。
+5. 如果要逐条播放，点击 **▶ Play**，或按空格键。拖动滑块跳到任何一条 trace。
+6. 右上角的标记显示状态：**parsed · aligned**、**parsed** 或 **not parsed**。
+
+## 8. Analysis：分析
+
+### 8.1 CPA
 
 1. 在 **Campaign** 中选择一个 CPA Campaign。
 2. 点击 **New analysis**。
 3. 在 **1 Hypothesis** 中选择假设：`hw_product_mod` = HW(u·g mod q)，`hw_product_raw` = HW(u·g)。
-4. 在 **2 What to attack** 中设置：
+4. 在 **2 Coefficients** 中设置：
    - **Polynomials**：例如 `0-2`。
    - **Coefficients per polynomial**：8 = 前 8 个（数秒）；0 = 全部 256 个（数分钟）。
    - **Where in the trace**：先选 **Whole BMUL window**。
 5. 在 **3 Scoring** 中选择：
-   - **Blind attack**：不使用真实密钥。结果与真实攻击者相同。
+   - **Blind**：不使用真实密钥。
    - **Rank the campaign key**：用真实密钥给猜测排名。假设仍然只用公开密文。
 6. 点击 **Run analysis**。
 7. 查看 **Overview** 标签中的 offset 列。如果 offset 集中在一个值，选择 **Around the predicted cycle**，在 **shift (cycles)** 中输入这个值，然后再运行一次。这样更快，假峰更少。
@@ -267,18 +322,18 @@ GUI 本身的提示也按 ASD-STE100 写成短句英文。
 | Compare | 同一个 Campaign 的所有 CPA 报告 |
 | Details | 运行参数 |
 
-### 7.2 TVLA
+### 8.2 TVLA
 
 1. 在 **Campaign** 中选择一个 TVLA Campaign。
 2. 点击 **New analysis**，然后点击 **Run analysis**。
 3. 查看 \|t\| 曲线。如果 \|t\| 超过阈值（4.5），说明 fixed 和 random 两类 trace 可以区分。
 
-### 7.3 报告
+### 8.3 报告
 
 1. 在 **Report** 中选择已保存的报告。
 2. 点击 **Report ▾**，可以复制摘要、重新运行、下载 JSON/CSV 或删除报告。
 
-## 8. Advanced：单步操作
+## 9. Advanced：单步操作
 
 **注意：** 单步操作只用于调试。采集时不要使用这个页面。
 
@@ -296,7 +351,7 @@ SAKURA-X 的五条命令：
 
 **Registers** 读取全部寄存器。**Data buffer** 读写数据缓冲区。
 
-## 9. 故障排除
+## 10. 故障排除
 
 | 问题 | 原因 | 处理 |
 | ---- | ---- | ---- |
@@ -307,7 +362,9 @@ SAKURA-X 的五条命令：
 | Spartan controller：FACTORY controller | Spartan-6 运行出厂控制器（断电后的默认状态） | 烧录 `sakura-x-shell-ctrl.bit` 到 CN10，再烧录 `sakura_x_top.bit` 到 CN5。两步之间不要断电 |
 | Kintex shell identity：FAIL | Kintex-7 没有烧录正确的 bit | 烧录 `sakura_x_top.bit` 到 CN5。确认 Kintex-7 的 LED10 亮 |
 | 采集中显示 **Link lost** | 板子复位、断电或 USB 断开 | 点击 **Connect**。在 **Acquisition** 中继续采集（第 5.3 节） |
-| **Check trigger** 失败 | 触发设置或时基不正确 | 按第 5.1 节检查接线和触发电平。把触发点放在记录的左边缘 |
+| **Check trigger** 失败 | 触发设置或时基不正确 | 按 [OSCILLOSCOPE_GUIDE.md](OSCILLOSCOPE_GUIDE.md) 检查接线和触发电平。把触发点放在记录的左侧 |
+| "marker: Decaps start found" 失败 | 标记通道没有接 trig_out，或通道没有打开 | 把 trig_out 探头接到标记通道。在示波器上打开这个通道 |
+| BMUL 窗口不显示 | trace 没有解析 | 在 **Parse & View** 中解析这个文件 |
 | 页面显示旧内容 | 浏览器缓存 | 按 Ctrl+Shift+R 刷新页面 |
 
 Spartan-6 LED 判断：
@@ -318,7 +375,7 @@ Spartan-6 LED 判断：
 | 出厂控制器 | LED11 每秒闪约 3 次 |
 | 没有配置 | 没有 LED 闪烁 |
 
-## 10. EEPROM 一键工具（Linux）
+## 11. EEPROM 一键工具（Linux）
 
 SAKURA-X 的 FT2232H 必须设置为：A 通道 = 245 FIFO，B 通道 = UART。如果 A 通道是 UART，PC 不能与 Spartan-6 通信。
 
@@ -363,7 +420,7 @@ bash scripts/board/sakura_x_eeprom.sh check
 
 第一次执行时，工具把 pyftdi 安装到 `~/ftdi-venv`。工具需要 root 权限访问 USB 设备，所以会询问 sudo 密码。
 
-## 11. 键盘快捷键
+## 12. 键盘快捷键
 
 | 位置 | 按键 | 作用 |
 | ---- | ---- | ---- |
@@ -374,7 +431,7 @@ bash scripts/board/sakura_x_eeprom.sh check
 | 表格 | Ctrl+点击 / ⌘+点击 | 勾选一行，不打开详细数据 |
 | 确认框 | Enter | 确认（危险操作除外） |
 | 确认框 | Esc | 取消 |
-| 波形查看器 | 空格 | 播放 / 暂停 |
+| Parse & View | 空格 | 播放 / 暂停 |
 | Analysis → Coefficient | ← → ↑ ↓ | 切换系数 |
 
 输入框中的按键不触发快捷键。

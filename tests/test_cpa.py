@@ -1,4 +1,4 @@
-"""cpa_toolkit/cpa_attack.py: the simple coefficient CPA on synthetic campaigns.
+"""cpa_toolkit/cpa.py: the simple coefficient CPA on synthetic campaigns.
 
 A campaign is built from a real vector set (real ciphertexts, real key) with noise traces that
 carry the hypothesised register value at the cycle the RTL schedule puts it (``T + 10 / T + 11``
@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "cpa_toolkit"))
 
 import acquire_cpa as A  # noqa: E402
 import config as C  # noqa: E402
-import cpa_attack as CA  # noqa: E402
+import cpa as CA  # noqa: E402
 import hdf5_trace_store as HS  # noqa: E402
 import mlkem_ref as R  # noqa: E402
 import testvectors as TV  # noqa: E402
@@ -72,8 +72,8 @@ class TestCpa(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp)
 
-    def test_blind_attack_recovers_the_key_at_the_predicted_cycle(self):
-        r = CA.run_attack(self.path, "hw_product_mod", 0, None, "0", "4")
+    def test_blind_cpa_recovers_the_key_at_the_predicted_cycle(self):
+        r = CA.run_cpa(self.path, "hw_product_mod", 0, None, "0", "4")
         self.assertFalse(r["oracle_assisted"])
         for res in r["results"]:
             self.assertEqual(res["best_guess"], int(self.s[0, res["coeff"]]), res)
@@ -82,9 +82,9 @@ class TestCpa(unittest.TestCase):
             self.assertTrue(-0.6 <= res["offset_cycles"] <= 1.6, res["offset_cycles"])   # T+10 / T+11 (+- half a sample)
         self.assertAlmostEqual(r["alignment"]["median_offset_cycles"], 0.5, delta=1.0)
 
-    def test_scoring_ranks_the_true_key_but_does_not_change_the_attack(self):
-        blind = CA.run_attack(self.path, "hw_product_mod", 0, None, "0", "3")
-        scored = CA.run_attack(self.path, "hw_product_mod", 0, self.dk, "0", "3")
+    def test_scoring_ranks_the_true_key_but_does_not_change_the_result(self):
+        blind = CA.run_cpa(self.path, "hw_product_mod", 0, None, "0", "3")
+        scored = CA.run_cpa(self.path, "hw_product_mod", 0, self.dk, "0", "3")
         self.assertTrue(scored["oracle_assisted"])
         self.assertEqual([x["best_guess"] for x in blind["results"]], [x["best_guess"] for x in scored["results"]])
         self.assertEqual([x["best_corr"] for x in blind["results"]], [x["best_corr"] for x in scored["results"]])
@@ -93,34 +93,34 @@ class TestCpa(unittest.TestCase):
 
     def test_wrong_key_is_refused(self):
         with self.assertRaises(SystemExit):
-            CA.run_attack(self.path, "hw_product_mod", 0, bytes(2400), "0", "1")
+            CA.run_cpa(self.path, "hw_product_mod", 0, bytes(2400), "0", "1")
 
     def test_gate_search_finds_it_with_far_fewer_samples(self):
-        full = CA.run_attack(self.path, "hw_product_mod", 0, None, "0", "2")
-        gate = CA.run_attack(self.path, "hw_product_mod", 0, None, "0", "2", "gate", 8)
+        full = CA.run_cpa(self.path, "hw_product_mod", 0, None, "0", "2")
+        gate = CA.run_cpa(self.path, "hw_product_mod", 0, None, "0", "2", "gate", 8)
         for f, g in zip(full["results"], gate["results"]):
             self.assertEqual(g["best_guess"], f["best_guess"])
             self.assertLess(g["n_search_samples"], f["n_search_samples"] / 5)
 
     def test_a_wrong_delay_moves_the_gate_off_the_leakage(self):
-        r = CA.run_attack(self.path, "hw_product_mod", 0, self.dk, "0", "2", "gate", 4, delay=60)
+        r = CA.run_cpa(self.path, "hw_product_mod", 0, self.dk, "0", "2", "gate", 4, delay=60)
         self.assertTrue(all(x["true_rank"] > 1 for x in r["results"]))
 
     def test_the_raw_model_does_not_find_a_reduced_product_leak(self):
         # same record, other register: not the key at the other register's cycle (nothing leaks there)
-        r = CA.run_attack(self.path, "hw_product_raw", 0, self.dk, "0", "2", "gate", 2)
+        r = CA.run_cpa(self.path, "hw_product_raw", 0, self.dk, "0", "2", "gate", 2)
         self.assertTrue(all(x["true_rank"] > 1 for x in r["results"]))
 
     def test_raw_model_positive_control(self):
         with tempfile.TemporaryDirectory() as tmp:
             path, dk, s = campaign(tmp, "raw")
-            r = CA.run_attack(path, "hw_product_raw", 0, dk, "0", "3")
+            r = CA.run_cpa(path, "hw_product_raw", 0, dk, "0", "3")
             self.assertTrue(all(x["true_rank"] == 1 for x in r["results"]))
 
     def test_noise_only_campaign_gives_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             path, dk, s = campaign(tmp, None, seed=9)
-            r = CA.run_attack(path, "hw_product_mod", 0, dk, "0", "4")
+            r = CA.run_cpa(path, "hw_product_mod", 0, dk, "0", "4")
             self.assertGreater(min(x["true_rank"] for x in r["results"]), 20)
             self.assertLess(r["mean_best_corr"], 1.35 * r["noise_floor_corr"])
             self.assertLess(r["n_above_floor"], len(r["results"]))
@@ -131,9 +131,9 @@ class TestCpa(unittest.TestCase):
         # finds the key but reports every peak 206 cycles late -- the alignment line makes the error visible
         with tempfile.TemporaryDirectory() as tmp:
             path, dk, s = campaign(tmp, "mod", write_start=False)
-            gate = CA.run_attack(path, "hw_product_mod", 0, dk, "0", "3", "gate", 8)
+            gate = CA.run_cpa(path, "hw_product_mod", 0, dk, "0", "3", "gate", 8)
             self.assertTrue(all(x["true_rank"] > 1 for x in gate["results"]))
-            full = CA.run_attack(path, "hw_product_mod", 0, dk, "0", "3")
+            full = CA.run_cpa(path, "hw_product_mod", 0, dk, "0", "3")
             self.assertAlmostEqual(full["alignment"]["median_offset_cycles"], 206.25, delta=2.0)
 
     def test_inspector_data(self):
@@ -181,17 +181,19 @@ class TestWindows(unittest.TestCase):
 
 
 class TestGuiServer(unittest.TestCase):
-    def test_axis_follows_the_record_start_and_keeps_bmul_numbers(self):
+    def test_axis_windows_come_only_from_a_parse(self):
         import web_gui as W
-        full = W._axis(RATE, 20000, START)
+        self.assertEqual(W._axis(RATE, 20000, START)["bmul_windows"], [])     # not parsed: no windows drawn
+        self.assertEqual(W._axis(RATE, 20000, START)["phases"], [])
+        rise = int(round(-START * RATE))                                     # the Decaps start found in the marker
+        parse = {"rise_median": rise, "samples_per_cycle": RATE / (C.CORE_MHZ * 1e6), "spc_source": "nominal",
+                 "clock_mhz": C.CORE_MHZ}
+        full = W._axis(RATE, 20000, START, parse)
         self.assertEqual(full["bmul_index"], [0, 1, 2])
+        self.assertEqual(full["origin"], "Decaps start")
         self.assertAlmostEqual(full["bmul_windows"][0][0], (C.BMUL_WINDOWS[0][0] - C.TRIGGER_SLACK_CYCLES) / C.CORE_MHZ, delta=0.01)
-        # a record that starts after BMUL 0: BMUL 1 and 2 must keep their own numbers, not become 0 and 1
-        late = W._axis(RATE, 20000, 8e-6)
-        self.assertEqual(late["bmul_index"], [1, 2])
-        self.assertEqual(late["bmul_outside"], 1)
         # a record that ends in the middle of BMUL 1: it is reported as cut
-        cut = W._axis(RATE, int((9.5e-6 - START) * RATE), START)
+        cut = W._axis(RATE, int((9.5e-6 - START) * RATE), START, parse)
         self.assertGreaterEqual(cut["bmul_outside"] + cut["bmul_cut"], 1)
         self.assertEqual(W._axis(RATE, 20000, None)["record_start_known"], False)
 

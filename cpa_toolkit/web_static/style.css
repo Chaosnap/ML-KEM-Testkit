@@ -53,7 +53,6 @@ a { color: var(--accent); }
 .topbar { display: flex; align-items: center; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--border);
   background: var(--bg2); min-height: 56px; }
 .topbar h1 { margin: 0; font-size: 17px; font-weight: 700; white-space: nowrap; }
-.topbar .page-desc { color: var(--sub); font-size: 13px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .content { flex: 1; overflow-y: auto; padding: 20px 24px 80px; min-height: 0; }
 .page { display: none; max-width: 1760px; margin: 0 auto; }
@@ -65,6 +64,15 @@ a { color: var(--accent); }
 .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid-side { grid-template-columns: 360px minmax(0, 1fr); align-items: start; }
 .grid-side-r { grid-template-columns: minmax(0, 1fr) 420px; align-items: start; }
+.grid.top { align-items: start; }
+.grid.stretch { align-items: stretch; }
+.card.col { display: flex; flex-direction: column; }
+.card.col > .table-wrap.fill { flex: 1; max-height: none; min-height: 160px; }
+.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.inline-field { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; }
+.inline-field label { color: var(--sub); font-weight: 600; font-size: 12px; margin-right: 4px; }
+.inline-field .w-num { width: 72px; }
+.inline-field .unit { color: var(--sub); font-size: 12px; }
 /* Acquisition: campaign column + live preview side by side; both stretch to one height. */
 .grid-acq { grid-template-columns: 340px minmax(0, 1fr); align-items: stretch; }
 .grid-acq > .card { display: flex; flex-direction: column; }
@@ -182,6 +190,7 @@ input:disabled, select:disabled { opacity: .55; }
 .kpi .v { font-size: 22px; font-weight: 700; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi .s { font-size: 12px; color: var(--sub); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi.good .v { color: var(--ok); } .kpi.bad .v { color: var(--bad); } .kpi.warn .v { color: var(--warn); }
+.kpis.compact { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
 .kpis.compact .kpi { padding: 9px 12px; background: var(--panel2); }
 .kpis.compact .kpi .v { font-size: 16px; }
 
@@ -216,6 +225,7 @@ table.t td .sub { color: var(--sub); font-size: 11.5px; font-family: var(--mono)
 .empty { text-align: center; padding: 36px 16px; color: var(--sub); }
 .empty .t { font-size: 15px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
 .empty .btn { margin-top: 14px; }
+.empty.sm { padding: 18px 8px; font-size: 12.5px; }
 
 /* ---------------- progress ---------------- */
 .progress { position: relative; min-height: 22px; background: var(--bg2); border: 1px solid var(--border); border-radius: 7px; overflow: hidden; margin-top: 12px; }
@@ -224,12 +234,16 @@ table.t td .sub { color: var(--sub); font-size: 11.5px; font-family: var(--mono)
   white-space: normal; overflow-wrap: anywhere; }
 
 /* checklist */
-.checklist { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.checklist li { display: flex; align-items: center; gap: 9px; font-size: 13px; }
-.checklist li .ic { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 800; background: var(--raise); color: var(--sub); }
-.checklist li.done .ic { background: #4ade8033; color: var(--ok); }
-.checklist li.fail .ic { background: #f8717133; color: var(--bad); }
+.checklist { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.checklist li { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 7px 10px; border-radius: 8px;
+  background: var(--bg2); color: var(--sub); border: 1px solid transparent; }
+.checklist li.done { color: var(--text); }
+.checklist li.fail { border-color: #f8717155; color: var(--text); }
+.checklist li .ic { width: 20px; height: 20px; flex: 0 0 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; border: 1.5px solid var(--border); color: var(--sub); }
+.checklist li.done .ic { background: #4ade8033; border-color: transparent; color: var(--ok); }
+.checklist li.fail .ic { background: #f8717133; border-color: transparent; color: var(--bad); }
+.checklist li.opt .ic { border-style: dashed; }
 .checklist li a { margin-left: auto; font-size: 12px; cursor: pointer; }
 
 /* ---------------- charts ---------------- */

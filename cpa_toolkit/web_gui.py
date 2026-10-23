@@ -38,10 +38,11 @@ import numpy as np
 import acquire_cpa as A
 import config as C
 import connection as CN
-import cpa_attack as CA
+import cpa as CA
 import hdf5_trace_store as HS
 import scope as S
 import testvectors as TV
+import trace_parse as P
 import tvla_analysis as TVA
 import uart_target as T
 import sakura_x as SH
@@ -53,7 +54,7 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset
                  ".png": "image/png"}
 DATA_DIR = Path(A.ROOT) / "data"
 TRACES_DIR = DATA_DIR / "traces"
-#: Marks reports made by the current simple CPA (cpa_attack.py); older ones came from the removed model catalogue.
+#: Marks reports made by the current simple CPA (cpa.py); older ones came from the removed model catalogue.
 CPA_FORMAT = "simple-cpa-1"
 ANALYSIS_DIR = DATA_DIR / "analysis"
 VECTORS_DIR = TV.VECTORS_DIR
@@ -177,69 +178,76 @@ def envelope(y: np.ndarray, max_points: int) -> tuple[np.ndarray, np.ndarray]:
     return x, v
 
 
-def _series(y: np.ndarray, rate: float, max_points: int, start_s: float | None = None) -> dict:
-    """``{x, y}`` ready for Plotly: x = time after the trigger in microseconds when
-    the sample rate is known (sample 0 sits at ``start_s``, the record start the
-    scope reported; 0 when unknown), else the sample index."""
+def _series(y: np.ndarray, rate: float, max_points: int, start_s: float | None = None,
+            t0: float | None = None) -> dict:
+    """``{x, y}`` ready for Plotly. x = microseconds after sample ``t0`` (the parsed Decaps
+    start of this trace) or, without ``t0``, after the trigger (sample 0 sits at ``start_s``,
+    the record start the scope reported); the sample index when the rate is unknown."""
     idx, val = envelope(np.asarray(y, dtype=np.float64), max_points)
-    x = (idx / rate + (start_s or 0.0)) * 1e6 if rate else idx
+    if t0 is None:
+        t0 = -(start_s or 0.0) * rate if rate else 0.0
+    x = (idx - t0) / rate * 1e6 if rate else idx - t0
     return {"x": np.round(x, 6).tolist(), "y": np.round(val, 6).tolist()}
 
 
-def _phase_bands(rate: float, n_samples: int, start_s: float | None = None) -> list[dict]:
-    """The Decaps phases (config.DECAPS_PHASES, core cycles) mapped onto the
-    captured record, each clipped to it, as ``{label, x, samples}`` (``x`` in the axis unit:
-    microseconds after the trigger, or samples when the rate is unknown). Lets the
-    charts name a feature outside the BMUL windows (e.g. a TVLA |t| peak in
-    J(z||c) / the re-encryption Keccak, not in a decryption BMUL)."""
-    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
+def _axis(rate: float, n_samples: int, start_s: float | None = None, parse: dict | None = None,
+          mlkem: bool = True) -> dict:
+    """The time axis of a record, and where the BMUL windows / Decaps phases are on it.
+
+    With a ``parse`` (trace_parse: ``rise_median`` = the Decaps start, ``samples_per_cycle``)
+    the x axis is time after the Decaps start and the windows are placed from it. Without
+    one the x axis is time after the trigger (``start_s`` = the scope's record start) and
+    NO windows or phases are given: their position is not known until the traces are parsed.
+    ``mlkem=False`` (a trace file of another design): the origin only, never ML-KEM windows.
+    """
     start = (start_s or 0.0) if rate else 0.0
-    out = []
+    parsed = bool(parse) and int(parse.get("rise_median", -1)) >= 0
+    t0 = int(parse["rise_median"]) if parsed else (-start * rate if rate else 0.0)
+    spc = float(parse["samples_per_cycle"]) if parsed else (rate / (C.CORE_MHZ * 1e6) if rate else 1.0)
+
+    def x(sample):
+        return round((sample - t0) / rate * 1e6, 6) if rate else int(sample - t0)
+    out = {"unit": "us" if rate else "sample", "sample_rate_hz": rate, "n_samples": n_samples,
+           "record_start_s": start_s, "record_start_known": start_s is not None,
+           "parsed": parsed, "origin": ("Decaps start" if mlkem else "marker edge") if parsed else "trigger",
+           "t0_sample": t0,
+           "samples_per_cycle": spc, "spc_source": parse.get("spc_source") if parsed else None,
+           "clock_mhz": parse.get("clock_mhz") if parsed else None,
+           "bmul_windows": [], "bmul_windows_samples": [], "bmul_index": [], "bmul_outside": 0, "bmul_cut": 0,
+           "phases": [], "duration_us": round(n_samples / rate * 1e6, 3) if rate else None,
+           "start_us": x(0), "end_us": x(n_samples),
+           "needed_us": round((C.BMUL_WINDOWS[-1][1] + C.TRIGGER_SLACK_CYCLES) / C.CORE_MHZ, 2)}
+    if not parsed or not mlkem:
+        return out
+    full = P.windows_for(t0, spc, 10 ** 9)
+    clipped = P.windows_for(t0, spc, n_samples)
+    for k, ((a, b), (fa, fb)) in enumerate(zip(clipped, full)):
+        if b > a:
+            out["bmul_windows"].append([x(a), x(b)])
+            out["bmul_windows_samples"].append([int(a), int(b)])
+            out["bmul_index"].append(k)
+            if b - a < fb - fa - 1:
+                out["bmul_cut"] += 1
+        else:
+            out["bmul_outside"] += 1
     for label, c0, c1 in getattr(C, "DECAPS_PHASES", []) or []:
-        s0 = min(n_samples, max(0, A.cycle_to_sample(c0, sr, start)))
-        s1 = min(n_samples, max(0, A.cycle_to_sample(c1, sr, start)))
-        if s1 > s0:  # a phase wholly outside the record is not drawn
-            out.append({"label": label, "x": [_sample_x(s0, rate, start), _sample_x(s1, rate, start)],
-                        "samples": [int(s0), int(s1)]})
+        a = min(n_samples, max(0, t0 + P.cycle_offset(c0, spc)))
+        b = min(n_samples, max(0, t0 + P.cycle_offset(c1, spc)))
+        if b > a:
+            out["phases"].append({"label": label, "x": [x(a), x(b)], "samples": [int(a), int(b)]})
     return out
 
 
-def _sample_x(s: int, rate: float, start_s: float) -> float:
-    """Axis position of sample ``s``: microseconds after the trigger, or the index."""
-    return round((s / rate + start_s) * 1e6, 6) if rate else int(s)
-
-
-def _windows_cut(rate: float, windows: list) -> int:
-    """How many BMUL windows the record holds only part of (a cut window loses coefficients)."""
-    sr = rate if rate > 0 else C.CORE_MHZ * 1e6
-    full = [A.cycle_to_sample(c1 + C.TRIGGER_SLACK_CYCLES, sr) - A.cycle_to_sample(c0 - C.TRIGGER_SLACK_CYCLES, sr)
-            for c0, c1 in C.BMUL_WINDOWS]
-    return sum(1 for (a, b), w in zip(windows, full) if 0 < b - a < w - 1)
-
-
-def _axis(rate: float, n_samples: int, start_s: float | None = None) -> dict:
-    """The time axis of a record and where the BMUL windows / Decaps phases fall on it.
-
-    ``start_s`` is the time of sample 0 relative to the trigger (the scope's
-    record start; None = not recorded, taken as 0). The BMUL bands are placed by
-    TIME after the trigger, so they stay right however the scope's horizontal
-    delay was set -- as long as the start was recorded."""
-    start = (start_s or 0.0) if rate else 0.0
-    windows = A.window_sample_ranges(rate, n_samples, start)
-    shown = [(a, b) for a, b in windows if b > a]  # windows outside the record are not drawn
-    labels = [i for i, (a, b) in enumerate(windows) if b > a]   # ...and the rest keep their own number
-    end_us = (start + n_samples / rate) * 1e6 if rate else None
-    return {"unit": "us" if rate else "sample", "sample_rate_hz": rate, "n_samples": n_samples,
-            "record_start_s": start_s, "record_start_known": start_s is not None,
-            "bmul_windows": [[_sample_x(a, rate, start), _sample_x(b, rate, start)] for a, b in shown],
-            "bmul_windows_samples": [[int(a), int(b)] for a, b in shown],
-            "bmul_index": labels,
-            "bmul_outside": len(windows) - len(shown),
-            "bmul_cut": _windows_cut(rate, windows),
-            "phases": _phase_bands(rate, n_samples, start),
-            "duration_us": round(n_samples / rate * 1e6, 3) if rate else None,
-            "end_us": round(end_us, 3) if end_us is not None else None,
-            "needed_us": round((C.BMUL_WINDOWS[-1][1] + C.TRIGGER_SLACK_CYCLES) / C.CORE_MHZ, 2)}
+def _single_parse(marker, rate: float, cycles: int | None = None) -> dict | None:
+    """Parse of one capture's marker, in the form _axis takes (nominal clock unless the fall is seen)."""
+    if marker is None:
+        return None
+    p = P.parse_marker(marker)
+    s = P.summarise(np.array([p["rise"]]), np.array([p["fall"]]), np.array([p["ok"]]),
+                    np.array([cycles]) if cycles else None, rate)
+    s.update(rise=p["rise"], fall=p["fall"], ok=p["ok"], reason=p["reason"],
+             levels={"low": p["low"], "high": p["high"], "threshold": p["threshold"]})
+    return s
 
 
 # =============================================================================
@@ -254,7 +262,8 @@ def api_state(_body: dict) -> dict:
                      "scope_placeholder_ip": C.SCOPE_PLACEHOLDER_IP, "scope_channel": C.SCOPE_CHANNEL,
                      "scope_dialect": C.SCOPE_DIALECT, "scope_timeout_ms": C.SCOPE_TIMEOUT_MS,
                      "scope_transport": C.SCOPE_TRANSPORT, "scope_resources": C.SCOPE_RESOURCES,
-                     "core_mhz": C.CORE_MHZ},
+                     "scope_marker": getattr(C, "SCOPE_MARKER_CHANNEL", ""), "core_mhz": C.CORE_MHZ,
+                     "traces_dir": str(TRACES_DIR)},
         "registers": sorted(T.REG),
     }
 
@@ -576,7 +585,8 @@ def api_scope_connect(body: dict) -> dict:
     params = {"ip": ip, "channel": body.get("channel") or C.SCOPE_CHANNEL,
               "dialect": body.get("dialect") or C.SCOPE_DIALECT, "points": int(body.get("points") or 0),
               "timeout_ms": int(body.get("timeout_ms") or C.SCOPE_TIMEOUT_MS),
-              "transport": body.get("transport") or C.SCOPE_TRANSPORT}
+              "transport": body.get("transport") or C.SCOPE_TRANSPORT,
+              "marker": str(body.get("marker", getattr(C, "SCOPE_MARKER_CHANNEL", "")) or "").strip()}
     if params["dialect"] not in S.DIALECT_NAMES:
         raise ValueError("unknown scope dialect %r" % params["dialect"])
     resource = S.resource_for(ip, params["transport"])        # also rejects an unknown transport
@@ -596,8 +606,9 @@ def api_scope_save_config(body: dict) -> dict:
     if transport not in C.SCOPE_RESOURCES:
         raise ValueError("unknown scope transport %r" % transport)
     save_config_values(SCOPE_IP=body["ip"].strip(), SCOPE_CHANNEL=body["channel"].strip(),
-                       SCOPE_DIALECT=body["dialect"].strip(), SCOPE_TRANSPORT=transport)
-    log("saved SCOPE_IP / SCOPE_CHANNEL / SCOPE_DIALECT / SCOPE_TRANSPORT to config.py")
+                       SCOPE_DIALECT=body["dialect"].strip(), SCOPE_TRANSPORT=transport,
+                       SCOPE_MARKER_CHANNEL=str(body.get("marker", "")).strip())
+    log("saved SCOPE_IP / SCOPE_CHANNEL / SCOPE_DIALECT / SCOPE_TRANSPORT / SCOPE_MARKER_CHANNEL to config.py")
     return {}
 
 
@@ -605,7 +616,7 @@ def api_scope_save_config(body: dict) -> dict:
 # CPA model
 # =============================================================================
 def api_model_list(_body: dict) -> dict:
-    """The CPA hypotheses (cpa_attack.MODELS) and the one config.py names as default."""
+    """The CPA hypotheses (cpa.MODELS) and the one config.py names as default."""
     name = C.CPA_MODEL if C.CPA_MODEL in CA.MODELS else CA.DEFAULT_MODEL
     return {"models": CA.list_models(), "default_model": name}
 
@@ -888,10 +899,22 @@ class _LiveStats:
         self.sums = {0: np.zeros(n_samples), 1: np.zeros(n_samples)}
         self.counts = {0: 0, 1: 0}
         self.n_bad = 0
+        self.rises: list[int] = []
+        self.last_rise = -1
 
-    def add(self, index: int, trace: np.ndarray, cls, ok: bool) -> None:
+    def parse(self) -> dict | None:
+        """The Decaps start found in the markers so far (nominal clock), or None."""
+        if not self.rises:
+            return None
+        r = np.asarray(self.rises[-500:])
+        return P.summarise(r, np.full(r.size, -1), np.ones(r.size, dtype=bool), None, self.rate)
+
+    def add(self, index: int, trace: np.ndarray, cls, ok: bool, rise: int = -1) -> None:
         c = 1 if cls is None else int(cls)
         with _live_lock:
+            if rise >= 0:
+                self.rises.append(int(rise))
+            self.last_rise = rise
             self.last, self.last_index, self.last_cls = trace.astype(np.float64), index, cls
             if ok:
                 self.sums[c] += trace
@@ -1001,12 +1024,15 @@ def api_acquire_live(body: dict) -> dict:
         last = live.last.copy()
         means = {c: (live.sums[c] / live.counts[c]) for c in (0, 1) if live.counts[c]}
         counts, seq, idx, cls, bad = dict(live.counts), live.seq, live.last_index, live.last_cls, live.n_bad
+        parse, n_rise = live.parse(), len(live.rises)
+    axis = _axis(live.rate, live.n_samples, live.start_s, parse)
+    t0 = axis["t0_sample"]
     out = {"seq": seq, "ready": True, "index": idx, "class": cls, "n_bad": bad, "mode": live.mode,
-           "axis": _axis(live.rate, live.n_samples, live.start_s),
-           "last": _series(last, live.rate, max_points, live.start_s),
-           "means": {str(c): dict(_series(m, live.rate, max_points, live.start_s), n=counts[c]) for c, m in means.items()}}
+           "axis": axis, "n_parsed": n_rise,
+           "last": _series(last, live.rate, max_points, t0=t0),
+           "means": {str(c): dict(_series(m, live.rate, max_points, t0=t0), n=counts[c]) for c, m in means.items()}}
     if live.mode == "tvla" and 0 in means and 1 in means:
-        out["mean_diff"] = _series(means[0] - means[1], live.rate, max_points, live.start_s)
+        out["mean_diff"] = _series(means[0] - means[1], live.rate, max_points, t0=t0)
     return out
 
 
@@ -1022,16 +1048,21 @@ def api_acquire_capture_one(body: dict) -> dict:
         if not out.ok:
             raise ValueError("capture failed: %s" % out.describe())
         trace = sc.read(timeout=10.0)
+        marker = sc.read_marker()
     rate = sc.sample_rate()
     max_points = min(20000, max(500, int(body.get("max_points", 4000) or 4000)))
     t = np.asarray(trace, dtype=np.float64)
     k_ok = out.output == vs.k[0].tobytes()
     log("capture: %s, K %s, %d samples @ %s Sa/s" % (out.describe(), "ok" if k_ok else "MISMATCH",
                                                      t.size, ("%.4g" % rate) if rate else "?"))
-    _, start_ok, start_detail = _record_start_check(sc)
     query = getattr(sc, "record_start_s", None)
     start = query() if callable(query) else None
-    return {"trace": _series(t, rate, max_points, start), "axis": _axis(rate, int(t.size), start),
+    parse = _single_parse(marker, rate, out.cycles)
+    _, start_ok, start_detail = _record_start_check(sc, parse)
+    axis = _axis(rate, int(t.size), start, parse if parse and parse["ok"] else None)
+    res = {"marker": _series(marker, rate, max_points, t0=axis["t0_sample"]) if marker is not None else None,
+           "parse": parse, "marker_channel": getattr(sc, "marker", "")}
+    return {**res, "trace": _series(t, rate, max_points, t0=axis["t0_sample"]), "axis": axis,
             "record_start": {"s": start, "ok": start_ok, "detail": start_detail},
             "cycles": out.cycles, "describe": out.describe(), "k_match": k_ok,
             "stats": {"min": float(t.min()), "max": float(t.max()), "mean": float(t.mean()),
@@ -1096,6 +1127,7 @@ def api_acquire_trigger_check(_body: dict) -> dict:
             raise ValueError("Decaps failed: %s" % out.describe())
         try:
             trace = np.asarray(sc.read(timeout=3.0), dtype=np.float64)
+            marker = sc.read_marker()
             checks.append(("trigger on the Decaps start", True,
                            "One Decaps gave one trigger. trig_out was high for %d core cycles (%.1f us)."
                            % (out.cycles, out.cycles / C.CORE_MHZ)))
@@ -1110,20 +1142,35 @@ def api_acquire_trigger_check(_body: dict) -> dict:
         rate = sc.sample_rate()
         query = getattr(sc, "record_start_s", None)
         start = query() if callable(query) else None
-        axis = _axis(rate, int(trace.size), start)
+        parse = _single_parse(marker, rate, out.cycles) if trace is not None else None
+        name = "marker: Decaps start found"
+        if parse is None:
+            checks.append((name, None, "No marker channel. Set it on the Connection page to parse the traces."))
+        elif parse["ok"]:
+            where = "%.3f us after the record start" % (parse["rise"] / rate * 1e6) if rate else "sample %d" % parse["rise"]
+            checks.append((name, True, "Rising edge at %s. Clock: %s." % (where, "%.3f MHz (measured)" % parse["clock_mhz"]
+                           if parse["spc_source"] == "measured" else "nominal (the record ends before the falling edge)")))
+        else:
+            checks.append((name, False, "%s. Connect the trig_out probe to channel %s." % (parse["reason"], sc.marker)))
+        axis = _axis(rate, int(trace.size), start, parse if parse and parse["ok"] else None)
+        result["parse"] = parse
+        if marker is not None:
+            result["marker"] = _series(marker, rate, 4000, t0=axis["t0_sample"])
         if not axis.get("duration_us"):
             checks.append(("record covers the BMUL windows", None, "The sample rate is not known. Skipped."))
+        elif not axis["parsed"]:
+            checks.append(("record covers the BMUL windows", None, "The Decaps start is not known (no marker). Skipped."))
         elif axis["bmul_outside"] or axis["bmul_cut"]:
-            checks.append(("record covers the BMUL windows", False, "The record is %.2f .. %.2f us after the trigger. "
+            checks.append(("record covers the BMUL windows", False, "The record is %.2f .. %.2f us after the %s. "
                            "%d BMUL windows are missing, %d are cut. The record must go from 0 to %s us or more. "
-                           "Put the trigger at the left edge. Make the timebase longer."
-                           % ((start or 0.0) * 1e6, axis["end_us"], axis["bmul_outside"], axis["bmul_cut"],
+                           "Start the record a little before the Decaps. Make the timebase longer."
+                           % (axis["start_us"], axis["end_us"], axis["origin"], axis["bmul_outside"], axis["bmul_cut"],
                               axis["needed_us"])))
         else:
             checks.append(("record covers the BMUL windows", True, "%.1f us captured. All three BMUL windows are inside "
                            "(%s us necessary)." % (axis["duration_us"], axis["needed_us"])))
-        checks.append(_record_start_check(sc))
-        result.update(trace=_series(trace, rate, 4000, start), axis=axis)
+        checks.append(_record_start_check(sc, parse))
+        result.update(trace=_series(trace, rate, 4000, t0=axis["t0_sample"]), axis=axis)
     rows = [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks]
     result.update(checks=rows, ok=all(r["ok"] is not False for r in rows))
     log("trigger check: " + "; ".join("%s %s" % ("PASS" if r["ok"] else "SKIP" if r["ok"] is None else "FAIL", r["name"])
@@ -1131,11 +1178,18 @@ def api_acquire_trigger_check(_body: dict) -> dict:
     return result
 
 
-def _record_start_check(sc) -> tuple:
-    """Check 4 of the trigger check: does sample 0 sit on the trigger?"""
-    name = "record starts at the trigger"
+def _record_start_check(sc, parse: dict | None = None) -> tuple:
+    """Check 4 of the trigger check: where does the record start?
+
+    With a parsed marker the Decaps start is measured in every trace, so a pre-trigger is
+    fine (and needed: the marker must be low at sample 0). Without one, sample 0 must sit
+    on the trigger, because then the trigger is taken as the Decaps start."""
+    name = "record start"
     query = getattr(sc, "record_start_s", None)
     start = query() if callable(query) else None
+    if parse is not None and parse.get("ok"):
+        pre = "%.3f us pre-trigger" % (-start * 1e6) if start is not None and start < 0 else "no pre-trigger"
+        return (name, True, "%s. The marker gives the Decaps start of each trace." % pre.capitalize())
     if start is None:
         return (name, None, "The scope driver does not report the trigger position. Check it on the scope "
                 "(docs/TRACE_ACQUISITION.md, 4.4).")
@@ -1145,7 +1199,7 @@ def _record_start_check(sc) -> tuple:
     where = ("BEFORE the trigger (all BMUL windows move by %.0f core cycles)"
              % -cycles if start < 0 else "AFTER the trigger (the start of Decaps is missing)")
     return (name, False, "The record starts %.3f us %s. The analysis uses sample 0 as the Decaps start. Set the "
-            "horizontal delay to 0 (trigger marker at the left edge)."
+            "horizontal delay to 0, or set a marker channel (then a pre-trigger is correct)."
             % (abs(start) * 1e6, where))
 
 
@@ -1255,7 +1309,7 @@ def _reports_for(path: str) -> list[dict]:
                  "model_config": rep.get("model_config")}
             if rep.get("kind") == "cpa":
                 r["headline"] = ("rank-1 %.1f%%" % (100 * rep["rank1_fraction"]) if rep.get("oracle_assisted")
-                                 and rep.get("rank1_fraction") is not None else "blind attack")
+                                 and rep.get("rank1_fraction") is not None else "blind")
                 r.update(_cpa_summary(rep))
             elif rep.get("kind") == "tvla":
                 r["headline"] = "max |t| %.2f, %s" % (rep.get("max_abs_t", 0),
@@ -1354,6 +1408,7 @@ def api_traces_detail(body: dict) -> dict:
             return json.loads(str(md.get(key, "null")))
         except ValueError:
             return None
+    parse = P.load(p)
     with HS.TraceReader(p) as r:
         ok = r.ok
         cyc = r.cycles[ok] if ok.any() else r.cycles
@@ -1365,7 +1420,8 @@ def api_traces_detail(body: dict) -> dict:
         "recipe": js("recipe"), "board": js("board"), "scope": js("scope"),
         "core_mhz": md.get("core_mhz"), "cycles": cycles, "cycles_distinct": int(values.size),
         "n_failed_checks": n_bad, "dk_hash": s.get("dk_hash"), "reports": _reports_for(str(p)),
-        "axis": _axis(row["sample_rate_hz"] or 0.0, int(row["n_samples"] or 0), s.get("record_start_s")),
+        "axis": _axis(row["sample_rate_hz"] or 0.0, int(row["n_samples"] or 0), s.get("record_start_s"), parse),
+        "parse": P.public(parse), "has_marker": s.get("has_marker", False),
     })
     return row
 
@@ -1509,10 +1565,10 @@ def _csv_paths(h5_path: str, job_id: str) -> tuple[Path, Path]:
 
 
 def _model_version(model: str = "") -> str:
-    """Content hash of cpa_attack.py and mlkem_ref.py: which version of the attack produced a report."""
+    """Content hash of cpa.py and mlkem_ref.py: which version of the analysis produced a report."""
     import mlkem_ref
     h = hashlib.sha256(Path(CA.__file__).read_bytes() + Path(mlkem_ref.__file__).read_bytes()).hexdigest()[:12]
-    return "%s:%s" % (model or "cpa_attack", h)
+    return "%s:%s" % (model or "cpa", h)
 
 
 def _save_analysis_report(kind: str, file: str, job_id: str, summary: dict) -> str:
@@ -1609,7 +1665,7 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, max_traces: int, d
         def progress(done, total):
             _update_job(job_id, progress=done, total=total, message="correlating %d / %d coefficients" % (done, total))
 
-        summary = CA.run_attack(file, model, max_traces, dk_ref, polys, coeffs, search, margin, delay, progress)
+        summary = CA.run_cpa(file, model, max_traces, dk_ref, polys, coeffs, search, margin, delay, progress)
         summary["format"] = CPA_FORMAT
         summary["model_config"] = {"model": model, "max_traces_requested": max_traces, "oracle_assisted": dk_ref is not None,
                                    "polys": polys, "coeffs": coeffs, "search": search, "margin_cycles": margin,
@@ -1620,13 +1676,13 @@ def _run_cpa_analysis_job(job_id: str, file: str, model: str, max_traces: int, d
         summary["report_path"] = _save_analysis_report("cpa", file, job_id, summary)
         _update_job(job_id, status="done", result=summary, message="done")
         log("CPA analysis job %s finished (%s)" % (job_id, Path(file).name))
-    except (Exception, SystemExit) as e:  # noqa: BLE001 - cpa_attack raises SystemExit for CLI errors
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - cpa raises SystemExit for CLI errors
         _update_job(job_id, status="error", error="%s: %s" % (type(e).__name__, e))
         log("[error] CPA analysis job %s: %s" % (job_id, e))
 
 
 def _cpa_settings(body: dict) -> dict:
-    """The attack settings of a request, checked now so a bad value fails here and not inside the job."""
+    """The CPA settings of a request, checked now so a bad value fails here and not inside the job."""
     model = CA.get_model(str(body.get("model", "") or "") or (C.CPA_MODEL if C.CPA_MODEL in CA.MODELS else CA.DEFAULT_MODEL)).name
     search = str(body.get("search", "full") or "full")
     if search not in ("full", "gate"):
@@ -1699,64 +1755,235 @@ def api_analysis_download(body: dict):
                     p.read_bytes())
 
 
-def api_analysis_raw_traces(body: dict) -> dict:
-    """Measured waveforms from an HDF5 campaign for the trace viewer.
+# =============================================================================
+# Traces page: open any trace H5, parse it (find every Decaps start), view it
+# =============================================================================
+def _h5_path(path: str) -> Path:
+    p = Path(str(path or "")).expanduser()
+    if not p.is_file() or p.suffix.lower() not in (".h5", ".hdf5"):
+        raise ValueError("no such H5 file: %s" % p)
+    return p
 
-    Selection: explicit ``indices``, or the first ``count`` traces from
-    ``start`` (optionally only class ``cls`` for TVLA files). Each trace is
-    decimated with the peak-preserving envelope. With ``stats``, also the
-    per-sample mean +- std (per class for TVLA) over ``stats_n`` traces.
+
+def _h5_source(body: dict) -> dict:
+    """Which file / dataset holds the power traces and which the marker (trig_out)."""
+    p = _h5_path(body.get("file") or body.get("path"))
+    d = P.describe_h5(p)
+    dataset = str(body.get("dataset") or d["power"] or "")
+    if not dataset:
+        raise ValueError("%s has no 2-D trace dataset" % p.name)
+    mpath, mset = body.get("marker_file"), body.get("marker_dataset")
+    if mpath:
+        mpath = _h5_path(mpath)
+        mset = str(mset or P.describe_h5(mpath)["power"] or "")
+    elif d["marker"]:
+        mpath, mset = p, d["marker"]
+    return {"path": p, "desc": d, "dataset": dataset, "marker_path": mpath, "marker_dataset": mset or None,
+            "campaign": d["kind"] == "campaign"}
+
+
+def api_h5_scan(body: dict) -> dict:
+    folder = str(body.get("folder") or TRACES_DIR)
+    return {"folder": str(Path(folder).expanduser()), "files": P.scan(folder)}
+
+
+def _rise_hist(result: dict | None) -> dict | None:
+    """Histogram of the parsed Decaps start positions (one bin per sample, at most 120 bins)."""
+    if not result or "rise" not in result:
+        return None
+    r = np.asarray(result["rise"])[np.asarray(result["ok"], dtype=bool)]
+    if not r.size:
+        return None
+    lo, hi = int(r.min()), int(r.max())
+    edges = np.arange(lo, hi + 2) if hi - lo < 120 else np.linspace(lo, hi + 1, 121)
+    counts, edges = np.histogram(r, bins=edges)
+    return {"x": [float(e) for e in edges[:-1]], "y": counts.tolist()}
+
+
+def api_h5_describe(body: dict) -> dict:
+    p = _h5_path(body.get("path"))
+    d = P.describe_h5(p)
+    d["parse_hist"] = _rise_hist(P.load(p))
+    return d
+
+
+def _campaign_rows(src: dict, n: int) -> dict:
+    """Per-trace data a campaign file has (integrity, cycles, class, ciphertext)."""
+    if not src["campaign"]:
+        return {"ok": np.ones(n, dtype=bool), "cycles": None, "cls": None, "ct": None, "start": None}
+    with HS.TraceReader(src["path"]) as r:
+        return {"ok": r.ok[:n], "cycles": r.cycles[:n], "cls": r.classes[:n] if r.mode == "tvla" else None,
+                "ct": r.ciphertexts[:n], "start": r.record_start_s}
+
+
+def api_h5_view(body: dict) -> dict:
+    """Waveforms of any trace H5 for the viewer.
+
+    Selection: explicit ``indices``, or ``count`` traces from ``start`` (optionally only class
+    ``cls`` of a TVLA campaign). Decimated with the peak-preserving envelope. With a stored
+    parse and ``aligned`` (default), every trace is drawn from its own Decaps start; with
+    ``stats``, the mean +- std over ``stats_n`` traces (aligned the same way); with ``marker``,
+    the marker channel of the shown traces too.
     """
-    file = body["file"]
-    if not Path(file).is_file():
-        raise ValueError("no such file: %s" % file)
+    src = _h5_source(body)
+    path, dataset = src["path"], src["dataset"]
     max_points = min(20000, max(500, int(body.get("max_points", 4000) or 4000)))
-    with HS.TraceReader(file) as r:
-        n_avail, n_samples = r.n_completed, int(r.f["traces"].shape[1])
-        if n_avail == 0:
-            raise ValueError("the file has no completed traces yet")
-        rate = r.sample_rate
-        start = r.record_start_s
-        ok_all = r.ok
-        cls_all = r.classes if r.mode == "tvla" else None
-        cls_sel = body.get("cls", "")
+    n_avail = P.rows_available(path, dataset)
+    if n_avail == 0:
+        raise ValueError("the file has no completed traces yet")
+    rate = float(src["desc"]["sample_rate_hz"] or 0.0)
+    extra = _campaign_rows(src, n_avail)
+    parse = P.load(path)
+    aligned = bool(parse) and body.get("aligned", True) not in (False, "0", "false")
+    f, ds = P.open_rows(path, dataset)
+    mf = mds = None
+    try:
+        n_samples = int(ds.shape[1])
+        axis = _axis(rate, n_samples, extra["start"], P.public(parse) if parse else None, src["campaign"])
+        cls_all = extra["cls"]
         if body.get("indices"):
             idx = [int(i) for i in body["indices"] if 0 <= int(i) < n_avail]
         else:
-            start = max(0, int(body.get("start", 0) or 0))
+            first = max(0, int(body.get("start", 0) or 0))
             count = min(20, max(1, int(body.get("count", 4) or 4)))
             cand = np.arange(n_avail)
-            if cls_all is not None and cls_sel in ("0", "1", 0, 1):
-                cand = cand[cls_all == int(cls_sel)]
-            idx = [int(i) for i in cand[start:start + count]]
+            if cls_all is not None and body.get("cls", "") in ("0", "1", 0, 1):
+                cand = cand[cls_all == int(body["cls"])]
+            idx = [int(i) for i in cand[first:first + count]]
         if not idx:
             raise ValueError("no traces match (file has %d)" % n_avail)
         idx = idx[:20]
-        ds = r.f["traces"]
-        cycles, cts = r.cycles, r.ciphertexts
-        traces = [{"index": i, "ok": bool(ok_all[i]), "cycles": int(cycles[i]),
+        want_marker = bool(body.get("marker")) and src["marker_path"] is not None
+        if want_marker:
+            if Path(src["marker_path"]).resolve() == path.resolve():
+                mds = f[src["marker_dataset"]]
+            else:
+                mf, mds = P.open_rows(src["marker_path"], src["marker_dataset"])
+
+        def t0_of(i):
+            if aligned and bool(parse["ok"][i]):
+                return float(parse["rise"][i])
+            return axis["t0_sample"]
+        traces = []
+        for i in idx:
+            row = {"index": i, "ok": bool(extra["ok"][i]),
+                   "cycles": int(extra["cycles"][i]) if extra["cycles"] is not None else None,
                    "class": int(cls_all[i]) if cls_all is not None else None,
-                   "ct_preview": bytes(cts[i][:12]).hex() + "…",
-                   **_series(ds[i], rate, max_points, start)} for i in idx]
+                   "ct_preview": bytes(extra["ct"][i][:12]).hex() + "…" if extra["ct"] is not None else "",
+                   "rise": int(parse["rise"][i]) if parse else None, "fall": int(parse["fall"][i]) if parse else None,
+                   "parse_ok": bool(parse["ok"][i]) if parse else None,
+                   **_series(ds[i], rate, max_points, t0=t0_of(i))}
+            if want_marker:
+                row["marker"] = _series(mds[i], rate, max_points, t0=t0_of(i))
+            traces.append(row)
         stats = None
         if body.get("stats"):
             stats_n = min(n_avail, max(2, int(body.get("stats_n", 500) or 500)))
-            block = ds[:stats_n].astype(np.float64)
-            good = ok_all[:stats_n]
-            groups = {"all": good} if cls_all is None else {
-                "fixed": good & (cls_all[:stats_n] == 0), "random": good & (cls_all[:stats_n] == 1)}
+            block = np.asarray(ds[:stats_n], dtype=np.float64)
+            good = extra["ok"][:stats_n].copy()
+            t0 = axis["t0_sample"]
+            if aligned:
+                al, keep, pre = P.aligned_traces(block, parse["rise"][:stats_n], parse["ok"][:stats_n] & good)
+                block, good, t0 = al, np.ones(al.shape[0], dtype=bool), pre
+                cls_blk = cls_all[:stats_n][keep] if cls_all is not None else None
+            else:
+                cls_blk = cls_all[:stats_n] if cls_all is not None else None
+            groups = {"all": good} if cls_blk is None else {"fixed": good & (cls_blk == 0), "random": good & (cls_blk == 1)}
             stats = {}
             for name, mask in groups.items():
                 if mask.sum() < 2:
                     continue
                 sel = block[mask]
                 mean, std = sel.mean(axis=0), sel.std(axis=0)
-                m = _series(mean, rate, max_points, start)
-                hi = _series(mean + std, rate, max_points, start)
-                lo = _series(mean - std, rate, max_points, start)
-                stats[name] = {"n": int(mask.sum()), "x": m["x"], "mean": m["y"], "hi": hi["y"], "lo": lo["y"]}
-    return {"file": file, "n_completed": n_avail, "mode": "tvla" if cls_all is not None else "cpa",
-            "axis": _axis(rate, n_samples, start), "traces": traces, "stats": stats}
+                m = _series(mean, rate, max_points, t0=t0)
+                stats[name] = {"n": int(mask.sum()), "x": m["x"], "mean": m["y"],
+                               "hi": _series(mean + std, rate, max_points, t0=t0)["y"],
+                               "lo": _series(mean - std, rate, max_points, t0=t0)["y"]}
+    finally:
+        f.close()
+        if mf is not None:
+            mf.close()
+    return {"file": str(path), "dataset": dataset, "n_completed": n_avail, "kind": src["desc"]["kind"],
+            "mode": "tvla" if cls_all is not None else "cpa", "aligned": aligned,
+            "marker_source": "%s:%s" % (Path(src["marker_path"]).name, src["marker_dataset"]) if src["marker_path"] else None,
+            "axis": axis, "traces": traces, "stats": stats, "parse": P.public(parse)}
+
+
+# The library's preview and the older viewer call: same thing.
+api_analysis_raw_traces = api_h5_view
+
+
+def _run_parse_job(job_id: str, src: dict, body: dict) -> None:
+    try:
+        path, dataset = src["path"], src["dataset"]
+        n = P.rows_available(path, dataset)
+        rate = float(src["desc"]["sample_rate_hz"] or 0.0)
+        extra = _campaign_rows(src, n)
+        progress = lambda d, t: _update_job(job_id, progress=d, total=t, message="parsing %d / %d" % (d, t))  # noqa: E731
+        method = body.get("method") or ("marker" if src["marker_path"] else "pattern")
+        if method == "marker":
+            if not src["marker_path"]:
+                raise ValueError("no marker channel: select the marker file / dataset, or use pattern alignment")
+            f, mds = P.open_rows(src["marker_path"], src["marker_dataset"])
+            try:
+                thr = body.get("threshold")
+                result = P.parse_markers(mds, extra["cycles"], rate, int(body.get("smooth") or P.DEFAULT_SMOOTH),
+                                         float(thr) if thr not in (None, "", "auto") else None, progress, n)
+            finally:
+                f.close()
+            result["marker_source"] = "%s:%s" % (Path(src["marker_path"]).name, src["marker_dataset"])
+        elif method == "pattern":
+            f, ds = P.open_rows(path, dataset)
+            try:
+                start = extra["start"]
+                trig = int(round(-(start or 0.0) * rate)) if rate else 0
+                win = body.get("window")
+                result = P.pattern_parse(ds[:n], int(body.get("reference") or 0),
+                                         tuple(int(v) for v in win) if win else None,
+                                         int(body.get("max_shift") or 200), trig, rate, progress)
+            finally:
+                f.close()
+        else:
+            raise ValueError("unknown parse method %r" % method)
+        result["dataset"] = dataset
+        where = P.save(path, result)
+        hist = _rise_hist(result)
+        summary = P.public(result)
+        summary.update(saved_to=where, histogram=hist, file=str(path))
+        _update_job(job_id, status="done", result=summary, message="parsed %d / %d" % (result["n_ok"], result["n"]))
+        log("parsed %s: %d / %d traces, Decaps start at sample %d (spread %d), %s clock" % (
+            path.name, result["n_ok"], result["n"], result["rise_median"], result["rise_max"] - result["rise_min"],
+            result["spc_source"]))
+    except Exception as e:  # noqa: BLE001
+        _update_job(job_id, status="error", error="%s: %s" % (type(e).__name__, e))
+        log("[error] parse job %s: %s" % (job_id, e))
+
+
+def api_h5_parse(body: dict) -> dict:
+    src = _h5_source(body)
+    if src["campaign"]:
+        _not_recording(src["path"])
+    job_id = _new_job("parse")
+    threading.Thread(target=_run_parse_job, args=(job_id, src, body), daemon=True).start()
+    log("parsing %s (%s)" % (src["path"].name, body.get("method") or "auto"))
+    return {"job_id": job_id}
+
+
+def api_h5_parse_clear(body: dict) -> dict:
+    p = _h5_path(body.get("path"))
+    import h5py
+    removed = False
+    try:
+        with h5py.File(str(p), "r+") as f:
+            if "parse" in f and "json" in f["parse"].attrs:
+                del f["parse"].attrs["json"]
+                removed = True
+    except OSError:
+        pass
+    if P.sidecar(p).is_file():
+        P.sidecar(p).unlink()
+        removed = True
+    return {"removed": removed}
 
 
 ROUTES = {
@@ -1810,6 +2037,11 @@ ROUTES = {
     ("GET", "/api/analysis/download"): api_analysis_download,
     ("POST", "/api/analysis/coefficient"): api_analysis_coefficient,
     ("POST", "/api/analysis/raw_traces"): api_analysis_raw_traces,
+    ("POST", "/api/h5/scan"): api_h5_scan,
+    ("POST", "/api/h5/describe"): api_h5_describe,
+    ("POST", "/api/h5/view"): api_h5_view,
+    ("POST", "/api/h5/parse"): api_h5_parse,
+    ("POST", "/api/h5/parse_clear"): api_h5_parse_clear,
     ("POST", "/api/results/list"): api_results_list,
     ("POST", "/api/results/load"): api_results_load,
     ("POST", "/api/results/delete"): api_results_delete,
@@ -1894,7 +2126,11 @@ class Handler(BaseHTTPRequestHandler):
         if STATIC_DIR.resolve() not in target.parents or not target.is_file():
             self._send_json(404, {"error": "not found: %s" % path})
             return
-        self._send(200, target.read_bytes(), CONTENT_TYPES.get(target.suffix, "application/octet-stream"))
+        body = target.read_bytes()
+        if target.name == "index.html":       # versioned asset URLs: a browser never mixes old and new files
+            stamp = max(int(f.stat().st_mtime) for f in STATIC_DIR.glob("*.*"))
+            body = body.replace(b"__V__", str(stamp).encode())
+        self._send(200, body, CONTENT_TYPES.get(target.suffix, "application/octet-stream"))
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")
